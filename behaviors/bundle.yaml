@@ -1,0 +1,16 @@
+bundle:
+  name: behavior-recipes
+  version: 1.0.0
+  description: Multi-step AI agent orchestration via declarative YAML recipes
+
+tools:
+  - module: tool-recipes
+    source: git+https://github.com/microsoft/amplifier-bundle-recipes@main#subdirectory=modules/tool-recipes
+    config:
+      session_dir: ~/.amplifier/projects/{project}/recipe-sessions
+      auto_cleanup_days: 7
+
+agents:
+  include:
+    - recipes:recipe-author
+    - recipes:result-validator
