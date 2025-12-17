@@ -42,10 +42,10 @@ Load the bundle directly with Amplifier:
 
 ```bash
 # Load from local path
-amplifier --bundle ./bundle.md
+amplifier run --bundle ./bundle.md
 
 # Load from git URL
-amplifier --bundle git+https://github.com/microsoft/amplifier-bundle-recipes@main
+amplifier run --bundle git+https://github.com/microsoft/amplifier-bundle-recipes@main
 ```
 
 ### Including in Another Bundle
@@ -62,7 +62,7 @@ includes:
 
 ```bash
 # Validate a recipe to confirm the tool is available
-amplifier --bundle ./bundle.md run "validate recipe examples/simple-analysis-recipe.yaml"
+amplifier run --bundle ./bundle.md "validate recipe examples/simple-analysis-recipe.yaml"
 ```
 
 ## Quick Start
@@ -70,7 +70,7 @@ amplifier --bundle ./bundle.md run "validate recipe examples/simple-analysis-rec
 ### Execute a Recipe
 
 ```bash
-amplifier --bundle ./bundle.md run "execute examples/code-review-recipe.yaml with file_path=src/auth.py"
+amplifier run --bundle ./bundle.md "execute examples/code-review-recipe.yaml with file_path=src/auth.py"
 ```
 
 ### Create a Recipe
@@ -78,7 +78,7 @@ amplifier --bundle ./bundle.md run "execute examples/code-review-recipe.yaml wit
 Use the recipe-author agent conversationally:
 
 ```bash
-amplifier --bundle ./bundle.md run "I need to create a recipe for upgrading Python dependencies"
+amplifier run --bundle ./bundle.md "I need to create a recipe for upgrading Python dependencies"
 ```
 
 The agent guides you through:
