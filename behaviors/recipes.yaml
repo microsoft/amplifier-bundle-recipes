@@ -1,5 +1,5 @@
 bundle:
-  name: recipes
+  name: recipes-behavior
   version: 1.0.0
   description: Multi-step AI agent orchestration via declarative YAML recipes
 
@@ -14,3 +14,7 @@ agents:
   include:
     - recipes:recipe-author
     - recipes:result-validator
+
+context:
+  include:
+    - recipes:context/recipe-instructions.md
