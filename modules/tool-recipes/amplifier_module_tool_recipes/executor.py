@@ -819,10 +819,16 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             raise ValueError(f"Step '{step.id}': foreach variable must be a list, got {type(items).__name__}")
 
         if not items:
-            # Empty list - skip step (common case, not an error)
+            # Empty list - skip step execution but still set output variables
+            # This prevents "undefined variable" errors in downstream steps
             skipped_steps = context.get("_skipped_steps", [])
             skipped_steps.append(step.id)
             context["_skipped_steps"] = skipped_steps
+            
+            # Set collect variable to empty array so downstream steps can check length
+            if step.collect:
+                context[step.collect] = []
+            
             return
 
         if len(items) > step.max_iterations:
