@@ -3,6 +3,7 @@
 import asyncio
 import datetime
 import json
+import os
 import re
 from dataclasses import dataclass
 from dataclasses import field
@@ -16,6 +17,15 @@ from .models import RecursionConfig
 from .models import Step
 from .session import ApprovalStatus
 from .session import SessionManager
+
+
+@dataclass
+class BashResult:
+    """Result of a bash command execution."""
+
+    stdout: str
+    stderr: str
+    exit_code: int
 
 
 class SkipRemainingError(Exception):
@@ -250,14 +260,21 @@ class RecipeExecutor:
                     except SkipRemainingError:
                         break
 
-                # Execute step based on type (agent or recipe)
+                # Execute step based on type (agent, recipe, or bash)
                 try:
                     if step.type == "recipe":
                         result = await self._execute_recipe_step(
                             step, context, project_path, recursion_state, recipe_path
                         )
+                    elif step.type == "bash":
+                        # Bash steps don't count against agent recursion limits
+                        bash_result = await self._execute_bash_step(step, context, project_path)
+                        # Store exit code if requested
+                        if step.output_exit_code:
+                            context[step.output_exit_code] = str(bash_result.exit_code)
+                        result = bash_result.stdout
                     else:
-                        # Track step execution for recursion limits
+                        # Agent step - track for recursion limits
                         recursion_state.increment_steps()
                         result = await self.execute_step_with_retry(step, context)
 
@@ -420,13 +437,21 @@ class RecipeExecutor:
                         except SkipRemainingError:
                             break
 
-                    # Execute step
+                    # Execute step based on type (agent, recipe, or bash)
                     try:
                         if step.type == "recipe":
                             result = await self._execute_recipe_step(
                                 step, context, project_path, recursion_state, recipe_path
                             )
+                        elif step.type == "bash":
+                            # Bash steps don't count against agent recursion limits
+                            bash_result = await self._execute_bash_step(step, context, project_path)
+                            # Store exit code if requested
+                            if step.output_exit_code:
+                                context[step.output_exit_code] = str(bash_result.exit_code)
+                            result = bash_result.stdout
                         else:
+                            # Agent step - track for recursion limits
                             recursion_state.increment_steps()
                             result = await self.execute_step_with_retry(step, context)
 
@@ -836,10 +861,18 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             context[loop_var] = item
 
             try:
-                # Execute based on step type
+                # Execute based on step type (agent, recipe, or bash)
                 if step.type == "recipe":
                     result = await self._execute_recipe_step(step, context, project_path, recursion_state, recipe_path)
+                elif step.type == "bash":
+                    # Bash steps don't count against agent recursion limits
+                    bash_result = await self._execute_bash_step(step, context, project_path)
+                    # Store exit code if requested
+                    if step.output_exit_code:
+                        context[step.output_exit_code] = str(bash_result.exit_code)
+                    result = bash_result.stdout
                 else:
+                    # Agent step - track for recursion limits
                     recursion_state.increment_steps()
                     result = await self.execute_step_with_retry(step, context)
                 
@@ -892,11 +925,20 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             iter_context = {**context, loop_var: item}
 
             try:
+                # Execute based on step type (agent, recipe, or bash)
                 if step.type == "recipe":
                     result = await self._execute_recipe_step(
                         step, iter_context, project_path, recursion_state, recipe_path
                     )
+                elif step.type == "bash":
+                    # Bash steps don't count against agent recursion limits
+                    bash_result = await self._execute_bash_step(step, iter_context, project_path)
+                    # Store exit code if requested (in iteration context)
+                    if step.output_exit_code:
+                        iter_context[step.output_exit_code] = str(bash_result.exit_code)
+                    result = bash_result.stdout
                 else:
+                    # Agent step
                     result = await self.execute_step_with_retry(step, iter_context)
                 
                 # Process result: unwrap spawn() output and optionally parse JSON
@@ -1065,3 +1107,95 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             return str(context[var_ref])
 
         return re.sub(pattern, replace, template)
+
+    async def _execute_bash_step(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        project_path: Path,
+    ) -> BashResult:
+        """
+        Execute a bash step by running shell command directly.
+
+        No LLM overhead - command is executed via subprocess.
+
+        Args:
+            step: Step with type="bash" and command
+            context: Current context variables
+            project_path: Current project directory
+
+        Returns:
+            BashResult with stdout, stderr, and exit_code
+
+        Raises:
+            ValueError: If command fails and on_error="fail"
+            asyncio.TimeoutError: If command exceeds timeout
+        """
+        assert step.command is not None, "Bash step must have command"
+
+        # Substitute variables in command
+        command = self.substitute_variables(step.command, context)
+
+        # Determine working directory
+        if step.cwd:
+            cwd = Path(self.substitute_variables(step.cwd, context))
+            if not cwd.is_absolute():
+                cwd = project_path / cwd
+            if not cwd.exists():
+                raise ValueError(f"Step '{step.id}': cwd does not exist: {cwd}")
+            if not cwd.is_dir():
+                raise ValueError(f"Step '{step.id}': cwd is not a directory: {cwd}")
+        else:
+            cwd = project_path
+
+        # Build environment variables
+        env = os.environ.copy()
+        if step.env:
+            for key, value in step.env.items():
+                # Substitute variables in env values
+                env[key] = self.substitute_variables(str(value), context)
+
+        # Execute command with timeout
+        try:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(cwd),
+                env=env,
+            )
+
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=step.timeout,
+                )
+            except asyncio.TimeoutError:
+                # Kill the process on timeout
+                process.kill()
+                await process.wait()
+                raise ValueError(
+                    f"Step '{step.id}': command timed out after {step.timeout}s"
+                ) from None
+
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+            exit_code = process.returncode or 0
+
+            result = BashResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+
+            # Check for non-zero exit code
+            if exit_code != 0:
+                error_msg = f"Step '{step.id}': command failed with exit code {exit_code}"
+                if stderr.strip():
+                    error_msg += f"\nstderr: {stderr.strip()}"
+
+                if step.on_error == "fail":
+                    raise ValueError(error_msg)
+                # For "continue" and "skip_remaining", we return the result
+                # and let the caller handle it
+
+            return result
+
+        except OSError as e:
+            raise ValueError(f"Step '{step.id}': failed to execute command: {e}") from e

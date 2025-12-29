@@ -91,7 +91,13 @@ class Stage:
 
 @dataclass
 class Step:
-    """Represents a single step in a recipe workflow."""
+    """Represents a single step in a recipe workflow.
+
+    Step types (mutually exclusive):
+    - "agent" (default): Spawn an LLM agent with a prompt
+    - "recipe": Execute a sub-recipe
+    - "bash": Execute shell command directly (no LLM overhead)
+    """
 
     id: str
     # Agent step fields (required when type="agent")
@@ -101,9 +107,15 @@ class Step:
     agent_config: dict[str, Any] | None = None
 
     # Recipe composition fields (required when type="recipe")
-    type: Literal["agent", "recipe"] = "agent"
+    type: Literal["agent", "recipe", "bash"] = "agent"
     recipe: str | None = None  # Path to sub-recipe file
     step_context: dict[str, Any] | None = None  # Context to pass to sub-recipe (YAML: "context")
+
+    # Bash step fields (required when type="bash")
+    command: str | None = None  # Shell command to execute
+    cwd: str | None = None  # Working directory (supports {{variable}} substitution)
+    env: dict[str, str] | None = None  # Environment variables (values support {{variable}})
+    output_exit_code: str | None = None  # Variable name to store exit code
 
     # Common fields
     output: str | None = None
@@ -144,6 +156,9 @@ class Step:
                 errors.append(f"Step '{self.id}': agent steps cannot have 'recipe' field")
             if self.step_context:
                 errors.append(f"Step '{self.id}': agent steps cannot have 'context' field")
+            # Agent steps cannot have bash-specific fields
+            if self.command:
+                errors.append(f"Step '{self.id}': agent steps cannot have 'command' field")
         elif self.type == "recipe":
             # Recipe steps require recipe path
             if not self.recipe:
@@ -155,11 +170,42 @@ class Step:
                 errors.append(f"Step '{self.id}': recipe steps cannot have 'prompt' field")
             if self.mode:
                 errors.append(f"Step '{self.id}': recipe steps cannot have 'mode' field")
+            # Recipe steps cannot have bash-specific fields
+            if self.command:
+                errors.append(f"Step '{self.id}': recipe steps cannot have 'command' field")
             # Validate recursion config if present
             if self.recursion:
                 errors.extend(self.recursion.validate())
+        elif self.type == "bash":
+            # Bash steps require command
+            if not self.command:
+                errors.append(f"Step '{self.id}': bash steps require 'command' field")
+            elif not self.command.strip():
+                errors.append(f"Step '{self.id}': bash command cannot be empty or whitespace")
+            # Bash steps cannot have agent-specific fields
+            if self.agent:
+                errors.append(f"Step '{self.id}': bash steps cannot have 'agent' field")
+            if self.prompt:
+                errors.append(f"Step '{self.id}': bash steps cannot have 'prompt' field")
+            if self.mode:
+                errors.append(f"Step '{self.id}': bash steps cannot have 'mode' field")
+            if self.agent_config:
+                errors.append(f"Step '{self.id}': bash steps cannot have 'agent_config' field")
+            # Bash steps cannot have recipe-specific fields
+            if self.recipe:
+                errors.append(f"Step '{self.id}': bash steps cannot have 'recipe' field")
+            if self.step_context:
+                errors.append(f"Step '{self.id}': bash steps cannot have 'context' field")
+            if self.recursion:
+                errors.append(f"Step '{self.id}': bash steps cannot have 'recursion' field")
+            # Validate output_exit_code name
+            if self.output_exit_code:
+                if not self.output_exit_code.replace("_", "").isalnum():
+                    errors.append(f"Step '{self.id}': output_exit_code must be alphanumeric with underscores")
+                if self.output_exit_code in ("recipe", "session", "step"):
+                    errors.append(f"Step '{self.id}': output_exit_code '{self.output_exit_code}' is reserved")
         else:
-            errors.append(f"Step '{self.id}': type must be 'agent' or 'recipe', got '{self.type}'")
+            errors.append(f"Step '{self.id}': type must be 'agent', 'recipe', or 'bash', got '{self.type}'")
 
         # Field constraints (common to both types)
         if self.timeout <= 0:

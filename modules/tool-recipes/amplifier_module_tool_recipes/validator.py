@@ -91,6 +91,56 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                         f"Available variables: {', '.join(sorted(available | step_local_vars))}"
                     )
 
+        # Check bash command variables (bash steps only)
+        if step.command:
+            command_vars = extract_variables(step.command)
+            for var in command_vars:
+                if "." in var:
+                    prefix = var.split(".")[0]
+                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                        errors.append(
+                            f"Step '{step.id}': Command variable {{{{{var}}}}} references unknown namespace '{prefix}'"
+                        )
+                elif var not in available and var not in step_local_vars:
+                    errors.append(
+                        f"Step '{step.id}': Command variable {{{{{var}}}}} is not defined. "
+                        f"Available variables: {', '.join(sorted(available | step_local_vars))}"
+                    )
+
+        # Check bash cwd variables
+        if step.cwd:
+            cwd_vars = extract_variables(step.cwd)
+            for var in cwd_vars:
+                if "." in var:
+                    prefix = var.split(".")[0]
+                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                        errors.append(
+                            f"Step '{step.id}': cwd variable {{{{{var}}}}} references unknown namespace '{prefix}'"
+                        )
+                elif var not in available and var not in step_local_vars:
+                    errors.append(
+                        f"Step '{step.id}': cwd variable {{{{{var}}}}} is not defined. "
+                        f"Available variables: {', '.join(sorted(available | step_local_vars))}"
+                    )
+
+        # Check bash env variables
+        if step.env:
+            for env_key, env_value in step.env.items():
+                if isinstance(env_value, str):
+                    env_vars = extract_variables(env_value)
+                    for var in env_vars:
+                        if "." in var:
+                            prefix = var.split(".")[0]
+                            if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                                errors.append(
+                                    f"Step '{step.id}': env['{env_key}'] variable {{{{{var}}}}} references unknown namespace '{prefix}'"
+                                )
+                        elif var not in available and var not in step_local_vars:
+                            errors.append(
+                                f"Step '{step.id}': env['{env_key}'] variable {{{{{var}}}}} is not defined. "
+                                f"Available variables: {', '.join(sorted(available | step_local_vars))}"
+                            )
+
         # Check recipe step context variables (recipe steps only)
         if step.step_context:
             for key, value in step.step_context.items():

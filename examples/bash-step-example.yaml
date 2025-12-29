@@ -1,0 +1,78 @@
+name: "bash-step-example"
+description: "Demonstrates bash step capabilities - direct shell execution without LLM overhead"
+version: "1.0.0"
+author: "Amplifier Recipes Collection"
+tags: ["bash", "example", "shell"]
+
+# This recipe demonstrates the new bash step type:
+# 1. Simple command execution
+# 2. Variable substitution in commands
+# 3. Environment variable passing
+# 4. Working directory control
+# 5. Exit code capture for conditional logic
+#
+# Usage:
+#   amplifier run "execute bash-step-example.yaml with project_name=MyProject"
+
+context:
+  project_name: "TestProject"
+  greeting: "Hello from bash step"
+
+steps:
+  # Step 1: Simple bash command
+  - id: "simple-echo"
+    type: "bash"
+    command: "echo '{{greeting}}'"
+    output: "echo_result"
+    timeout: 30
+
+  # Step 2: Command with environment variables
+  - id: "env-vars"
+    type: "bash"
+    command: "echo \"Project: $PROJECT_NAME, User: $USER_NAME\""
+    env:
+      PROJECT_NAME: "{{project_name}}"
+      USER_NAME: "recipe-runner"
+    output: "env_result"
+
+  # Step 3: Multi-line command
+  - id: "multi-line"
+    type: "bash"
+    command: |
+      echo "=== System Info ==="
+      echo "Date: $(date)"
+      echo "Hostname: $(hostname)"
+      echo "PWD: $(pwd)"
+    output: "system_info"
+
+  # Step 4: Capture exit code for conditional logic
+  - id: "check-command"
+    type: "bash"
+    command: "test -d /tmp"
+    output_exit_code: "check_code"
+    on_error: "continue"
+
+  # Step 5: Conditional step based on exit code
+  - id: "report-success"
+    type: "bash"
+    condition: "{{check_code}} == '0'"
+    command: "echo 'Directory check passed!'"
+    output: "success_message"
+
+  # Step 6: Working directory example
+  - id: "list-tmp"
+    type: "bash"
+    command: "ls -la | head -5"
+    cwd: "/tmp"
+    output: "tmp_listing"
+
+  # Final summary
+  - id: "summary"
+    type: "bash"
+    command: |
+      echo "=== Bash Step Example Summary ==="
+      echo "Echo result: {{echo_result}}"
+      echo "Env result: {{env_result}}"
+      echo "Check code: {{check_code}}"
+      echo "Success: {{success_message}}"
+    output: "final_summary"

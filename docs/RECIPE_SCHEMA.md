@@ -429,11 +429,11 @@ approval:
 
 ## Step Object
 
-Each step represents one unit of work in the workflow. Steps can be agent invocations (default) or recipe compositions.
+Each step represents one unit of work in the workflow. Steps can be agent invocations (default), recipe compositions, or bash commands.
 
 ```yaml
 - id: string                    # Required - Unique within recipe
-  type: string                  # Optional - "agent" (default) or "recipe"
+  type: string                  # Optional - "agent" (default), "recipe", or "bash"
 
   # For agent steps (type: "agent"):
   agent: string                 # Required for agent steps - Agent name
@@ -443,6 +443,12 @@ Each step represents one unit of work in the workflow. Steps can be agent invoca
   # For recipe steps (type: "recipe"):
   recipe: string                # Required for recipe steps - Path to sub-recipe
   context: dict                 # Optional - Context to pass to sub-recipe
+
+  # For bash steps (type: "bash"):
+  command: string               # Required for bash steps - Shell command to execute
+  cwd: string                   # Optional - Working directory (supports {{variable}})
+  env: dict[string, string]     # Optional - Environment variables (values support {{variable}})
+  output_exit_code: string      # Optional - Variable name to store exit code
 
   # Common fields:
   condition: string             # Optional - Expression that must evaluate to true
@@ -480,8 +486,8 @@ Each step represents one unit of work in the workflow. Steps can be agent invoca
 #### `type` (optional)
 
 **Type:** string
-**Values:** `"agent"` (default), `"recipe"`
-**Purpose:** Specify whether this step invokes an agent or another recipe.
+**Values:** `"agent"` (default), `"recipe"`, `"bash"`
+**Purpose:** Specify what kind of execution this step performs.
 
 **Examples:**
 ```yaml
@@ -502,13 +508,21 @@ Each step represents one unit of work in the workflow. Steps can be agent invoca
   recipe: "security-audit.yaml"
   context:
     target: "{{file_path}}"
+
+# Bash step (direct shell execution)
+- id: "run-tests"
+  type: "bash"
+  command: "npm test"
+  output: "test_results"
 ```
 
 **Behavior:**
-- `"agent"` (default): Step executes an agent with a prompt
+- `"agent"` (default): Step spawns an LLM agent with a prompt
 - `"recipe"`: Step executes another recipe as a sub-workflow
+- `"bash"`: Step executes a shell command directly (no LLM overhead)
 
-See [Recipe Composition](#recipe-composition) for complete details on recipe steps.
+See [Recipe Composition](#recipe-composition) for details on recipe steps.
+See [Bash Steps](#bash-steps) for details on bash steps.
 
 #### `agent` (required for agent steps)
 
@@ -1527,6 +1541,239 @@ These features may be added based on real usage needs:
 
 ---
 
+## Bash Steps
+
+Bash steps execute shell commands directly without LLM overhead. Use them for:
+- Running build tools, linters, or test suites
+- Fetching data with `curl` or `wget`
+- File operations that are simpler as shell commands
+- Any deterministic command where an LLM isn't needed
+
+### Basic Syntax
+
+```yaml
+- id: "run-tests"
+  type: "bash"
+  command: "npm test"
+  output: "test_output"
+```
+
+### How It Works
+
+1. **Variable substitution** in command, cwd, and env values
+2. **Command execution** via subprocess shell
+3. **Capture stdout** (stored in `output` variable)
+4. **Capture stderr** (included in error messages on failure)
+5. **Capture exit code** (optionally stored in `output_exit_code` variable)
+
+### Bash-Specific Fields
+
+#### `command` (required for bash steps)
+
+**Type:** string (template)
+**Purpose:** The shell command to execute.
+
+**Examples:**
+```yaml
+# Simple command
+- command: "echo hello"
+
+# With variable substitution
+- command: "curl {{api_url}}/data"
+
+# Multi-line command
+- command: |
+    cd {{project_dir}}
+    npm install
+    npm test
+
+# Piped commands
+- command: "cat {{file}} | grep ERROR | wc -l"
+```
+
+#### `cwd` (optional)
+
+**Type:** string (template)
+**Purpose:** Working directory for the command.
+
+**Behavior:**
+- Relative paths resolved from project directory
+- Supports `{{variable}}` substitution
+- Must exist and be a directory
+
+**Examples:**
+```yaml
+# Absolute path
+- cwd: "/tmp/workspace"
+
+# Relative to project
+- cwd: "src/tests"
+
+# From variable
+- cwd: "{{build_dir}}"
+```
+
+#### `env` (optional)
+
+**Type:** dict[string, string]
+**Purpose:** Environment variables passed to the command.
+
+**Behavior:**
+- Merged with parent environment (command inherits all existing env vars)
+- Values support `{{variable}}` substitution
+- Keys are literal (no substitution)
+
+**Examples:**
+```yaml
+- env:
+    NODE_ENV: "production"
+    API_KEY: "{{api_key}}"
+    DEBUG: "true"
+```
+
+#### `output_exit_code` (optional)
+
+**Type:** string (variable name)
+**Purpose:** Store the command's exit code for conditional logic.
+
+**Constraints:**
+- Must be alphanumeric with underscores
+- Cannot be reserved name (`recipe`, `session`, `step`)
+
+**Examples:**
+```yaml
+- id: "check-health"
+  type: "bash"
+  command: "curl -f {{health_url}}"
+  output_exit_code: "health_check_code"
+  on_error: "continue"
+
+- id: "handle-failure"
+  condition: "{{health_check_code}} != '0'"
+  agent: "foundation:bug-hunter"
+  prompt: "Health check failed with code {{health_check_code}}"
+```
+
+### Error Handling
+
+**Non-zero exit codes** are treated as errors by default:
+
+```yaml
+# Default: fail the recipe on non-zero exit
+- id: "must-pass"
+  type: "bash"
+  command: "npm test"
+  # on_error: "fail" (default)
+
+# Continue on failure - capture exit code for later
+- id: "optional-check"
+  type: "bash"
+  command: "npm audit"
+  on_error: "continue"
+  output_exit_code: "audit_code"
+
+# Skip remaining steps on failure
+- id: "guard-check"
+  type: "bash"
+  command: "test -f required-file.txt"
+  on_error: "skip_remaining"
+```
+
+### Timeout
+
+Bash steps respect the `timeout` field (default: 600 seconds):
+
+```yaml
+- id: "long-build"
+  type: "bash"
+  command: "npm run build"
+  timeout: 1800  # 30 minutes
+
+- id: "quick-check"
+  type: "bash"
+  command: "test -d node_modules"
+  timeout: 10  # 10 seconds
+```
+
+If the command exceeds the timeout, it's killed and the step fails.
+
+### Complete Example
+
+```yaml
+name: "build-and-test"
+description: "Build project and run tests"
+version: "1.0.0"
+
+context:
+  project_dir: ""
+  node_env: "test"
+
+steps:
+  - id: "install-deps"
+    type: "bash"
+    command: "npm ci"
+    cwd: "{{project_dir}}"
+    timeout: 300
+
+  - id: "lint"
+    type: "bash"
+    command: "npm run lint"
+    cwd: "{{project_dir}}"
+    output: "lint_output"
+    on_error: "continue"
+    output_exit_code: "lint_code"
+
+  - id: "test"
+    type: "bash"
+    command: "npm test"
+    cwd: "{{project_dir}}"
+    env:
+      NODE_ENV: "{{node_env}}"
+      CI: "true"
+    output: "test_output"
+
+  - id: "analyze-results"
+    condition: "{{lint_code}} != '0'"
+    agent: "foundation:zen-architect"
+    prompt: |
+      Lint failed. Output:
+      {{lint_output}}
+      
+      Suggest fixes.
+    output: "fix_suggestions"
+```
+
+### Security Considerations
+
+**Bash steps execute arbitrary shell commands.** Be careful with:
+
+- **User input in commands**: Variables from untrusted sources can enable command injection
+- **Sensitive data**: Avoid echoing secrets; use env vars instead of command-line args
+- **File permissions**: Commands run with the recipe executor's permissions
+
+**Best practices:**
+```yaml
+# ✅ Good: API key in env var
+- command: "curl -H 'Authorization: Bearer $API_KEY' {{url}}"
+  env:
+    API_KEY: "{{api_key}}"
+
+# ❌ Bad: API key in command (visible in logs/history)
+- command: "curl -H 'Authorization: Bearer {{api_key}}' {{url}}"
+```
+
+### When to Use Bash vs Agent Steps
+
+| Use Bash When | Use Agent When |
+|---------------|----------------|
+| Deterministic commands | Judgment/analysis needed |
+| Fast execution needed | Complex reasoning required |
+| Build/test/deploy tools | Natural language output |
+| File operations | Creative tasks |
+| Data fetching (curl) | Code review/generation |
+
+---
+
 ## Recipe Composition
 
 Recipe composition allows recipes to invoke other recipes as sub-workflows. This enables modular, reusable workflow components.
@@ -1883,6 +2130,12 @@ steps:
 ---
 
 ## Schema Change History
+
+### v1.4.0
+- Bash steps (`type: "bash"`) for direct shell execution without LLM overhead
+- New bash-specific fields: `command`, `cwd`, `env`, `output_exit_code`
+- Variable substitution in command, cwd, and env values
+- Timeout and error handling for bash commands
 
 ### v1.3.0
 - Recipe composition (`type: "recipe"` steps)

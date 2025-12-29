@@ -1,6 +1,6 @@
 name: "repo-activity-analysis"
 description: "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday."
-version: "1.0.0"
+version: "1.1.0"
 author: "Amplifier Recipes"
 tags: ["github", "analysis", "commits", "prs", "git", "activity"]
 
@@ -8,6 +8,9 @@ tags: ["github", "analysis", "commits", "prs", "git", "activity"]
 #
 # Analyzes a single GitHub repository for commits and PRs in a date range.
 # Defaults to the current working directory's repo and "since yesterday".
+#
+# v1.1.0: Converted bash-heavy steps to type: "bash" for efficiency
+#         (no LLM overhead for deterministic shell commands)
 #
 # Usage (defaults - analyze current repo since yesterday):
 #   amplifier recipes execute repo-activity-analysis.yaml
@@ -49,15 +52,13 @@ steps:
   # ==========================================================================
   # Step 1: Detect repo (Bash - URL parsing + API calls)
   # ==========================================================================
+  # BASH STEP - Parse URLs and check gh CLI authentication
+  # Why bash: URL normalization with sed, gh auth check are deterministic
   - id: "detect-repo"
-    agent: "foundation:explorer"
-    parse_json: true
-    prompt: |
-      Detect the repository to analyze using bash commands.
+    type: "bash"
+    command: |
+      set -euo pipefail
       
-      ## Execute
-      
-      ```bash
       mkdir -p {{working_dir}}/analyses
       
       repo_url="{{repo_url}}"
@@ -89,17 +90,18 @@ steps:
       else
         echo "{\"repo_url\": \"$normalized\", \"owner\": \"$owner\", \"repo_name\": \"$repo_name\", \"detected_from\": \"$detected_from\", \"gh_available\": $gh_available, \"error\": null}"
       fi
-      ```
-      
-      Run the script and return the JSON output.
     output: "repo_info"
     timeout: 120
     on_error: "fail"
 
+  # ==========================================================================
+  # Step 2: Parse date range (LLM for natural language)
+  # ==========================================================================
+  # AGENT STEP - Interpret natural language date expressions
+  # Why agent: "last week", "since Monday", "past few days" need semantic understanding
   - id: "parse-date-range"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
-    parse_json: true
     prompt: |
       Parse the natural language date range into ISO 8601 format for GitHub API.
       
@@ -127,15 +129,11 @@ steps:
   # ==========================================================================
   # Step 3: Fetch commits (Bash - direct API calls)
   # ==========================================================================
+  # BASH STEP - Fetch commits via GitHub API
+  # Why bash: gh api + jq transforms are deterministic, no reasoning needed
   - id: "fetch-commits"
-    agent: "foundation:explorer"
-    parse_json: true
-    prompt: |
-      Fetch commits using direct gh API call.
-      
-      ## Execute
-      
-      ```bash
+    type: "bash"
+    command: |
       cd {{working_dir}}/analyses
       
       # Fetch commits from GitHub API
@@ -153,28 +151,17 @@ steps:
       else
         echo "{\"count\": $count, \"commits\": $commits, \"error\": null}"
       fi
-      ```
-      
-      Run the script and return the JSON output.
     output: "commits_data"
     timeout: 300
-    retry:
-      max_attempts: 3
-      backoff: "exponential"
-      initial_delay: 5
 
   # ==========================================================================
   # Step 4: Fetch PRs (Bash - direct API calls)
   # ==========================================================================
+  # BASH STEP - Fetch PRs via GitHub CLI
+  # Why bash: gh pr list + jq filtering are deterministic, no reasoning needed
   - id: "fetch-prs"
-    agent: "foundation:explorer"
-    parse_json: true
-    prompt: |
-      Fetch PRs using direct gh CLI call.
-      
-      ## Execute
-      
-      ```bash
+    type: "bash"
+    command: |
       cd {{working_dir}}/analyses
       
       # Fetch PRs from GitHub
@@ -196,20 +183,17 @@ steps:
       prs=$(cat {{repo_info.repo_name}}-prs.json)
       
       echo "{\"count\": $count, \"prs\": $prs, \"merged\": $merged, \"open\": $open, \"closed\": $closed, \"error\": null}"
-      ```
-      
-      Run the script and return the JSON output.
     output: "prs_data"
     timeout: 300
-    retry:
-      max_attempts: 3
-      backoff: "exponential"
-      initial_delay: 5
 
+  # ==========================================================================
+  # Step 5: Analyze commits (LLM for semantic analysis)
+  # ==========================================================================
+  # AGENT STEP - Understand commit impact and categorize changes
+  # Why agent: Requires reading commit messages, inferring intent, categorizing impact
   - id: "analyze-commits"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
-    parse_json: true
     prompt: |
       Analyze the commits for {{repo_info.repo_name}}.
       
@@ -275,9 +259,13 @@ steps:
     output: "commit_analysis"
     timeout: 600
 
+  # ==========================================================================
+  # Step 6: Deep-dive unclear commits (optional LLM analysis)
+  # ==========================================================================
+  # AGENT STEP - Explore code context to understand unclear changes
+  # Why agent: Requires git exploration, reading code, inferring impact
   - id: "deep-dive-unclear-commits"
     agent: "foundation:explorer"
-    parse_json: true
     prompt: |
       Deep-dive analysis for commits with unclear impact in {{repo_info.repo_name}}.
       
@@ -336,10 +324,14 @@ steps:
     timeout: 600
     on_error: "continue"
 
+  # ==========================================================================
+  # Step 7: Analyze PRs (LLM for semantic analysis)
+  # ==========================================================================
+  # AGENT STEP - Categorize PRs by type and assess significance
+  # Why agent: Requires reading PR titles/descriptions, inferring categories
   - id: "analyze-prs"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
-    parse_json: true
     prompt: |
       Analyze the PRs for {{repo_info.repo_name}}.
       
@@ -394,10 +386,14 @@ steps:
     output: "pr_analysis"
     timeout: 300
 
+  # ==========================================================================
+  # Step 8: Synthesize repo findings (LLM for comprehensive summary)
+  # ==========================================================================
+  # AGENT STEP - Combine all findings into cohesive narrative
+  # Why agent: Requires weighing importance, prioritizing, creating narrative
   - id: "synthesize-repo-findings"
     agent: "foundation:zen-architect"
     mode: "ARCHITECT"
-    parse_json: true
     prompt: |
       Synthesize all findings for {{repo_info.repo_name}}.
       
