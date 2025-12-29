@@ -700,7 +700,12 @@ class RecipeExecutor:
                 try:
                     return json.loads(output_stripped)
                 except (json.JSONDecodeError, ValueError):
-                    pass
+                    # Step 4: For bash steps, try aggressive parsing as fallback
+                    # Bash commands often print status messages before JSON output
+                    if step.type == "bash":
+                        extracted = self._extract_json_aggressively(output)
+                        if extracted != output:  # Successfully extracted JSON
+                            return extracted
         
         return output
 
@@ -1080,7 +1085,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         Raises:
             ValueError if variable undefined
         """
-        pattern = r"\{\{(\w+(?:\.\w+)?)\}\}"
+        # Support multi-level access: {{a.b.c.d}} - use * not ? for unlimited depth
+        pattern = r"\{\{(\w+(?:\.\w+)*)\}\}"
 
         def replace(match: re.Match) -> str:
             var_ref = match.group(1)
@@ -1089,13 +1095,26 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             if "." in var_ref:
                 parts = var_ref.split(".")
                 value = context
+                path_so_far = []
                 for part in parts:
+                    path_so_far.append(part)
                     if isinstance(value, dict) and part in value:
                         value = value[part]
-                    else:
+                    elif isinstance(value, dict):
+                        # Key doesn't exist in dict
                         raise ValueError(
                             f"Undefined variable: {{{{{var_ref}}}}}. "
-                            f"Available variables: {', '.join(sorted(context.keys()))}"
+                            f"Key '{part}' not found. "
+                            f"Available keys at '{'.'.join(path_so_far[:-1]) or 'root'}': {', '.join(sorted(value.keys()))}"
+                        )
+                    else:
+                        # Parent is not a dict (likely a string from failed JSON parsing)
+                        parent_path = ".".join(path_so_far[:-1])
+                        raise ValueError(
+                            f"Cannot access '{part}' on {{{{{parent_path}}}}} - "
+                            f"it's a {type(value).__name__}, not a dict. "
+                            f"Hint: The step producing '{parent_path}' may have failed to parse JSON. "
+                            f"Check that the bash command outputs clean JSON or add 'parse_json: true'."
                         )
                 return str(value)
 
