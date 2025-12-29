@@ -153,6 +153,7 @@ steps:
         echo "{\"count\": $count, \"commits\": $commits, \"error\": null}"
       fi
     output: "commits_data"
+    parse_json: true
     timeout: 300
 
   # ==========================================================================
@@ -185,6 +186,7 @@ steps:
       
       echo "{\"count\": $count, \"prs\": $prs, \"merged\": $merged, \"open\": $open, \"closed\": $closed, \"error\": null}"
     output: "prs_data"
+    parse_json: true
     timeout: 300
 
   # ==========================================================================
