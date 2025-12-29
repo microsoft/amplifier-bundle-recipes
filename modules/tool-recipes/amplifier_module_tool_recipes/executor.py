@@ -711,6 +711,34 @@ class RecipeExecutor:
             mode_instruction = f"MODE: {step.mode}\n\n"
             instruction = mode_instruction + instruction
 
+        # Add JSON output instruction if parse_json is enabled
+        if step.parse_json:
+            json_instruction = """
+
+---
+
+**CRITICAL: JSON OUTPUT REQUIRED**
+
+Your response MUST end with a valid JSON object. The recipe system will parse your final JSON output.
+
+Requirements:
+1. Your response MUST contain a JSON code block or raw JSON object
+2. The JSON must be valid (proper quotes, no trailing commas, etc.)
+3. If you include explanation, put the JSON block LAST in your response
+4. Use ```json fences or return raw JSON - both work
+
+Example valid endings:
+```json
+{"key": "value", "count": 5}
+```
+
+Or raw JSON at the end:
+{"key": "value", "count": 5}
+
+DO NOT return the JSON as a string or with escape characters. Return actual JSON structure.
+"""
+            instruction = instruction + json_instruction
+
         # Get parent session and agents config from coordinator
         parent_session = self.coordinator.session
         agents = self.coordinator.config.get("agents", {})
