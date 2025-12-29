@@ -142,16 +142,9 @@ steps:
         --jq '[.[] | {sha: .sha, message: .commit.message, author: .commit.author.name, date: .commit.author.date, url: .html_url}]' \
         2>/dev/null > {{repo_info.repo_name}}-commits.json || echo "[]" > {{repo_info.repo_name}}-commits.json
       
-      # Count and format output
-      count=$(jq 'length' {{repo_info.repo_name}}-commits.json 2>/dev/null || echo "0")
-      commits=$(cat {{repo_info.repo_name}}-commits.json)
-      
-      # Check for errors
-      if [ "$count" = "0" ] && [ ! -s {{repo_info.repo_name}}-commits.json ]; then
-        echo "{\"count\": 0, \"commits\": [], \"error\": \"Failed to fetch or no commits found\"}"
-      else
-        echo "{\"count\": $count, \"commits\": $commits, \"error\": null}"
-      fi
+      # Use jq to safely construct output JSON (handles escaping of quotes/newlines in commit messages)
+      jq -c '{count: length, commits: ., error: null}' {{repo_info.repo_name}}-commits.json 2>/dev/null || \
+        echo '{"count": 0, "commits": [], "error": "Failed to parse commits"}'
     output: "commits_data"
     parse_json: true
     timeout: 300
@@ -177,14 +170,16 @@ steps:
       jq --arg since "$since_iso" '[.[] | select(.createdAt >= $since or .mergedAt >= $since or .closedAt >= $since)]' \
         {{repo_info.repo_name}}-prs-raw.json > {{repo_info.repo_name}}-prs.json 2>/dev/null || echo "[]" > {{repo_info.repo_name}}-prs.json
       
-      # Calculate counts
-      count=$(jq 'length' {{repo_info.repo_name}}-prs.json 2>/dev/null || echo "0")
-      merged=$(jq '[.[] | select(.state == "MERGED")] | length' {{repo_info.repo_name}}-prs.json 2>/dev/null || echo "0")
-      open=$(jq '[.[] | select(.state == "OPEN")] | length' {{repo_info.repo_name}}-prs.json 2>/dev/null || echo "0")
-      closed=$(jq '[.[] | select(.state == "CLOSED")] | length' {{repo_info.repo_name}}-prs.json 2>/dev/null || echo "0")
-      prs=$(cat {{repo_info.repo_name}}-prs.json)
-      
-      echo "{\"count\": $count, \"prs\": $prs, \"merged\": $merged, \"open\": $open, \"closed\": $closed, \"error\": null}"
+      # Use jq to safely construct output JSON with counts (handles escaping of quotes in PR titles)
+      jq -c '{
+        count: length,
+        prs: .,
+        merged: [.[] | select(.state == "MERGED")] | length,
+        open: [.[] | select(.state == "OPEN")] | length,
+        closed: [.[] | select(.state == "CLOSED")] | length,
+        error: null
+      }' {{repo_info.repo_name}}-prs.json 2>/dev/null || \
+        echo '{"count": 0, "prs": [], "merged": 0, "open": 0, "closed": 0, "error": "Failed to parse PRs"}'
     output: "prs_data"
     parse_json: true
     timeout: 300
