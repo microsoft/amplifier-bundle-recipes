@@ -1122,6 +1122,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                             f"Hint: The step producing '{parent_path}' may have failed to parse JSON. "
                             f"Check that the bash command outputs clean JSON or add 'parse_json: true'."
                         )
+                # Use json.dumps for dict/list to produce valid JSON, not Python repr
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value)
                 return str(value)
 
             # Handle direct references
@@ -1129,7 +1132,11 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 available = ", ".join(sorted(context.keys()))
                 raise ValueError(f"Undefined variable: {{{{{var_ref}}}}}. Available variables: {available}")
 
-            return str(context[var_ref])
+            # Use json.dumps for dict/list to produce valid JSON, not Python repr
+            value = context[var_ref]
+            if isinstance(value, (dict, list)):
+                return json.dumps(value)
+            return str(value)
 
         return re.sub(pattern, replace, template)
 
