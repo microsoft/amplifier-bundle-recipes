@@ -1,0 +1,188 @@
+name: "claim-verification"
+description: "Adversarial verification of analysis findings to catch hallucinations"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["verification", "adversarial", "quality"]
+
+# This recipe implements Pattern 7: Adversarial Verification
+#
+# CRITICAL DESIGN PRINCIPLE:
+# The verifier NEVER sees the analyzer's reasoning chain.
+# They only see: the claim + the source material.
+# This prevents agreement bias and enables true independent verification.
+#
+# Usage:
+#   amplifier run "execute recipes/verification/claim-verification.yaml with finding=... source_file=..."
+#
+# Input: A single finding to verify + the source file
+# Output: Verification result (verified | rejected | disputed) with evidence
+
+context:
+  finding: ""                      # Required: The finding to verify (JSON)
+  source_file: ""                  # Required: Path to source file
+  verification_mode: "standard"    # Optional: standard | strict | lenient
+
+steps:
+  # Step 1: Load the source material fresh (verifier gets clean context)
+  - id: "load-source"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the source file completely: {{source_file}}
+      
+      Return the full file content with line numbers.
+      This is for independent verification - I need to see everything.
+    output: "source_content"
+    timeout: 60
+
+  # Step 2: Extract just the claim (strip reasoning)
+  - id: "extract-claim"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Extract ONLY the verifiable claims from this finding.
+      
+      FINDING TO VERIFY:
+      {{finding}}
+      
+      EXTRACT:
+      1. The specific claim being made (what conflict/issue exists)
+      2. The exact location (line numbers)
+      3. The evidence quoted
+      
+      DO NOT INCLUDE:
+      - The analyzer's reasoning about WHY this is an issue
+      - Severity assessments
+      - Suggested fixes
+      - Any justification
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "claim_summary": "One sentence: what specifically is claimed to be wrong",
+        "location": {
+          "file": "filename",
+          "line_start": N,
+          "line_end": M
+        },
+        "quoted_evidence": "The exact text quoted as evidence",
+        "claim_type": "docstring_mismatch | comment_conflict | type_error | etc"
+      }
+      ```
+      
+      Be ruthlessly minimal. The verifier should have NO influence from the original analysis.
+    output: "extracted_claim"
+    timeout: 60
+
+  # Step 3: Independent verification (the core adversarial step)
+  - id: "verify-claim"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      You are a SKEPTICAL VERIFIER. Your job is to determine if this claim is TRUE or FALSE.
+      
+      IMPORTANT: You have NOT seen any analysis reasoning. You only have:
+      1. A claim about what's wrong
+      2. The actual source code
+      
+      Your default stance is SKEPTICAL. Assume the claim might be wrong until proven otherwise.
+      
+      THE CLAIM:
+      {{extracted_claim}}
+      
+      THE SOURCE CODE:
+      {{source_content}}
+      
+      VERIFICATION PROCESS:
+      
+      1. **LOCATE** the exact lines mentioned in the claim
+         - Do those lines exist?
+         - Does the quoted evidence match what's actually there?
+      
+      2. **ANALYZE** the claim independently
+         - Read the code/docs yourself
+         - Form YOUR OWN opinion about what the code does
+         - Compare to what the claim says
+      
+      3. **CHALLENGE** the claim
+         - What are alternative interpretations?
+         - Could the analyzer have misunderstood?
+         - Is there context that makes this NOT a conflict?
+         - Could this be intentional behavior?
+      
+      4. **VERDICT**
+         - VERIFIED: The claim is accurate. There IS a conflict/issue.
+         - REJECTED: The claim is wrong. No real issue exists.
+         - DISPUTED: Unclear. Could go either way. Needs human review.
+      
+      VERIFICATION MODE: {{verification_mode}}
+      - standard: Verify with normal scrutiny
+      - strict: Require strong evidence to verify (skeptical)
+      - lenient: Accept claims with reasonable evidence
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "verdict": "verified | rejected | disputed",
+        "confidence": "high | medium | low",
+        "evidence_check": {
+          "lines_exist": true/false,
+          "quote_matches": true/false,
+          "quote_accuracy": "exact | close | wrong"
+        },
+        "independent_analysis": "What I found when I looked at the code myself",
+        "challenges_considered": [
+          "Alternative interpretation 1",
+          "Alternative interpretation 2"
+        ],
+        "verdict_reasoning": "Why I reached this verdict (be specific)",
+        "recommendation": "If DISPUTED: what additional info would resolve this"
+      }
+      ```
+      
+      BE HONEST. It's better to REJECT a valid finding than to VERIFY a hallucination.
+      False positives waste human time. False negatives can be caught in later passes.
+    output: "verification_result"
+    timeout: 180
+
+  # Step 4: Format final verification output
+  - id: "format-result"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Format the verification result for downstream processing.
+      
+      ORIGINAL FINDING:
+      {{finding}}
+      
+      VERIFICATION RESULT:
+      {{verification_result}}
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "finding_id": "[extract from original finding]",
+        "verification": {
+          "status": "verified | rejected | disputed",
+          "confidence": "high | medium | low",
+          "verifier_notes": "Brief summary of verification",
+          "evidence_quality": "strong | adequate | weak | missing"
+        },
+        "updated_finding": {
+          "[if VERIFIED: return original finding with verification_status='verified']",
+          "[if REJECTED: return null]",
+          "[if DISPUTED: return original finding with verification_status='disputed' and add verifier_notes]"
+        },
+        "feedback_for_retry": {
+          "[if REJECTED: explain what was wrong for potential retry]",
+          "[if DISPUTED: explain the ambiguity]",
+          "[if VERIFIED: null]"
+        }
+      }
+      ```
+      
+      IMPORTANT:
+      - If REJECTED, provide clear feedback for why (this feeds into retry logic)
+      - If DISPUTED, explain what additional context would help
+      - If VERIFIED, the finding can proceed to action/decision routing
+    output: "final_verification"
+    timeout: 60

@@ -1,0 +1,307 @@
+name: "incremental-analysis"
+description: "Analyze only changed files from git diff - optimized for CI/CD and quick development checks"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["workflow", "ci-cd", "incremental", "git", "delta-analysis"]
+
+# This workflow analyzes only changed files (from git diff) rather than the entire repository.
+# Useful for CI/CD integration or quick checks during development.
+#
+# Usage:
+#   amplifier run "execute recipes/workflows/incremental-analysis.yaml with repo_path=/path/to/repo"
+#   amplifier run "execute recipes/workflows/incremental-analysis.yaml with repo_path=. base_ref=main"
+#   amplifier run "execute recipes/workflows/incremental-analysis.yaml with repo_path=. base_ref=origin/main include_staged=true"
+#
+# Output:
+#   - List of changed files analyzed
+#   - Findings categorized as new/fixed/unchanged
+#   - Delta summary with health change indicator
+#   - CI result with pass/fail and blocking issues
+
+context:
+  repo_path: "."                    # Repository path to analyze
+  base_ref: "HEAD~1"                # Git ref to compare against (commit, branch, tag)
+  include_staged: "true"            # Include staged but uncommitted changes
+  analysis_depth: "quick"           # "quick" (fast) or "standard" (thorough)
+
+recursion:
+  max_depth: 3
+  max_total_steps: 100
+
+steps:
+  # Step 1: Get list of changed files from git diff
+  - id: "get-changed-files"
+    type: "bash"
+    command: |
+      cd {{repo_path}} && \
+      if [ "{{include_staged}}" = "true" ]; then
+        # Get both committed changes and staged changes
+        (git diff --name-only {{base_ref}} 2>/dev/null; git diff --name-only --cached 2>/dev/null) | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))'
+      else
+        # Only committed changes since base_ref
+        git diff --name-only {{base_ref}} 2>/dev/null | jq -R -s -c 'split("\n") | map(select(length > 0))'
+      fi
+    output: "raw_changed_files"
+    parse_json: true
+
+  # Step 2: Filter to analyzable files (code, docs) and get metadata
+  - id: "filter-analyzable-files"
+    type: "bash"
+    command: |
+      cd {{repo_path}} && \
+      echo '{{raw_changed_files}}' | jq -c '[.[] | select(
+        test("\\.(py|js|ts|jsx|tsx|java|go|rs|rb|php|cs|cpp|c|h|hpp)$") or
+        test("\\.(md|rst|txt)$") or
+        test("\\.(yaml|yml|json|toml)$")
+      ) | select(
+        test("^(node_modules|vendor|dist|build|__pycache__|.git)/") | not
+      )]'
+    output: "analyzable_files"
+    parse_json: true
+
+  # Step 3: Classify changed files by type
+  - id: "classify-changed-files"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Classify the changed files for targeted analysis.
+      
+      CHANGED FILES:
+      {{analyzable_files}}
+      
+      BASE REF: {{base_ref}}
+      ANALYSIS DEPTH: {{analysis_depth}}
+      
+      TASK:
+      Classify each changed file into categories and determine analysis priority.
+      
+      CLASSIFICATION RULES:
+      - code_files: .py, .js, .ts, .jsx, .tsx, .java, .go, .rs, .rb, .php, .cs, .cpp, .c, .h
+      - doc_files: .md, .rst, .txt (documentation)
+      - config_files: .yaml, .yml, .json, .toml
+      - test_files: Files with "test" in path or name (*_test.*, test_*.*, tests/*, __tests__/*)
+      
+      For "quick" analysis_depth: Focus on high-impact code files only
+      For "standard" analysis_depth: Include all analyzable files
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "total_changed": N,
+        "classified_files": {
+          "code_files": ["list of code file paths"],
+          "doc_files": ["list of doc file paths"],
+          "config_files": ["list of config file paths"],
+          "test_files": ["list of test file paths"]
+        },
+        "files_for_tier1": ["prioritized list of files for Tier 1 analysis"],
+        "doc_code_pairs": [
+          {"doc": "path/to/README.md", "code": "path/to/module.py"}
+        ],
+        "skipped_files": ["files skipped with reasons"],
+        "analysis_scope": "quick or standard"
+      }
+      ```
+    output: "file_classification"
+    timeout: 120
+
+  # Step 4: Run Tier 1 analysis on changed code files
+  - id: "analyze-changed-files"
+    foreach: "{{file_classification.files_for_tier1}}"
+    as: "current_file"
+    type: "recipe"
+    recipe: "../tier1/single-file-orchestrator.yaml"
+    context:
+      file_path: "{{repo_path}}/{{current_file}}"
+      skip_verification: "true"
+    collect: "tier1_results"
+    on_error: "continue"
+
+  # Step 5: Check for Tier 2 analysis needs (doc-code pairs)
+  - id: "run-tier2-if-needed"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    condition: "{{file_classification.doc_code_pairs}} != '[]'"
+    prompt: |
+      Analyze doc-code pairs for consistency issues.
+      
+      DOC-CODE PAIRS FROM CHANGED FILES:
+      {{file_classification.doc_code_pairs}}
+      
+      REPOSITORY: {{repo_path}}
+      
+      TASK:
+      For each doc-code pair where either the doc OR the code file changed:
+      1. Check if documentation accurately reflects the code
+      2. Identify outdated references, missing updates, or contradictions
+      3. Flag any documentation that may need updating due to code changes
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "pairs_analyzed": N,
+        "doc_code_findings": [
+          {
+            "finding_id": "doc-code-001",
+            "doc_file": "path/to/doc.md",
+            "code_file": "path/to/code.py",
+            "category": "doc_code_inconsistency",
+            "severity": "medium",
+            "issue": "Description of the inconsistency",
+            "suggestion": "How to resolve",
+            "confidence": "high|medium|low"
+          }
+        ],
+        "summary": "Brief summary of doc-code analysis"
+      }
+      ```
+      
+      If no significant issues found, return empty doc_code_findings array.
+    output: "tier2_results"
+    timeout: 180
+
+  # Step 6: Quick compression and synthesis of findings
+  - id: "synthesize-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Synthesize all findings from the incremental analysis.
+      
+      ANALYSIS CONTEXT:
+      - Repository: {{repo_path}}
+      - Base Reference: {{base_ref}}
+      - Analysis Depth: {{analysis_depth}}
+      - Changed Files: {{analyzable_files}}
+      
+      FILE CLASSIFICATION:
+      {{file_classification}}
+      
+      TIER 1 ANALYSIS RESULTS:
+      {{tier1_results}}
+      
+      TIER 2 ANALYSIS RESULTS:
+      {{tier2_results}}
+      
+      TASK:
+      1. Merge all findings from Tier 1 and Tier 2 analyses
+      2. Deduplicate findings (same issue in multiple analyses)
+      3. Categorize findings by whether they are likely:
+         - NEW: Issues introduced in the changes
+         - FIXED: Issues that appear resolved (if comparing against baseline)
+         - UNCHANGED: Pre-existing issues visible in changed files
+      4. Identify blocking issues (high severity, high confidence)
+      5. Calculate overall health delta
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "base_ref": "{{base_ref}}",
+        "changed_files": {{analyzable_files}},
+        "analyzed_files": ["list of files that were actually analyzed"],
+        "findings": {
+          "new_issues": [
+            {
+              "finding_id": "...",
+              "file": "...",
+              "category": "...",
+              "severity": "high|medium|low",
+              "confidence": "high|medium|low",
+              "summary": "...",
+              "details": "...",
+              "suggestion": "..."
+            }
+          ],
+          "fixed_issues": [],
+          "unchanged_issues": []
+        },
+        "delta_summary": {
+          "health_change": "+5 | -3 | no change",
+          "new_findings": N,
+          "resolved_findings": N,
+          "total_findings_in_diff": N
+        },
+        "ci_result": {
+          "pass": true,
+          "blocking_issues": [],
+          "warnings": []
+        }
+      }
+      ```
+      
+      CI PASS/FAIL RULES:
+      - FAIL if any finding has severity=high AND confidence=high
+      - FAIL if more than 3 findings have severity=high (any confidence)
+      - FAIL if more than 10 findings have severity=medium AND confidence=high
+      - WARN (but pass) for medium severity or low confidence high severity
+      - PASS if no blocking conditions met
+    output: "synthesis_result"
+    timeout: 180
+
+  # Step 7: Generate incremental report
+  - id: "generate-report"
+    agent: "foundation:zen-architect"
+    mode: "ARCHITECT"
+    prompt: |
+      Generate a concise incremental analysis report suitable for CI/CD output.
+      
+      SYNTHESIS RESULT:
+      {{synthesis_result}}
+      
+      TASK:
+      Create a report with two formats:
+      1. A human-readable markdown summary
+      2. The structured JSON output schema
+      
+      MARKDOWN FORMAT:
+      ```markdown
+      # Incremental Analysis Report
+      
+      **Base Reference:** {{base_ref}}
+      **Files Changed:** N
+      **Files Analyzed:** N
+      **Analysis Depth:** {{analysis_depth}}
+      
+      ## CI Status: ✅ PASS | ❌ FAIL
+      
+      ### Summary
+      - New Issues: N
+      - Resolved Issues: N  
+      - Health Change: [+/-/no change]
+      
+      ### Blocking Issues (if any)
+      [List of blocking issues with file, line, summary]
+      
+      ### Warnings (if any)
+      [List of warnings]
+      
+      ### Files Analyzed
+      [List of files with brief status]
+      ```
+      
+      FINAL OUTPUT (JSON):
+      Return the complete output schema as specified:
+      ```json
+      {
+        "base_ref": "...",
+        "changed_files": [...],
+        "analyzed_files": [...],
+        "findings": {
+          "new_issues": [...],
+          "fixed_issues": [...],
+          "unchanged_issues": [...]
+        },
+        "delta_summary": {
+          "health_change": "+5 | -3 | no change",
+          "new_findings": N,
+          "resolved_findings": N
+        },
+        "ci_result": {
+          "pass": true/false,
+          "blocking_issues": [...],
+          "warnings": [...]
+        },
+        "markdown_report": "The full markdown report as a string"
+      }
+      ```
+    output: "incremental_report"
+    timeout: 120

@@ -1,0 +1,123 @@
+name: "naming-semantic-mismatch"
+description: "Detect function/variable names that don't match their actual behavior"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["tier1", "analysis", "naming", "semantics"]
+
+# This recipe finds misleading names:
+# - Functions named "get_X" that modify state
+# - Boolean functions that don't return bool
+# - Variables named one thing but holding another
+# - Verb mismatches (create vs get vs set vs delete)
+#
+# Usage:
+#   amplifier run "execute recipes/tier1/naming-semantic-mismatch.yaml with file_path=path/to/file.py"
+
+context:
+  file_path: ""
+
+steps:
+  - id: "read-file"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the Python file at: {{file_path}}
+      Return the complete content with line numbers.
+    output: "file_content"
+    timeout: 60
+
+  - id: "analyze-naming"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Analyze this Python file for names that don't match behavior.
+      
+      FILE:
+      {{file_content}}
+      
+      DETECT THESE PATTERNS:
+      
+      1. **VERB MISMATCHES**
+         - `get_X()` that creates or modifies (should be create/set)
+         - `set_X()` that returns value without setting
+         - `create_X()` that returns existing item
+         - `delete_X()` that doesn't actually delete
+         - `is_X()` or `has_X()` that doesn't return boolean
+         - `validate_X()` that doesn't raise/return validation result
+      
+      2. **NOUN MISMATCHES**
+         - Variable `user` that holds a user_id (not a User object)
+         - Variable `items` that holds a single item
+         - Variable `count` that holds a list
+         - Parameter `config` that's actually a path string
+      
+      3. **BOOLEAN NAME VIOLATIONS**
+         - `is_valid` that holds a string
+         - `has_items` that holds count (int)
+         - `can_proceed` that holds error message
+      
+      4. **COLLECTION NAME VIOLATIONS**
+         - `users` (plural) holding single user
+         - `item` (singular) holding list
+         - `user_dict` that's actually a list
+      
+      5. **MISLEADING PREFIXES**
+         - `_private_method` that's used externally in same file
+         - `__dunder__` used for non-protocol methods
+         - `CONSTANT` that gets modified
+      
+      SEMANTIC ANALYSIS:
+      - Read the ACTUAL behavior, not just the name
+      - Consider type hints as ground truth when present
+      - Consider return statements to understand actual behavior
+      - Consider assignments to understand actual content
+      
+      BE CONSERVATIVE:
+      - Don't flag style preferences (e.g., `data` is vague but not wrong)
+      - Don't flag when context makes meaning clear
+      - Focus on MISLEADING names, not imperfect names
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "findings": [
+          {
+            "type": "verb_mismatch | noun_mismatch | boolean_violation | collection_violation | misleading_prefix",
+            "location": {"line_start": N, "line_end": M},
+            "name": "The misleading name",
+            "expected_behavior": "What the name suggests",
+            "actual_behavior": "What the code actually does",
+            "evidence": "Code snippet showing the mismatch",
+            "severity": "medium | low",
+            "confidence": "high | medium | low",
+            "suggested_name": "Better name if obvious"
+          }
+        ],
+        "summary": {
+          "total_findings": N,
+          "by_type": {...}
+        }
+      }
+      ```
+    output: "raw_findings"
+    timeout: 300
+
+  - id: "format-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Convert findings to standard schema format.
+      
+      RAW FINDINGS:
+      {{raw_findings}}
+      
+      SOURCE FILE: {{file_path}}
+      
+      Map to standard schema:
+      - category: "naming_mismatch"
+      - severity: medium for verb mismatches, low for noun/style issues
+      - actionable: true (renaming is usually safe)
+      - fix_complexity: simple (rename refactoring)
+      
+      OUTPUT: Standard finding schema JSON
+    output: "formatted_findings"
+    timeout: 120

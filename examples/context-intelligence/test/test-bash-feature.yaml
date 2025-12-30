@@ -1,0 +1,31 @@
+name: "test-bash-feature"
+description: "Test bash step type (added in commit 02368ad)"
+version: "1.0.0"
+
+context:
+  test_message: "Hello from bash step!"
+
+steps:
+  - id: "bash-echo"
+    type: "bash"
+    command: "echo '{{test_message}}' && date"
+    output: "bash_output"
+
+  - id: "bash-json"
+    type: "bash"
+    command: |
+      echo '{"status": "success", "feature": "bash-steps", "working": true}'
+    output: "json_result"
+    parse_json: true
+
+  - id: "verify"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Verify these bash step results:
+      
+      Echo output: {{bash_output}}
+      JSON result: {{json_result}}
+      
+      Respond with: "BASH FEATURE WORKING" if both outputs look valid.
+    output: "verification"

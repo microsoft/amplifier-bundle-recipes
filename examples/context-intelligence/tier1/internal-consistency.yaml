@@ -1,0 +1,110 @@
+name: "internal-consistency"
+description: "Detect logical contradictions and inconsistencies within a single file"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["tier1", "analysis", "consistency", "logic"]
+
+# This recipe analyzes a single file for internal contradictions:
+# - Conflicting conditions in if/elif chains
+# - Contradictory assertions or invariants
+# - Inconsistent state assumptions
+# - Self-contradicting documentation
+#
+# Usage:
+#   amplifier run "execute recipes/tier1/internal-consistency.yaml with file_path=path/to/file.py"
+
+context:
+  file_path: ""
+
+steps:
+  - id: "read-file"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the file at: {{file_path}}
+      Return the complete content with line numbers.
+    output: "file_content"
+    timeout: 60
+
+  - id: "analyze-consistency"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Analyze this file for internal logical contradictions and inconsistencies.
+      
+      FILE:
+      {{file_content}}
+      
+      DETECT THESE PATTERNS:
+      
+      1. **CONTRADICTORY CONDITIONS**
+         - if/elif branches that can never both be false
+         - Conditions that contradict earlier assertions
+         - Impossible combinations (e.g., `if x > 5` then later `if x < 3` in same branch)
+      
+      2. **CONFLICTING INVARIANTS**
+         - Comments claiming an invariant that code violates
+         - Assertions that contradict other assertions
+         - Type hints that conflict with runtime checks
+      
+      3. **INCONSISTENT STATE ASSUMPTIONS**
+         - Code assumes variable is None, then uses it without check
+         - Code assumes list is non-empty, then handles empty case
+         - Conflicting assumptions about object state
+      
+      4. **SELF-CONTRADICTING DOCUMENTATION**
+         - Docstring says "never returns None" but code can return None
+         - Different parts of same docstring contradict each other
+         - Example code in docstring contradicts function signature
+      
+      5. **REDUNDANT/IMPOSSIBLE CHECKS**
+         - Checking for condition that was already checked
+         - Checking for condition that is logically impossible given prior code
+         - Double-checking with different results
+      
+      BE CONSERVATIVE:
+      - Focus on DEFINITE contradictions, not style issues
+      - External state changes can make "contradictions" valid
+      - Mark confidence appropriately
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "findings": [
+          {
+            "type": "contradictory_condition | conflicting_invariant | inconsistent_state | contradicting_doc | redundant_check",
+            "location": {"line_start": N, "line_end": M},
+            "statement_a": "First claim/condition",
+            "statement_b": "Contradicting claim/condition",
+            "evidence": "Code showing both statements",
+            "severity": "high | medium | low",
+            "confidence": "high | medium | low",
+            "explanation": "Why these contradict"
+          }
+        ],
+        "summary": {
+          "total_findings": N,
+          "by_type": {...}
+        }
+      }
+      ```
+    output: "raw_findings"
+    timeout: 300
+
+  - id: "format-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Convert findings to standard schema format.
+      
+      RAW FINDINGS:
+      {{raw_findings}}
+      
+      SOURCE FILE: {{file_path}}
+      
+      Map to standard schema:
+      - category: "internal_inconsistency"
+      - severity: high for definite bugs, medium for likely issues, low for style
+      
+      OUTPUT: Standard finding schema JSON
+    output: "formatted_findings"
+    timeout: 120

@@ -1,0 +1,527 @@
+name: "cross-doc-contradiction"
+description: "Detect contradictions between two documentation files - where one doc says X and another says Y about the same thing"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["tier2", "analysis", "documentation", "cross-file", "consistency"]
+
+# This is a Tier 2 recipe that compares two documentation files for contradictions:
+# - Direct contradictions: "use X" vs "don't use X"
+# - Version mismatches: Different version numbers cited
+# - Default value conflicts: Different defaults stated
+# - Process conflicts: Different steps for same procedure
+# - Terminology inconsistency: Same concept, different names
+# - Outdated references: One doc references deprecated info
+#
+# Critical for maintaining documentation consistency across a codebase.
+#
+# Usage:
+#   amplifier run "execute recipes/tier2/cross-doc-contradiction.yaml with doc_a=docs/README.md doc_b=docs/INSTALL.md"
+#   amplifier run "execute recipes/tier2/cross-doc-contradiction.yaml with doc_a=docs/api.md doc_b=docs/tutorial.md topic_focus=authentication"
+
+context:
+  doc_a: ""                           # Required: path to first documentation file
+  doc_b: ""                           # Required: path to second documentation file
+  topic_focus: ""                     # Optional: topic filter (e.g., "installation", "api", "configuration")
+
+steps:
+  # Step 1: Load both documentation files
+  - id: "load-doc-a"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the documentation file: {{doc_a}}
+      Return the complete content with line numbers.
+      Include any metadata about the file (last modified date if available, file type).
+    output: "doc_a_content"
+    timeout: 60
+
+  - id: "load-doc-b"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the documentation file: {{doc_b}}
+      Return the complete content with line numbers.
+      Include any metadata about the file (last modified date if available, file type).
+    output: "doc_b_content"
+    timeout: 60
+
+  # Step 2: Extract claims/statements from doc A
+  - id: "extract-claims-a"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Extract all factual claims and statements from this documentation.
+      
+      DOCUMENT A: {{doc_a}}
+      CONTENT:
+      {{doc_a_content}}
+      
+      TOPIC FOCUS: {{topic_focus}}
+      (If topic_focus is provided, prioritize claims related to that topic but still extract all claims)
+      
+      EXTRACT THESE CLAIM TYPES:
+      
+      1. **DIRECTIVE CLAIMS** (instructions/recommendations)
+         - "Use X for Y"
+         - "Don't do X"
+         - "Always/Never do X"
+         - "Prefer X over Y"
+         - Command-style instructions
+      
+      2. **VERSION/NUMBER CLAIMS**
+         - Version requirements ("requires Python 3.8+")
+         - Numeric values ("timeout is 30 seconds")
+         - Size/limit specifications
+         - Date references
+      
+      3. **DEFAULT VALUE CLAIMS**
+         - "The default is X"
+         - "By default, X happens"
+         - "If not specified, X"
+         - Implicit defaults in examples
+      
+      4. **PROCESS/PROCEDURE CLAIMS**
+         - Step-by-step instructions
+         - Order of operations
+         - Prerequisites and dependencies
+         - Workflow descriptions
+      
+      5. **TERMINOLOGY DEFINITIONS**
+         - "X is called Y"
+         - "X refers to Y"
+         - Glossary-style definitions
+         - Naming conventions stated
+      
+      6. **BEHAVIORAL CLAIMS**
+         - "X does Y"
+         - "When X happens, Y occurs"
+         - Feature descriptions
+         - Capability statements
+      
+      7. **CONFIGURATION CLAIMS**
+         - Config file locations
+         - Environment variables
+         - Required settings
+         - Optional parameters
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "document": "{{doc_a}}",
+        "claims": [
+          {
+            "id": "claim-a-001",
+            "type": "directive | version | default | process | terminology | behavioral | configuration",
+            "location": {"line_start": N, "line_end": M},
+            "claim_text": "Exact text from document",
+            "normalized_claim": "Standardized version of the claim for comparison",
+            "topic": "What subject/concept this claim is about",
+            "specificity": "high | medium | low",
+            "context": "Surrounding context that might affect interpretation"
+          }
+        ],
+        "topics_covered": ["topic1", "topic2"],
+        "summary": {
+          "total_claims": N,
+          "by_type": {...}
+        }
+      }
+      ```
+    output: "claims_a"
+    timeout: 180
+
+  # Step 3: Extract claims/statements from doc B
+  - id: "extract-claims-b"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Extract all factual claims and statements from this documentation.
+      
+      DOCUMENT B: {{doc_b}}
+      CONTENT:
+      {{doc_b_content}}
+      
+      TOPIC FOCUS: {{topic_focus}}
+      (If topic_focus is provided, prioritize claims related to that topic but still extract all claims)
+      
+      EXTRACT THESE CLAIM TYPES:
+      
+      1. **DIRECTIVE CLAIMS** (instructions/recommendations)
+         - "Use X for Y"
+         - "Don't do X"
+         - "Always/Never do X"
+         - "Prefer X over Y"
+         - Command-style instructions
+      
+      2. **VERSION/NUMBER CLAIMS**
+         - Version requirements ("requires Python 3.8+")
+         - Numeric values ("timeout is 30 seconds")
+         - Size/limit specifications
+         - Date references
+      
+      3. **DEFAULT VALUE CLAIMS**
+         - "The default is X"
+         - "By default, X happens"
+         - "If not specified, X"
+         - Implicit defaults in examples
+      
+      4. **PROCESS/PROCEDURE CLAIMS**
+         - Step-by-step instructions
+         - Order of operations
+         - Prerequisites and dependencies
+         - Workflow descriptions
+      
+      5. **TERMINOLOGY DEFINITIONS**
+         - "X is called Y"
+         - "X refers to Y"
+         - Glossary-style definitions
+         - Naming conventions stated
+      
+      6. **BEHAVIORAL CLAIMS**
+         - "X does Y"
+         - "When X happens, Y occurs"
+         - Feature descriptions
+         - Capability statements
+      
+      7. **CONFIGURATION CLAIMS**
+         - Config file locations
+         - Environment variables
+         - Required settings
+         - Optional parameters
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "document": "{{doc_b}}",
+        "claims": [
+          {
+            "id": "claim-b-001",
+            "type": "directive | version | default | process | terminology | behavioral | configuration",
+            "location": {"line_start": N, "line_end": M},
+            "claim_text": "Exact text from document",
+            "normalized_claim": "Standardized version of the claim for comparison",
+            "topic": "What subject/concept this claim is about",
+            "specificity": "high | medium | low",
+            "context": "Surrounding context that might affect interpretation"
+          }
+        ],
+        "topics_covered": ["topic1", "topic2"],
+        "summary": {
+          "total_claims": N,
+          "by_type": {...}
+        }
+      }
+      ```
+    output: "claims_b"
+    timeout: 180
+
+  # Step 4: Find overlapping topics between docs
+  - id: "find-overlapping-topics"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Identify overlapping topics between the two documents where contradictions could exist.
+      
+      DOCUMENT A CLAIMS:
+      {{claims_a}}
+      
+      DOCUMENT B CLAIMS:
+      {{claims_b}}
+      
+      TOPIC FOCUS: {{topic_focus}}
+      
+      ANALYSIS TASKS:
+      
+      1. **TOPIC MATCHING**
+         - Find topics mentioned in both documents
+         - Consider synonyms and related terms (e.g., "setup" = "installation")
+         - Group claims by shared topics
+      
+      2. **CLAIM PAIRING**
+         - For each overlapping topic, pair claims that address the same thing
+         - Note claims in one doc with no counterpart in the other
+         - Flag claims that partially overlap (address related but not identical things)
+      
+      3. **CONTEXT ANALYSIS**
+         - Note if documents serve different purposes (tutorial vs reference)
+         - Identify audience differences that might explain variations
+         - Consider if one doc might be a simplified version of another
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "overlapping_topics": [
+          {
+            "topic": "topic name",
+            "doc_a_claims": ["claim-a-001", "claim-a-002"],
+            "doc_b_claims": ["claim-b-001", "claim-b-003"],
+            "claim_pairs": [
+              {
+                "claim_a_id": "claim-a-001",
+                "claim_b_id": "claim-b-001",
+                "overlap_type": "exact | partial | related",
+                "comparison_note": "What specifically to compare"
+              }
+            ]
+          }
+        ],
+        "unique_to_doc_a": ["topic1", "topic2"],
+        "unique_to_doc_b": ["topic3", "topic4"],
+        "document_context": {
+          "doc_a_purpose": "Inferred purpose of doc A",
+          "doc_b_purpose": "Inferred purpose of doc B",
+          "audience_difference": "Any noted audience differences",
+          "detail_level_difference": "Which is more detailed and why"
+        },
+        "total_overlapping_topics": N,
+        "total_claim_pairs_to_compare": M
+      }
+      ```
+    output: "overlapping_topics"
+    timeout: 180
+
+  # Step 5: Compare overlapping claims for contradictions
+  - id: "detect-contradictions"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      Compare paired claims from both documents to detect contradictions.
+      
+      DOCUMENT A: {{doc_a}}
+      DOCUMENT A CONTENT:
+      {{doc_a_content}}
+      
+      DOCUMENT B: {{doc_b}}
+      DOCUMENT B CONTENT:
+      {{doc_b_content}}
+      
+      DOCUMENT A CLAIMS:
+      {{claims_a}}
+      
+      DOCUMENT B CLAIMS:
+      {{claims_b}}
+      
+      OVERLAPPING TOPICS AND CLAIM PAIRS:
+      {{overlapping_topics}}
+      
+      CONTRADICTION TYPES TO DETECT:
+      
+      1. **DIRECT CONTRADICTION**
+         - Doc A says "use X", Doc B says "don't use X"
+         - Mutually exclusive statements
+         - Opposite recommendations
+         - Severity: HIGH
+         - Example: "Enable caching" vs "Disable caching for best results"
+      
+      2. **VERSION MISMATCH**
+         - Different version numbers for the same dependency
+         - Incompatible version ranges
+         - Different release dates cited
+         - Severity: HIGH (can break installations)
+         - Example: "Requires Node 16+" vs "Requires Node 14+"
+      
+      3. **DEFAULT VALUE CONFLICT**
+         - Different default values stated for same setting
+         - Different "if not specified" behaviors
+         - Severity: MEDIUM
+         - Example: "Default timeout is 30s" vs "Default timeout is 60s"
+      
+      4. **PROCESS CONFLICT**
+         - Different steps for the same procedure
+         - Different order of steps
+         - Missing steps in one version
+         - Severity: MEDIUM to HIGH
+         - Example: "Run npm install first" vs "Run npm ci first"
+      
+      5. **TERMINOLOGY INCONSISTENCY**
+         - Same concept called different things
+         - Different definitions for same term
+         - Conflicting naming conventions
+         - Severity: LOW to MEDIUM
+         - Example: "workspace" vs "project" for same concept
+      
+      6. **OUTDATED REFERENCE**
+         - One doc references deprecated/old information
+         - Stale links or examples
+         - Old API patterns
+         - Severity: MEDIUM
+         - Example: One doc uses old API endpoint, other uses new
+      
+      FOR EACH CONTRADICTION:
+      - Determine the contradiction type
+      - Assess severity based on impact
+      - Assess confidence (could context explain the difference?)
+      - Suggest which document is likely correct
+      - Provide resolution suggestion
+      
+      CONFIDENCE LEVELS:
+      - HIGH: Clear, unambiguous contradiction with no contextual explanation
+      - MEDIUM: Apparent contradiction that context might explain
+      - LOW: Possible contradiction, but likely different contexts/audiences
+      
+      IMPORTANT CONSIDERATIONS:
+      - Some differences are INTENTIONAL (different contexts, audiences, use cases)
+      - A simplified explanation is NOT a contradiction
+      - Different examples for same concept are NOT contradictions
+      - One doc being more detailed is NOT a contradiction
+      - Mark confidence as MEDIUM or LOW if context might explain difference
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "contradictions": [
+          {
+            "id": "contradiction-001",
+            "type": "direct | version | default | process | terminology | outdated",
+            "topic": "What the contradiction is about",
+            "doc_a": {
+              "path": "{{doc_a}}",
+              "claim_id": "claim-a-001",
+              "line": N,
+              "says": "Exact quote from doc A"
+            },
+            "doc_b": {
+              "path": "{{doc_b}}",
+              "claim_id": "claim-b-001",
+              "line": N,
+              "says": "Exact quote from doc B"
+            },
+            "severity": "high | medium | low",
+            "confidence": "high | medium | low",
+            "analysis": "Why this is considered a contradiction",
+            "context_consideration": "Any context that might explain the difference",
+            "likely_correct": "doc_a | doc_b | unclear",
+            "likely_correct_reason": "Why one is likely correct (recency, specificity, etc.)",
+            "resolution_suggestion": "How to resolve this contradiction"
+          }
+        ],
+        "near_contradictions": [
+          {
+            "topic": "topic",
+            "doc_a_says": "...",
+            "doc_b_says": "...",
+            "reason_not_flagged": "Why this wasn't flagged as a full contradiction"
+          }
+        ],
+        "consistent_claims": {
+          "count": N,
+          "examples": ["Topics where both docs agree"]
+        }
+      }
+      ```
+    output: "contradiction_results"
+    timeout: 300
+
+  # Step 6: Format findings with resolution suggestions
+  - id: "format-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Format the contradiction analysis into the final output with standard finding schema.
+      
+      CONTRADICTION RESULTS:
+      {{contradiction_results}}
+      
+      OVERLAPPING TOPICS:
+      {{overlapping_topics}}
+      
+      DOCUMENT A: {{doc_a}}
+      DOCUMENT B: {{doc_b}}
+      
+      Generate the final cross-document contradiction report.
+      
+      FINDING SCHEMA MAPPING:
+      - category: "doc_contradiction"
+      - tier: 2
+      - related_files: [doc_a, doc_b]
+      - severity mapping:
+        * HIGH: direct contradictions, version mismatches affecting functionality
+        * MEDIUM: default value conflicts, process conflicts, outdated references
+        * LOW: terminology inconsistencies
+      
+      RESOLUTION PRIORITY:
+      1. High severity + high confidence = Fix immediately
+      2. High severity + medium confidence = Investigate and fix
+      3. Medium severity + high confidence = Fix soon
+      4. Others = Add to backlog
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "contradictions": [
+          {
+            "type": "direct | version | default | process | terminology | outdated",
+            "topic": "What the contradiction is about",
+            "doc_a": {"path": "...", "line": N, "says": "..."},
+            "doc_b": {"path": "...", "line": N, "says": "..."},
+            "severity": "high | medium | low",
+            "confidence": "high | medium | low",
+            "resolution_suggestion": "Which doc to update and how"
+          }
+        ],
+        "overlapping_topics": ["topic1", "topic2"],
+        "summary": {
+          "total_contradictions": N,
+          "by_type": {
+            "direct": N,
+            "version": N,
+            "default": N,
+            "process": N,
+            "terminology": N,
+            "outdated": N
+          },
+          "by_severity": {
+            "high": N,
+            "medium": N,
+            "low": N
+          },
+          "by_confidence": {
+            "high": N,
+            "medium": N,
+            "low": N
+          },
+          "topics_with_conflicts": N,
+          "topics_consistent": N
+        },
+        "findings": [
+          {
+            "id": "finding-001",
+            "category": "doc_contradiction",
+            "tier": 2,
+            "severity": "high | medium | low",
+            "title": "Documentation contradiction: [topic]",
+            "description": "Detailed description of the contradiction",
+            "file": "{{doc_a}}",
+            "location": {"line_start": N, "line_end": M},
+            "related_files": ["{{doc_a}}", "{{doc_b}}"],
+            "evidence": {
+              "doc_a_quote": "What doc A says",
+              "doc_b_quote": "What doc B says"
+            },
+            "recommendation": "How to resolve",
+            "effort_estimate": "small | medium | large",
+            "tags": ["documentation", "consistency", "contradiction-type"]
+          }
+        ],
+        "resolution_plan": [
+          {
+            "priority": 1,
+            "action": "Update [doc] to say [X]",
+            "rationale": "Why this resolution",
+            "affected_files": ["file1", "file2"]
+          }
+        ],
+        "consistency_report": {
+          "topics_analyzed": N,
+          "topics_with_contradictions": N,
+          "topics_consistent": N,
+          "consistency_score": "X%",
+          "most_problematic_topic": "Topic with most contradictions"
+        },
+        "caveats": [
+          "List any contradictions that might be intentional",
+          "Note context-dependent differences",
+          "Flag areas needing human judgment"
+        ]
+      }
+      ```
+    output: "formatted_findings"
+    timeout: 180

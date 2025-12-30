@@ -1,0 +1,319 @@
+name: "context-loader"
+description: "Smart file loading with size/token handling - loads files intelligently based on size, truncating or summarizing as needed to fit within token budgets"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["foundation", "loading", "context", "tokens"]
+
+# This is a foundation recipe for intelligently loading file content.
+# It handles large files by applying different loading strategies to fit
+# within token budgets while preserving the most important content.
+#
+# Usage:
+#   amplifier run "execute recipes/foundation/context-loader.yaml with file_path=path/to/file.py"
+#   amplifier run "execute recipes/foundation/context-loader.yaml with file_path=path/to/file.py max_tokens=8000 load_strategy=outline"
+#
+# Load Strategies:
+#   - full: Load entire file (fail if too large)
+#   - head: Load first N lines that fit in token budget
+#   - smart: Load imports + class/function signatures + docstrings, truncate bodies
+#   - outline: Load only structure (class names, function signatures, no bodies)
+#
+# Output:
+#   file_path: Path to the loaded file
+#   content: File content (with optional line numbers)
+#   metadata: Loading statistics and strategy information
+
+context:
+  file_path: ""                     # Required: path to file to load
+  max_tokens: 15000                 # Maximum tokens to use (default: 15000)
+  load_strategy: "smart"            # "full" | "head" | "smart" | "outline" (default: "smart")
+  include_line_numbers: true        # Add line numbers to output (default: true)
+
+steps:
+  # Step 1: Check file exists and get metadata (size, line count)
+  - id: "get-file-metadata"
+    agent: "foundation:explorer"
+    prompt: |
+      Get metadata for the file at: {{file_path}}
+      
+      TASK:
+      1. Check if the file exists
+      2. Get the file size in bytes
+      3. Count the total number of lines
+      4. Determine the file extension/type
+      
+      Use bash commands to gather this information:
+      - `stat` or `wc -c` for file size
+      - `wc -l` for line count
+      - Extract extension from filename
+      
+      OUTPUT FORMAT:
+      Return structured JSON:
+      ```json
+      {
+        "exists": true,
+        "file_path": "{{file_path}}",
+        "size_bytes": 12345,
+        "line_count": 456,
+        "extension": ".py",
+        "file_type": "python",
+        "error": null
+      }
+      ```
+      
+      If file does not exist:
+      ```json
+      {
+        "exists": false,
+        "file_path": "{{file_path}}",
+        "error": "File not found: {{file_path}}"
+      }
+      ```
+    output: "file_metadata"
+    timeout: 30
+
+  # Step 2: Estimate token count and determine loading approach
+  - id: "plan-loading"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Plan the file loading approach based on metadata and constraints.
+      
+      FILE METADATA:
+      {{file_metadata}}
+      
+      CONSTRAINTS:
+      - Maximum tokens: {{max_tokens}}
+      - Requested strategy: {{load_strategy}}
+      - Include line numbers: {{include_line_numbers}}
+      
+      TOKEN ESTIMATION:
+      - Approximately 4 characters per token
+      - Line numbers add ~8 chars per line when enabled
+      - Leave 10% buffer for safety
+      
+      TASK:
+      1. Calculate estimated tokens for full file
+      2. Determine if full file fits within budget
+      3. If strategy is "full" and file too large, set error
+      4. If strategy is "head", calculate how many lines to load
+      5. If strategy is "smart" or "outline", proceed with that approach
+      6. Calculate effective token budget (accounting for line numbers if enabled)
+      
+      STRATEGY LOGIC:
+      - **full**: Must load entire file or fail
+      - **head**: Load first N lines that fit in ~90% of token budget
+      - **smart**: Will load imports, signatures, docstrings (defer to next step)
+      - **outline**: Will load only structure (defer to next step)
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "estimated_full_tokens": 5000,
+        "fits_in_budget": true,
+        "effective_strategy": "smart",
+        "max_lines_for_head": 500,
+        "effective_token_budget": 13500,
+        "line_number_overhead": 1500,
+        "proceed": true,
+        "error": null,
+        "notes": "File is 20KB, estimated 5000 tokens, using smart loading"
+      }
+      ```
+      
+      If cannot proceed (e.g., "full" strategy but file too large):
+      ```json
+      {
+        "proceed": false,
+        "error": "File exceeds token budget (estimated 50000 tokens, max 15000). Use 'head', 'smart', or 'outline' strategy.",
+        "effective_strategy": "full"
+      }
+      ```
+    output: "loading_plan"
+    timeout: 30
+
+  # Step 3: Load content based on strategy
+  - id: "load-content"
+    agent: "foundation:explorer"
+    prompt: |
+      Load file content according to the loading plan.
+      
+      FILE: {{file_path}}
+      
+      METADATA:
+      {{file_metadata}}
+      
+      LOADING PLAN:
+      {{loading_plan}}
+      
+      STRATEGY: Check the effective_strategy from the loading plan
+      
+      LOADING INSTRUCTIONS BY STRATEGY:
+      
+      **If strategy is "full":**
+      - Read the entire file content
+      - Return as-is
+      
+      **If strategy is "head":**
+      - Read only the first N lines (from max_lines_for_head in plan)
+      - Add a marker at the end: "# ... (remaining X lines truncated)"
+      
+      **If strategy is "smart" (for Python files):**
+      - ALWAYS include: 
+        - Module docstring (first string literal)
+        - All import statements
+        - __all__ definition if present
+      - For each class:
+        - Class definition line with docstring
+        - Method signatures (def lines) with their docstrings
+        - Replace method bodies with: "        # ... (N lines truncated)"
+      - For each function:
+        - Function signature (def line) with docstring
+        - Replace body with: "    # ... (N lines truncated)"
+      - Preserve decorators
+      
+      **If strategy is "outline":**
+      - Module docstring only (first line or first triple-quoted string)
+      - Import statements (collapsed to "# imports: module1, module2, ...")
+      - Class names with inheritance: "class ClassName(Parent):"
+      - Method/function signatures only: "    def method_name(self, args):"
+      - No docstrings, no bodies
+      
+      **For non-Python files with "smart" or "outline":**
+      - Fall back to "head" strategy
+      - Note this in the output
+      
+      OUTPUT FORMAT:
+      Return the loaded content:
+      ```
+      LOADED_CONTENT:
+      [file content here, with truncation markers as appropriate]
+      
+      LOADING_STATS:
+      {
+        "lines_loaded": 150,
+        "lines_truncated": 350,
+        "sections_loaded": ["imports", "class_signatures", "function_signatures", "docstrings"],
+        "truncation_points": [45, 78, 120],
+        "fallback_used": false,
+        "fallback_reason": null
+      }
+      ```
+    output: "raw_content"
+    timeout: 120
+
+  # Step 4: Add line numbers if requested
+  - id: "format-output"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Format the loaded content with line numbers if requested and prepare final output.
+      
+      RAW CONTENT:
+      {{raw_content}}
+      
+      FILE METADATA:
+      {{file_metadata}}
+      
+      LOADING PLAN:
+      {{loading_plan}}
+      
+      OPTIONS:
+      - Include line numbers: {{include_line_numbers}}
+      - Original file path: {{file_path}}
+      
+      TASK:
+      1. If include_line_numbers is true:
+         - Add line numbers in format: "   N\t" where N is right-aligned
+         - Line numbers should reflect ORIGINAL file line numbers where known
+         - For truncated sections, preserve line number continuity
+      
+      2. Extract loading stats from raw_content
+      
+      3. Prepare final metadata object
+      
+      OUTPUT FORMAT (JSON):
+      ```json
+      {
+        "file_path": "{{file_path}}",
+        "content": "... file content with optional line numbers ...",
+        "metadata": {
+          "original_size_bytes": 12345,
+          "original_line_count": 500,
+          "loaded_line_count": 150,
+          "estimated_tokens": 4500,
+          "truncated": true,
+          "strategy_used": "smart",
+          "truncation_point": 150,
+          "sections_loaded": ["imports", "class_signatures", "function_signatures", "docstrings"],
+          "line_numbers_included": true
+        }
+      }
+      ```
+      
+      IMPORTANT:
+      - Ensure the JSON is valid and complete
+      - Content should be properly escaped for JSON string
+      - If there was an error earlier in the pipeline, propagate it here
+    output: "loaded_file"
+    timeout: 60
+
+  # Step 5: Validate and return final result
+  - id: "validate-output"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Validate the loaded file output and ensure it meets the schema requirements.
+      
+      LOADED FILE:
+      {{loaded_file}}
+      
+      VALIDATION CHECKS:
+      1. file_path is present and matches input: {{file_path}}
+      2. content is present (can be empty string if file was empty)
+      3. metadata contains all required fields:
+         - original_size_bytes (number)
+         - original_line_count (number)
+         - loaded_line_count (number)
+         - estimated_tokens (number)
+         - truncated (boolean)
+         - strategy_used (string: "full" | "head" | "smart" | "outline")
+         - truncation_point (number or null)
+         - sections_loaded (array of strings)
+      4. If truncated is true, truncation_point should be set
+      5. estimated_tokens should be <= max_tokens: {{max_tokens}}
+      
+      OUTPUT:
+      Return the validated output in final schema format:
+      ```json
+      {
+        "file_path": "{{file_path}}",
+        "content": "... file content ...",
+        "metadata": {
+          "original_size_bytes": 12345,
+          "original_line_count": 500,
+          "loaded_line_count": 150,
+          "estimated_tokens": 4500,
+          "truncated": true,
+          "strategy_used": "smart",
+          "truncation_point": 150,
+          "sections_loaded": ["imports", "class_signatures", "function_signatures", "docstrings"],
+          "line_numbers_included": true
+        },
+        "success": true,
+        "error": null
+      }
+      ```
+      
+      If validation fails:
+      ```json
+      {
+        "file_path": "{{file_path}}",
+        "content": null,
+        "metadata": null,
+        "success": false,
+        "error": "Validation failed: [reason]"
+      }
+      ```
+    output: "context_result"
+    timeout: 30

@@ -1,0 +1,648 @@
+name: "dry-violation-analysis"
+description: "Detect DRY (Don't Repeat Yourself) principle violations across multiple files in a codebase"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["tier3", "analysis", "duplication", "cross-file", "dry-principle", "refactoring"]
+
+# This is a Tier 3 recipe that analyzes multiple files for DRY violations:
+# - Repeated Logic Patterns: Same algorithm implemented in 3+ places
+# - Copy-Paste Code: Nearly identical code blocks across files
+# - Redundant Configuration: Same config values scattered across files
+# - Repeated Error Handling: Same try/catch patterns everywhere
+# - Magic Number/String Duplication: Same literal values in multiple files
+# - Boilerplate Accumulation: Same setup/teardown patterns
+#
+# Unlike tier2/semantic-duplicate.yaml which compares pairs of files,
+# this recipe looks for patterns across the entire codebase.
+#
+# Usage:
+#   amplifier run "execute recipes/tier3/dry-violation-analysis.yaml with repo_path=./src file_contents=[{path: 'a.py', content: '...'}]"
+#   amplifier run "execute recipes/tier3/dry-violation-analysis.yaml with repo_path=./src min_occurrences=4"
+
+context:
+  file_contents: []                    # Required: Array of {path: string, content: string} objects
+  repo_path: "."                       # Repository path for context
+  min_occurrences: 3                   # Minimum occurrences to flag as violation (default: 3)
+  violation_types:                     # Types of DRY violations to detect (default: all)
+    - "logic_pattern"
+    - "copy_paste"
+    - "config"
+    - "error_handling"
+    - "magic_value"
+    - "boilerplate"
+
+steps:
+  # Step 1: Parse all file contents and build index
+  - id: "build-file-index"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Parse and index all provided file contents for pattern analysis.
+      
+      REPOSITORY PATH: {{repo_path}}
+      MINIMUM OCCURRENCES THRESHOLD: {{min_occurrences}}
+      
+      FILE CONTENTS TO ANALYZE:
+      {{file_contents}}
+      
+      FOR EACH FILE, EXTRACT AND INDEX:
+      
+      1. **FILE METADATA**
+         - File path and name
+         - Detected language/file type
+         - Total lines of code (excluding blank lines and comments)
+         - Module/package context
+      
+      2. **CODE STRUCTURE**
+         - Functions/methods with their signatures
+         - Classes/types with their definitions
+         - Import/require statements
+         - Top-level statements and initializations
+      
+      3. **CONTENT FINGERPRINTS**
+         - Hash-like signatures for code blocks (5+ lines)
+         - Normalized code (ignore whitespace, variable names)
+         - Control flow patterns (if/else, loops, try/catch)
+      
+      4. **LITERAL VALUES**
+         - String literals (non-trivial, 10+ chars)
+         - Numeric constants (excluding 0, 1, -1)
+         - Configuration-like values (URLs, paths, keys)
+         - Magic numbers in logic
+      
+      5. **PATTERN MARKERS**
+         - Error handling blocks
+         - Logging patterns
+         - Validation logic
+         - Setup/teardown code
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "index_metadata": {
+          "total_files": N,
+          "total_lines": N,
+          "languages_detected": ["python", "javascript", ...],
+          "repo_path": "{{repo_path}}"
+        },
+        "files": [
+          {
+            "path": "path/to/file",
+            "language": "detected language",
+            "lines": N,
+            "functions": [
+              {
+                "name": "func_name",
+                "signature": "full signature",
+                "line_start": N,
+                "line_end": M,
+                "body_hash": "normalized hash for comparison",
+                "complexity": "simple | moderate | complex"
+              }
+            ],
+            "classes": [...],
+            "literals": [
+              {
+                "value": "literal value",
+                "type": "string | number | config",
+                "line": N,
+                "context": "how it's used"
+              }
+            ],
+            "patterns": [
+              {
+                "type": "error_handling | logging | validation | setup | teardown",
+                "line_start": N,
+                "line_end": M,
+                "normalized_form": "pattern signature"
+              }
+            ]
+          }
+        ],
+        "cross_file_index": {
+          "function_signatures": {"signature": ["file1:line", "file2:line"]},
+          "literal_values": {"value": ["file1:line", "file2:line"]},
+          "pattern_signatures": {"pattern_hash": ["file1:lines", "file2:lines"]}
+        }
+      }
+      ```
+    output: "file_index"
+    timeout: 300
+
+  # Step 2: Extract code patterns and signatures from all files
+  - id: "extract-patterns"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Extract detailed code patterns from the indexed files for duplication detection.
+      
+      FILE INDEX:
+      {{file_index}}
+      
+      ORIGINAL FILE CONTENTS:
+      {{file_contents}}
+      
+      VIOLATION TYPES TO DETECT: {{violation_types}}
+      
+      EXTRACT THE FOLLOWING PATTERN TYPES:
+      
+      1. **LOGIC PATTERNS** (logic_pattern)
+         - Algorithm implementations (sorting, searching, transformation)
+         - Business logic sequences (validate -> process -> save)
+         - Data transformation pipelines
+         - State machine implementations
+         - Calculation formulas
+         
+         Signature: Normalize to pseudo-code form ignoring variable names
+      
+      2. **COPY-PASTE CODE** (copy_paste)
+         - Nearly identical code blocks (80%+ similar)
+         - Same structure with only name changes
+         - Duplicated with minor modifications
+         
+         Signature: Tokenize and hash after normalization
+      
+      3. **CONFIGURATION PATTERNS** (config)
+         - Hardcoded configuration values
+         - Environment variable handling
+         - Default value definitions
+         - Feature flag checks
+         
+         Signature: Config key + value pattern
+      
+      4. **ERROR HANDLING PATTERNS** (error_handling)
+         - Try/catch/finally blocks
+         - Error type checks
+         - Error message formatting
+         - Retry logic
+         - Fallback implementations
+         
+         Signature: Exception types + handling approach
+      
+      5. **MAGIC VALUES** (magic_value)
+         - Repeated string literals
+         - Numeric constants with meaning
+         - Timeout/limit values
+         - API endpoints/URLs
+         - Status codes
+         
+         Signature: Value + usage context
+      
+      6. **BOILERPLATE PATTERNS** (boilerplate)
+         - Initialization sequences
+         - Cleanup/teardown code
+         - Logging setup
+         - Connection establishment
+         - Resource acquisition patterns
+         
+         Signature: Operation sequence pattern
+      
+      FOR EACH PATTERN FOUND:
+      - Create a normalized signature for comparison
+      - Record all occurrences with file:line locations
+      - Capture representative code snippets
+      - Note any variations between occurrences
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "patterns_extracted": {
+          "logic_pattern": [
+            {
+              "pattern_id": "lp-001",
+              "description": "What this pattern does",
+              "normalized_signature": "Comparable signature",
+              "occurrences": [
+                {
+                  "file": "path/to/file",
+                  "lines": [N, M],
+                  "snippet": "Representative code (max 10 lines)",
+                  "variation_notes": "Any differences from canonical form"
+                }
+              ],
+              "occurrence_count": N,
+              "total_lines_affected": N
+            }
+          ],
+          "copy_paste": [...],
+          "config": [...],
+          "error_handling": [...],
+          "magic_value": [...],
+          "boilerplate": [...]
+        },
+        "extraction_summary": {
+          "total_patterns_found": N,
+          "by_type": {
+            "logic_pattern": N,
+            "copy_paste": N,
+            "config": N,
+            "error_handling": N,
+            "magic_value": N,
+            "boilerplate": N
+          }
+        }
+      }
+      ```
+    output: "extracted_patterns"
+    timeout: 300
+
+  # Step 3: Cluster similar patterns across files
+  - id: "cluster-patterns"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Cluster similar patterns to identify candidates for DRY violations.
+      
+      EXTRACTED PATTERNS:
+      {{extracted_patterns}}
+      
+      MINIMUM OCCURRENCES THRESHOLD: {{min_occurrences}}
+      
+      CLUSTERING APPROACH:
+      
+      1. **EXACT MATCH CLUSTERING**
+         - Group patterns with identical normalized signatures
+         - These are clear copy-paste violations
+      
+      2. **NEAR-MATCH CLUSTERING** (85%+ similarity)
+         - Group patterns with minor variations
+         - Track what varies between occurrences
+         - Identify parameterizable differences
+      
+      3. **SEMANTIC CLUSTERING** (70%+ similarity)
+         - Group patterns that achieve the same goal differently
+         - Identify candidate for unified implementation
+      
+      CLUSTER QUALITY CRITERIA:
+      - Minimum {{min_occurrences}} members to form a cluster
+      - Members must be in different locations (not same function)
+      - Exclude intentional duplication (test fixtures, interface implementations)
+      
+      FOR EACH CLUSTER:
+      - Calculate cluster cohesion (how similar are members)
+      - Identify the "canonical" form (best representative)
+      - Note variations that might require parameterization
+      - Assess consolidation feasibility
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "clusters": [
+          {
+            "cluster_id": "cluster-001",
+            "pattern_type": "logic_pattern | copy_paste | config | error_handling | magic_value | boilerplate",
+            "match_type": "exact | near | semantic",
+            "cohesion_score": 0.0-1.0,
+            "member_count": N,
+            "canonical_form": {
+              "description": "What this pattern represents",
+              "signature": "Normalized signature",
+              "representative_snippet": "Best example code"
+            },
+            "members": [
+              {
+                "pattern_id": "from extracted patterns",
+                "file": "path/to/file",
+                "lines": [N, M],
+                "similarity_to_canonical": 0.0-1.0,
+                "variations": ["list of differences"]
+              }
+            ],
+            "total_lines": N,
+            "consolidation_feasibility": "high | medium | low",
+            "consolidation_blockers": ["List any issues that make consolidation hard"]
+          }
+        ],
+        "clustering_summary": {
+          "total_clusters": N,
+          "clusters_above_threshold": N,
+          "by_pattern_type": {...},
+          "by_match_type": {"exact": N, "near": N, "semantic": N}
+        }
+      }
+      ```
+    output: "clustered_patterns"
+    timeout: 240
+
+  # Step 4: Identify violations that exceed min_occurrences threshold
+  - id: "identify-violations"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      Identify DRY violations from clustered patterns that exceed the threshold.
+      
+      CLUSTERED PATTERNS:
+      {{clustered_patterns}}
+      
+      MINIMUM OCCURRENCES: {{min_occurrences}}
+      ORIGINAL FILE CONTENTS:
+      {{file_contents}}
+      
+      VIOLATION IDENTIFICATION RULES:
+      
+      1. **THRESHOLD CHECK**
+         - Only clusters with >= {{min_occurrences}} members qualify
+         - Must span multiple files (not just repeated in one file)
+      
+      2. **INTENTIONALITY CHECK** - Exclude if:
+         - Test fixtures/mocks (intentionally duplicated)
+         - Interface implementations (polymorphism)
+         - Generated code (should be regenerated, not refactored)
+         - Protocol implementations (must match spec)
+         - Override methods (intentional repetition)
+      
+      3. **SIGNIFICANCE CHECK** - Include if:
+         - Pattern is 5+ lines of code
+         - Contains meaningful logic (not just boilerplate getter/setter)
+         - Maintenance burden is real (bugs would need fixing in multiple places)
+      
+      4. **SEVERITY ASSESSMENT**
+         - CRITICAL: Exact duplicates of complex logic (10+ lines, 4+ occurrences)
+         - HIGH: Near-identical logic patterns (5+ lines, 3+ occurrences)
+         - MEDIUM: Similar patterns with variations (needs parameterization)
+         - LOW: Magic values or simple boilerplate
+      
+      5. **CONFIDENCE ASSESSMENT**
+         - HIGH: Exact matches, clear duplication
+         - MEDIUM: Near matches, likely duplication
+         - LOW: Semantic similarity, possible false positive
+      
+      FOR EACH VIOLATION:
+      - Confirm it exceeds threshold
+      - Verify it's not intentional
+      - Assess severity and confidence
+      - Document all occurrences with evidence
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "violations": [
+          {
+            "violation_id": "viol-001",
+            "cluster_id": "cluster-001",
+            "type": "logic_pattern | copy_paste | config | error_handling | magic_value | boilerplate",
+            "pattern_description": "Clear description of what is repeated",
+            "severity": "critical | high | medium | low",
+            "confidence": "high | medium | low",
+            "occurrences": [
+              {
+                "file": "path/to/file",
+                "lines": [N, M],
+                "snippet": "Actual code snippet (max 15 lines)",
+                "context": "What this code is doing in this location"
+              }
+            ],
+            "occurrence_count": N,
+            "total_duplicated_lines": N,
+            "intentionality_check": {
+              "is_intentional": false,
+              "reason": null
+            }
+          }
+        ],
+        "rejected_clusters": [
+          {
+            "cluster_id": "cluster-xxx",
+            "reason": "Why this was not flagged as violation",
+            "member_count": N
+          }
+        ],
+        "violation_summary": {
+          "total_violations": N,
+          "by_severity": {"critical": N, "high": N, "medium": N, "low": N},
+          "by_type": {...},
+          "total_files_affected": N,
+          "total_duplicated_lines": N
+        }
+      }
+      ```
+    output: "identified_violations"
+    timeout: 240
+
+  # Step 5: Generate refactoring recommendations
+  - id: "generate-recommendations"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Generate actionable refactoring recommendations for each DRY violation.
+      
+      IDENTIFIED VIOLATIONS:
+      {{identified_violations}}
+      
+      FILE INDEX:
+      {{file_index}}
+      
+      REPOSITORY PATH: {{repo_path}}
+      
+      FOR EACH VIOLATION, DETERMINE:
+      
+      1. **REFACTORING STRATEGY**
+         
+         - **extract_function**: Pull duplicated logic into shared function
+           * Best for: logic_pattern, copy_paste
+           * Considerations: Function signature, return values, side effects
+         
+         - **extract_constant**: Define shared constant/enum
+           * Best for: magic_value
+           * Considerations: Naming, grouping related constants
+         
+         - **extract_config**: Move to configuration file
+           * Best for: config, some magic_value
+           * Considerations: Environment-specific values, defaults
+         
+         - **create_utility**: Create utility class/module
+           * Best for: boilerplate, error_handling
+           * Considerations: Dependency injection, testability
+         
+         - **create_base_class**: Extract common behavior to base
+           * Best for: boilerplate with inheritance potential
+           * Considerations: Existing class hierarchy, composition vs inheritance
+         
+         - **use_decorator**: Apply decorator pattern
+           * Best for: error_handling, logging boilerplate
+           * Considerations: Language support, complexity
+      
+      2. **SUGGESTED LOCATION**
+         - Analyze existing project structure
+         - Identify appropriate utils/common/shared directory
+         - Consider module boundaries and dependencies
+         - Suggest new file if needed
+      
+      3. **EFFORT ESTIMATION**
+         - **low**: Simple extraction, few callers, no API changes
+         - **medium**: Moderate changes, some callers need updating, minor API design
+         - **high**: Complex extraction, many callers, cross-module changes, API design needed
+      
+      4. **RISK ASSESSMENT**
+         - Behavioral changes risk
+         - Test coverage requirements
+         - Dependency introduction
+      
+      5. **IMPLEMENTATION SKETCH**
+         - Provide pseudo-code for the extracted artifact
+         - Show how callers would change
+         - Note any edge cases to handle
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "recommendations": [
+          {
+            "violation_id": "viol-001",
+            "refactoring_recommendation": {
+              "strategy": "extract_function | extract_constant | extract_config | create_utility | create_base_class | use_decorator",
+              "suggested_name": "Proposed name for extracted artifact",
+              "suggested_location": "path/to/suggested/file.ext",
+              "estimated_lines_saved": N,
+              "estimated_effort": "low | medium | high",
+              "risk_level": "low | medium | high",
+              "implementation_sketch": {
+                "extracted_code": "Pseudo-code for the extracted artifact",
+                "caller_changes": "How call sites would change",
+                "edge_cases": ["Edge cases to handle"]
+              },
+              "prerequisites": ["Any refactoring needed first"],
+              "testing_notes": "What tests need to be added/updated"
+            },
+            "alternative_strategies": [
+              {
+                "strategy": "alternative approach",
+                "pros": ["advantages"],
+                "cons": ["disadvantages"]
+              }
+            ],
+            "do_not_refactor_if": ["Conditions where refactoring is not recommended"]
+          }
+        ],
+        "refactoring_order": [
+          {
+            "order": 1,
+            "violation_id": "viol-xxx",
+            "reason": "Why this should be done first"
+          }
+        ],
+        "global_recommendations": [
+          "Codebase-wide suggestions (e.g., create shared utils module)"
+        ]
+      }
+      ```
+    output: "refactoring_recommendations"
+    timeout: 300
+
+  # Step 6: Format as findings with effort estimates
+  - id: "format-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Format all DRY violations and recommendations into the final output schema.
+      
+      IDENTIFIED VIOLATIONS:
+      {{identified_violations}}
+      
+      REFACTORING RECOMMENDATIONS:
+      {{refactoring_recommendations}}
+      
+      FILE INDEX:
+      {{file_index}}
+      
+      REPOSITORY PATH: {{repo_path}}
+      MINIMUM OCCURRENCES: {{min_occurrences}}
+      
+      Generate the final comprehensive report following the output schema.
+      
+      FINDING SCHEMA MAPPING:
+      - category: "dry_violation"  
+      - tier: 3
+      - severity mapping:
+        * CRITICAL -> "critical" (exact duplicates, high impact)
+        * HIGH -> "high" (clear violations needing attention)
+        * MEDIUM -> "medium" (violations worth addressing)
+        * LOW -> "low" (minor or acceptable duplication)
+      
+      PRIORITIZATION:
+      - Sort by: (severity * occurrence_count * lines_affected) / effort
+      - Higher priority = higher impact with lower effort
+      
+      OUTPUT FORMAT (STRICT):
+      ```json
+      {
+        "violations": [
+          {
+            "type": "logic_pattern | copy_paste | config | error_handling | magic_value | boilerplate",
+            "pattern_description": "Clear description of what is being repeated",
+            "occurrences": [
+              {
+                "file": "path/to/file",
+                "lines": [N, M],
+                "snippet": "Relevant code snippet"
+              }
+            ],
+            "occurrence_count": N,
+            "severity": "critical | high | medium | low",
+            "confidence": "high | medium | low",
+            "refactoring_recommendation": {
+              "strategy": "extract_function | extract_constant | extract_config | create_utility | create_base_class | use_decorator",
+              "suggested_location": "Where to put the extracted code",
+              "estimated_lines_saved": N,
+              "estimated_effort": "low | medium | high"
+            }
+          }
+        ],
+        "summary": {
+          "total_violations": N,
+          "by_type": {
+            "logic_pattern": N,
+            "copy_paste": N,
+            "config": N,
+            "error_handling": N,
+            "magic_value": N,
+            "boilerplate": N
+          },
+          "by_severity": {
+            "critical": N,
+            "high": N,
+            "medium": N,
+            "low": N
+          },
+          "total_lines_duplicated": N,
+          "potential_lines_saved": N,
+          "files_affected": N,
+          "refactoring_priority_order": ["violation_id_1", "violation_id_2", ...]
+        },
+        "findings": [
+          {
+            "id": "dry-001",
+            "category": "dry_violation",
+            "tier": 3,
+            "severity": "critical | high | medium | low",
+            "confidence": "high | medium | low",
+            "title": "DRY Violation: [pattern description]",
+            "description": "Detailed description of the violation and its impact",
+            "file": "Primary file (first occurrence)",
+            "location": {"line_start": N, "line_end": M},
+            "related_files": ["all files with this violation"],
+            "evidence": "Concrete examples showing the duplication",
+            "recommendation": "Specific refactoring advice",
+            "effort_estimate": "low | medium | high",
+            "tags": ["dry-violation", "type-specific-tag", "refactor-candidate"]
+          }
+        ],
+        "caveats": [
+          "List any uncertain classifications",
+          "Note patterns that might be intentional",
+          "Mention any analysis limitations"
+        ],
+        "next_steps": [
+          "Prioritized list of actions to take"
+        ]
+      }
+      ```
+      
+      IMPORTANT:
+      - Be conservative - flag only clear violations
+      - Provide actionable, specific recommendations
+      - Consider that some repetition improves readability
+      - Estimate effort realistically (cross-module is harder)
+      - Include caveats for uncertain cases
+    output: "formatted_findings"
+    timeout: 240

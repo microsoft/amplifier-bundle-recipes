@@ -1,0 +1,193 @@
+name: "doc-code-accuracy"
+description: "Verify documentation accurately describes the code it references"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["tier2", "analysis", "documentation", "cross-file"]
+
+# This is a Tier 2 recipe that compares documentation to code:
+# - README claims vs actual implementation
+# - API docs vs function signatures
+# - Examples vs current behavior
+# - Installation instructions vs requirements
+#
+# Usage:
+#   amplifier run "execute recipes/tier2/doc-code-accuracy.yaml with doc_path=README.md code_path=src/main.py"
+
+context:
+  doc_path: ""                     # Required: path to documentation file
+  code_path: ""                    # Required: path to code file(s) referenced
+  check_examples: true             # Verify code examples work
+  check_signatures: true           # Verify API signatures match
+
+steps:
+  # Step 1: Load both files
+  - id: "load-doc"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the documentation file: {{doc_path}}
+      Return the complete content with line numbers.
+    output: "doc_content"
+    timeout: 60
+
+  - id: "load-code"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the code file: {{code_path}}
+      Return the complete content with line numbers.
+    output: "code_content"
+    timeout: 60
+
+  # Step 2: Extract claims from documentation
+  - id: "extract-claims"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Extract all verifiable claims from this documentation.
+      
+      DOCUMENTATION:
+      {{doc_content}}
+      
+      EXTRACT THESE CLAIM TYPES:
+      
+      1. **API CLAIMS**
+         - Function/method signatures mentioned
+         - Parameter names and types
+         - Return values described
+         - Exceptions documented
+      
+      2. **BEHAVIOR CLAIMS**
+         - "This function does X"
+         - "When Y happens, Z occurs"
+         - "The default is A"
+         - Performance claims
+      
+      3. **CODE EXAMPLES**
+         - Inline code snippets
+         - Usage examples
+         - Import statements shown
+      
+      4. **CONFIGURATION CLAIMS**
+         - Required settings
+         - Default values
+         - Environment variables
+      
+      5. **STRUCTURE CLAIMS**
+         - "The config has these fields"
+         - "The response contains X"
+         - Object/dict structure descriptions
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "claims": [
+          {
+            "id": "claim-001",
+            "type": "api | behavior | example | config | structure",
+            "location": {"line_start": N, "line_end": M},
+            "claim_text": "What the doc says",
+            "verifiable_against": "What to check in code",
+            "priority": "high | medium | low"
+          }
+        ],
+        "summary": {
+          "total_claims": N,
+          "by_type": {...}
+        }
+      }
+      ```
+    output: "doc_claims"
+    timeout: 180
+
+  # Step 3: Verify claims against code
+  - id: "verify-claims"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      Verify each documentation claim against the actual code.
+      
+      DOCUMENTATION CLAIMS:
+      {{doc_claims}}
+      
+      ACTUAL CODE:
+      {{code_content}}
+      
+      FOR EACH CLAIM:
+      1. Find the relevant code section
+      2. Compare claim to reality
+      3. Determine: ACCURATE | INACCURATE | OUTDATED | CANNOT_VERIFY
+      
+      VERIFICATION CATEGORIES:
+      
+      **ACCURATE**: Doc matches code exactly or is a valid simplification
+      
+      **INACCURATE**: Doc contradicts code
+      - Wrong parameter names
+      - Wrong return types
+      - Wrong behavior description
+      - Examples that wouldn't work
+      
+      **OUTDATED**: Doc was probably accurate but code changed
+      - Old function names
+      - Deprecated parameters
+      - Changed defaults
+      
+      **CANNOT_VERIFY**: Need more context
+      - References other files not provided
+      - Requires runtime testing
+      - Ambiguous claim
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "verifications": [
+          {
+            "claim_id": "claim-001",
+            "status": "accurate | inaccurate | outdated | cannot_verify",
+            "confidence": "high | medium | low",
+            "doc_says": "What documentation claims",
+            "code_shows": "What code actually does",
+            "evidence": "Specific code snippet",
+            "discrepancy": "Description of mismatch if any",
+            "severity": "high | medium | low",
+            "suggested_fix": "How to fix doc or code"
+          }
+        ],
+        "summary": {
+          "accurate": N,
+          "inaccurate": N,
+          "outdated": N,
+          "cannot_verify": N,
+          "accuracy_rate": "X%"
+        }
+      }
+      ```
+    output: "verification_results"
+    timeout: 300
+
+  # Step 4: Format as findings
+  - id: "format-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Convert verification results to standard finding schema.
+      
+      VERIFICATION RESULTS:
+      {{verification_results}}
+      
+      DOC FILE: {{doc_path}}
+      CODE FILE: {{code_path}}
+      
+      MAPPING:
+      - Only create findings for INACCURATE and OUTDATED (not accurate/cannot_verify)
+      - category: "doc_code_mismatch"
+      - tier: 2
+      - related_files: [doc_path, code_path]
+      - severity: high for inaccurate API docs, medium for examples, low for minor issues
+      
+      ALSO INCLUDE:
+      - Summary of accuracy rate
+      - List of claims that could not be verified (for potential follow-up)
+      
+      OUTPUT: Standard finding schema JSON with additional doc_accuracy_report field
+    output: "formatted_findings"
+    timeout: 120

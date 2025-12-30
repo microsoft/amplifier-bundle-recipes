@@ -1,0 +1,125 @@
+name: "repo-analysis-orchestrator"
+description: "Run comprehensive Tier 1 analysis across an entire repository"
+version: "2.0.0"
+author: "Context Intelligence System"
+tags: ["orchestrator", "repo-wide", "comprehensive"]
+
+# This recipe orchestrates analysis across Python files in a repository.
+#
+# Uses bash step for deterministic file discovery (no LLM needed for find command),
+# then foreach to iterate over discovered files dynamically.
+#
+# Usage:
+#   amplifier run "execute recipes/orchestrators/repo-analysis-orchestrator.yaml with repo_path=/path/to/repo"
+
+context:
+  repo_path: ""                    # Required: path to repository root
+  max_files: 5                     # Limit files to analyze
+  skip_verification: "true"        # Skip verification prioritization
+
+steps:
+  # Step 1: Discover files using bash (deterministic, no LLM overhead)
+  # Uses find + jq to output a proper JSON array of file paths
+  - id: "discover-files"
+    type: "bash"
+    command: |
+      find {{repo_path}} -name "*.py" -type f \
+        ! -path "*/__pycache__/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/venv/*" \
+        ! -path "*/.venv/*" \
+        ! -path "*/*test*.py" \
+        ! -path "*/tests/*" \
+        ! -name "test_*.py" \
+        ! -name "*_test.py" \
+        | head -n {{max_files}} \
+        | jq -R -s -c 'split("\n") | map(select(length > 0))'
+    output: "file_list"
+    parse_json: true
+
+  # Step 2: Analyze each file using foreach
+  # Iterates over the discovered file list and runs single-file-orchestrator on each
+  - id: "analyze-files"
+    foreach: "{{file_list}}"
+    as: "current_file"
+    type: "recipe"
+    recipe: "../tier1/single-file-orchestrator.yaml"
+    context:
+      file_path: "{{current_file}}"
+      skip_verification: "{{skip_verification}}"
+    collect: "all_analyses"
+    on_error: "continue"
+
+  # Step 3: Aggregate all findings from collected analyses
+  - id: "aggregate-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Aggregate findings from all analyzed files into a repository report.
+      
+      REPOSITORY: {{repo_path}}
+      FILES ANALYZED: {{file_list}}
+      
+      FILE ANALYSES (collected from foreach):
+      {{all_analyses}}
+      
+      TASKS:
+      1. Parse each file's analysis from the collected results
+      2. Merge all findings from all files
+      3. Identify cross-file patterns (same issue type in multiple files)
+      4. Calculate aggregate statistics
+      5. Assign code health score (A/B/C/D/F)
+      
+      OUTPUT (JSON):
+      ```json
+      {
+        "repository": "{{repo_path}}",
+        "files_analyzed": <count from file_list>,
+        "file_paths": <list of files>,
+        "total_findings": N,
+        "by_severity": {"high": X, "medium": Y, "low": Z},
+        "by_category": {"comment_code_conflict": A, "dead_code": B, "internal_inconsistency": C, "naming_mismatch": D},
+        "systemic_issues": [
+          {"pattern": "description", "affected_files": ["file1.py", "file2.py"], "recommendation": "..."}
+        ],
+        "top_priority": [
+          {"file": "...", "finding_id": "...", "summary": "...", "severity": "high"}
+        ],
+        "code_health_score": "?",
+        "score_rationale": "Brief explanation of the score"
+      }
+      ```
+    output: "repo_report"
+    timeout: 300
+
+  # Step 4: Generate executive summary
+  - id: "generate-summary"
+    agent: "foundation:zen-architect"
+    mode: "ARCHITECT"
+    prompt: |
+      Generate an executive summary from the repository analysis.
+      
+      REPOSITORY: {{repo_path}}
+      REPORT: {{repo_report}}
+      
+      Create a markdown summary with:
+      
+      ## Executive Summary
+      2-3 paragraphs summarizing the overall code health and key findings.
+      
+      ## Code Health Score: [SCORE]
+      Explanation of the score with key factors.
+      
+      ## Files Analyzed
+      List each file with a one-line summary of its health.
+      
+      ## Critical Issues
+      Top issues that should be addressed immediately (if any).
+      
+      ## Systemic Patterns
+      Issues that appear across multiple files (if any).
+      
+      ## Recommended Next Steps
+      Prioritized list of actions to improve code quality.
+    output: "executive_summary"
+    timeout: 180

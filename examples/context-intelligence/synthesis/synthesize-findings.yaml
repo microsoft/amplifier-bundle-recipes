@@ -1,0 +1,683 @@
+name: "synthesize-findings"
+description: "Synthesize aggregated findings into a coherent, prioritized action plan"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["synthesis", "prioritization", "action-planning", "root-cause-analysis"]
+
+# This recipe takes aggregated findings from all analysis tiers and synthesizes them into
+# a coherent, prioritized action plan. It's the bridge between "what we found" and 
+# "what to do about it".
+#
+# Key capabilities:
+# - Merges findings from multiple sources (aggregate-findings output, tier2, tier3)
+# - Deduplicates findings that appear in multiple analyses
+# - Identifies root causes where multiple symptoms point to a single underlying issue
+# - Groups findings into actionable themes for team assignment
+# - Creates a prioritized action plan with effort/impact analysis
+# - Generates executive summary for stakeholders
+#
+# Usage:
+#   amplifier run "execute recipes/synthesis/synthesize-findings.yaml with aggregated_findings=<json>"
+
+context:
+  aggregated_findings: ""           # Required: Output from aggregate-findings.yaml (JSON)
+  tier2_findings: ""                # Optional: Additional Tier 2 findings (JSON array)
+  tier3_findings: ""                # Optional: Additional Tier 3 findings (JSON array)
+  focus_areas: ""                   # Optional: Priority areas e.g., ["security", "performance"]
+
+steps:
+  # Step 1: Parse and merge all finding sources
+  - id: "parse-and-merge-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Parse and merge findings from all available sources into a unified finding set.
+      
+      AGGREGATED FINDINGS (from aggregate-findings.yaml):
+      {{aggregated_findings}}
+      
+      TIER 2 FINDINGS (optional additional findings):
+      {{tier2_findings}}
+      
+      TIER 3 FINDINGS (optional additional findings):
+      {{tier3_findings}}
+      
+      FOCUS AREAS (priority filter):
+      {{focus_areas}}
+      
+      TASK:
+      1. Parse the aggregated findings JSON (required input)
+         - Extract: repo_health, summary, cross_cutting_patterns, priority_order, file_health_distribution
+         - This is the primary source of truth
+      
+      2. Parse optional tier2_findings if provided
+         - These may contain deep-dive analysis results
+         - Extract finding IDs, descriptions, severity, category, file associations
+      
+      3. Parse optional tier3_findings if provided
+         - These may contain specialized analysis (security, performance, etc.)
+         - Extract finding IDs, descriptions, severity, category, file associations
+      
+      4. Merge all findings into a unified list
+         - Assign unique IDs to each finding (format: finding-XXX)
+         - Preserve source attribution (which tier/analysis found it)
+         - Note findings that appear in multiple sources (potential duplicates)
+      
+      5. If focus_areas provided, tag findings that match those areas
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "parse_status": "success | partial | error",
+        "error_details": null,
+        "sources_parsed": {
+          "aggregated_findings": true,
+          "tier2_findings": true | false,
+          "tier3_findings": true | false
+        },
+        "repo_context": {
+          "repo_health": "A|B|C|D|F",
+          "repo_health_score": N,
+          "total_files_analyzed": N,
+          "file_health_distribution": {"A": N, "B": N, "C": N, "D": N, "F": N}
+        },
+        "unified_findings": [
+          {
+            "finding_id": "finding-001",
+            "description": "Description of the finding",
+            "severity": "critical | high | medium | low",
+            "category": "category name",
+            "source": "aggregated | tier2 | tier3",
+            "source_details": "Which specific analysis found this",
+            "affected_files": ["file1.py", "file2.py"],
+            "is_cross_cutting": true | false,
+            "potential_duplicate_of": ["finding-005"] | null,
+            "matches_focus_area": true | false,
+            "focus_area_match": "security" | null,
+            "original_priority": N | null,
+            "raw_data": {}
+          }
+        ],
+        "finding_counts": {
+          "total_raw": N,
+          "from_aggregated": N,
+          "from_tier2": N,
+          "from_tier3": N,
+          "potential_duplicates": N,
+          "matching_focus_areas": N
+        },
+        "focus_areas_applied": ["security", "performance"] | []
+      }
+      ```
+    output: "merged_findings"
+    timeout: 180
+
+  # Step 2: Deduplicate findings that appear in multiple analyses
+  - id: "deduplicate-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Identify and deduplicate findings that appear in multiple analyses.
+      
+      MERGED FINDINGS:
+      {{merged_findings}}
+      
+      DEDUPLICATION STRATEGY:
+      
+      Findings should be considered duplicates if they meet ANY of these criteria:
+      
+      1. **Exact Match**: Same description and same affected files
+      
+      2. **Semantic Match**: Different wording but same underlying issue
+         - e.g., "unused import" and "import not used" 
+         - e.g., "missing error handling" and "no exception handling"
+      
+      3. **Subset Match**: One finding is a subset of another
+         - e.g., "unused variable x" is subset of "multiple unused variables"
+         - Keep the more comprehensive finding
+      
+      4. **Same Root Issue**: Findings that describe the same problem from different angles
+         - e.g., tier2 finds "complex function" and tier3 finds "function needs refactoring"
+      
+      DEDUPLICATION RULES:
+      - When merging duplicates, keep the highest severity
+      - Preserve the most detailed description
+      - Combine affected_files lists
+      - Track all sources that found this issue (increases confidence)
+      - Create a "duplicate_of" chain for traceability
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "deduplication_summary": {
+          "total_before": N,
+          "total_after": N,
+          "duplicates_removed": N,
+          "duplicates_by_type": {
+            "exact_match": N,
+            "semantic_match": N,
+            "subset_match": N,
+            "same_root_issue": N
+          }
+        },
+        "deduplicated_findings": [
+          {
+            "finding_id": "finding-001",
+            "description": "Canonical description of the finding",
+            "severity": "highest severity from all duplicates",
+            "category": "primary category",
+            "sources": ["aggregated", "tier2"],
+            "confidence": "high | medium | low",
+            "confidence_reason": "Found by 2 independent analyses",
+            "affected_files": ["file1.py", "file2.py"],
+            "is_cross_cutting": true | false,
+            "matches_focus_area": true | false,
+            "focus_area_match": "security" | null,
+            "merged_from": ["finding-001", "finding-015"],
+            "best_description_source": "tier2"
+          }
+        ],
+        "duplicate_chains": [
+          {
+            "canonical_id": "finding-001",
+            "duplicates": ["finding-015", "finding-022"],
+            "match_type": "semantic_match",
+            "merge_notes": "Combined descriptions, elevated severity"
+          }
+        ]
+      }
+      ```
+    output: "deduplicated_findings"
+    timeout: 180
+
+  # Step 3: Identify root causes (multiple symptoms → single cause)
+  - id: "identify-root-causes"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Identify root causes where multiple findings are symptoms of a single underlying issue.
+      
+      DEDUPLICATED FINDINGS:
+      {{deduplicated_findings}}
+      
+      REPO CONTEXT (from merged findings):
+      {{merged_findings}}
+      
+      ROOT CAUSE ANALYSIS:
+      
+      Look for patterns where fixing one root cause would resolve multiple findings:
+      
+      1. **Code Hygiene Root Causes**:
+         - Dead code accumulation → unused imports, unused variables, unreachable code
+         - Inconsistent coding standards → naming violations, formatting issues
+         - Copy-paste programming → duplicated code, similar bugs in multiple places
+      
+      2. **Architecture Root Causes**:
+         - Missing abstraction layer → repeated patterns, tight coupling
+         - Circular dependencies → import cycles, initialization order issues
+         - God class/function → complexity warnings, long functions, many parameters
+      
+      3. **Process Root Causes**:
+         - Missing code review → inconsistent patterns, obvious bugs
+         - No linting/formatting → style inconsistencies across files
+         - Documentation debt → missing docstrings, outdated comments
+      
+      4. **Technical Debt Root Causes**:
+         - Deferred refactoring → complexity accumulation, workarounds
+         - Framework/library misuse → anti-patterns, inefficient implementations
+         - Missing tests → fragile code, regression patterns
+      
+      For each root cause identified:
+      - List all symptoms (finding IDs) it explains
+      - Assess severity based on how many/how severe the symptoms are
+      - Calculate "fix once impact" - how many issues resolve if root cause is fixed
+      - Provide specific recommendation for addressing the root cause
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "root_cause_analysis": [
+          {
+            "root_cause_id": "rc-001",
+            "root_cause": "Description of underlying issue",
+            "category": "code_hygiene | architecture | process | technical_debt",
+            "symptoms": ["finding-001", "finding-015", "finding-022"],
+            "symptom_count": N,
+            "severity": "critical | high | medium | low",
+            "severity_reasoning": "Why this severity was assigned",
+            "fix_once_impact": "Fixing this resolves N issues",
+            "impact_score": N,
+            "recommended_fix": "Specific steps to address the root cause",
+            "effort_estimate": "low | medium | high",
+            "affected_files": ["file1.py", "file2.py"],
+            "confidence": "high | medium | low",
+            "evidence": ["Evidence point 1", "Evidence point 2"]
+          }
+        ],
+        "orphan_findings": [
+          {
+            "finding_id": "finding-003",
+            "description": "Finding not linked to any root cause",
+            "reason": "Isolated issue, not part of a pattern"
+          }
+        ],
+        "root_cause_summary": {
+          "total_root_causes": N,
+          "findings_explained": N,
+          "orphan_findings": N,
+          "highest_impact_root_cause": "rc-001",
+          "by_category": {
+            "code_hygiene": N,
+            "architecture": N,
+            "process": N,
+            "technical_debt": N
+          }
+        }
+      }
+      ```
+    output: "root_cause_analysis"
+    timeout: 180
+
+  # Step 4: Group findings into actionable themes
+  - id: "group-into-themes"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Group findings into actionable themes for team assignment and sprint planning.
+      
+      DEDUPLICATED FINDINGS:
+      {{deduplicated_findings}}
+      
+      ROOT CAUSE ANALYSIS:
+      {{root_cause_analysis}}
+      
+      FOCUS AREAS (from merged findings):
+      {{merged_findings}}
+      
+      THEME GROUPING STRATEGY:
+      
+      Themes should be:
+      - Actionable by a specific team or person
+      - Completable in a reasonable timeframe (sprint-sized chunks)
+      - Logically coherent (related issues grouped together)
+      
+      Suggested theme categories:
+      
+      1. **Documentation Quality**
+         - Missing docstrings, outdated docs, unclear comments
+         - Approach: Documentation sprint or ongoing incremental improvement
+      
+      2. **Security Hardening**
+         - Input validation, authentication, authorization, secrets management
+         - Approach: Security-focused sprint, security team review
+      
+      3. **Performance Optimization**
+         - Slow queries, inefficient algorithms, memory issues
+         - Approach: Performance profiling sprint, targeted optimization
+      
+      4. **Code Cleanup**
+         - Dead code, unused imports, style inconsistencies
+         - Approach: Automated tooling + quick cleanup sprint
+      
+      5. **Error Handling**
+         - Missing try/catch, unhandled edge cases, silent failures
+         - Approach: Resilience improvement sprint
+      
+      6. **Testing Gaps**
+         - Missing tests, low coverage, flaky tests
+         - Approach: Test coverage sprint
+      
+      7. **Architecture Improvements**
+         - Refactoring needs, coupling issues, complexity
+         - Approach: Larger refactoring effort, incremental improvements
+      
+      8. **Dependency Management**
+         - Outdated packages, vulnerability updates, unused dependencies
+         - Approach: Dependency audit and update sprint
+      
+      For each theme:
+      - Aggregate severity across all findings in the theme
+      - Recommend approach (sprint vs incremental vs urgent hotfix)
+      - Suggest team/role for ownership
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "action_themes": [
+          {
+            "theme_id": "theme-001",
+            "theme": "Documentation Quality",
+            "description": "Issues related to code documentation and comments",
+            "findings": ["finding-001", "finding-005", "finding-012"],
+            "root_causes": ["rc-002"],
+            "total_findings": N,
+            "severity_distribution": {
+              "critical": N,
+              "high": N,
+              "medium": N,
+              "low": N
+            },
+            "aggregate_severity": "critical | high | medium | low",
+            "affected_files": ["file1.py", "file2.py"],
+            "recommended_approach": "sprint | incremental | hotfix",
+            "approach_reasoning": "Why this approach is recommended",
+            "suggested_owner": "docs-team | security-team | platform-team | general",
+            "estimated_effort": "low | medium | high",
+            "estimated_duration": "1 day | 1 week | 1 sprint | multiple sprints",
+            "quick_wins": ["finding-001", "finding-005"],
+            "dependencies": ["theme-003 should be done first"] | []
+          }
+        ],
+        "theme_summary": {
+          "total_themes": N,
+          "findings_categorized": N,
+          "uncategorized_findings": N,
+          "by_approach": {
+            "sprint": N,
+            "incremental": N,
+            "hotfix": N
+          },
+          "by_owner": {
+            "docs-team": N,
+            "security-team": N,
+            "platform-team": N,
+            "general": N
+          }
+        },
+        "theme_dependencies": [
+          {
+            "theme": "theme-001",
+            "depends_on": ["theme-003"],
+            "reason": "Documentation updates depend on code cleanup"
+          }
+        ]
+      }
+      ```
+    output: "action_themes"
+    timeout: 180
+
+  # Step 5: Create prioritized action plan
+  - id: "create-action-plan"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Create a prioritized action plan combining root causes, themes, and individual findings.
+      
+      DEDUPLICATED FINDINGS:
+      {{deduplicated_findings}}
+      
+      ROOT CAUSE ANALYSIS:
+      {{root_cause_analysis}}
+      
+      ACTION THEMES:
+      {{action_themes}}
+      
+      FOCUS AREAS (from merged findings):
+      {{merged_findings}}
+      
+      PRIORITIZATION MATRIX:
+      
+      Priority is determined by: Impact × Urgency / Effort
+      
+      **Impact Factors** (higher = more impact):
+      - Severity: critical=100, high=75, medium=50, low=25
+      - Breadth: affects many files/themes = higher impact
+      - Root cause resolution: fixing resolves multiple symptoms = high impact
+      - Focus area match: matches specified focus areas = boost priority
+      
+      **Urgency Factors** (higher = more urgent):
+      - Security issues: always urgent
+      - Production affecting: urgent
+      - Blocking other work: urgent
+      - Technical debt: less urgent but important
+      
+      **Effort Factors** (higher effort = lower priority, all else equal):
+      - Quick fix (< 1 hour): effort=1
+      - Small task (< 1 day): effort=2
+      - Medium task (1-3 days): effort=3
+      - Large task (1 week+): effort=4
+      - Major refactoring: effort=5
+      
+      ACTION TYPES:
+      1. "fix_root_cause" - Address a root cause to resolve multiple symptoms
+      2. "fix_theme" - Address all issues in a theme together
+      3. "fix_individual" - Address a specific finding
+      4. "implement_process" - Add process/tooling to prevent recurrence
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "action_plan": [
+          {
+            "priority": 1,
+            "action_id": "action-001",
+            "action": "What to do - specific and actionable",
+            "action_type": "fix_root_cause | fix_theme | fix_individual | implement_process",
+            "addresses": ["finding-001", "rc-001", "theme-001"],
+            "impact": "low | medium | high | critical",
+            "impact_score": N,
+            "urgency": "low | medium | high | critical",
+            "effort": "low | medium | high",
+            "effort_estimate": "2 hours | 1 day | 1 week",
+            "priority_score": N,
+            "priority_reasoning": "Why this priority ranking",
+            "suggested_assignee": "docs-team | security-team | platform-team | general | senior-dev",
+            "acceptance_criteria": [
+              "Specific criterion 1",
+              "Specific criterion 2"
+            ],
+            "verification_steps": [
+              "How to verify this is fixed"
+            ],
+            "dependencies": ["action-003 must be done first"] | [],
+            "blocks": ["action-005 is blocked by this"] | []
+          }
+        ],
+        "action_plan_summary": {
+          "total_actions": N,
+          "by_type": {
+            "fix_root_cause": N,
+            "fix_theme": N,
+            "fix_individual": N,
+            "implement_process": N
+          },
+          "by_priority": {
+            "critical": N,
+            "high": N,
+            "medium": N,
+            "low": N
+          },
+          "by_effort": {
+            "low": N,
+            "medium": N,
+            "high": N
+          },
+          "estimated_total_effort": "X person-days",
+          "quick_wins_count": N
+        },
+        "quick_wins": [
+          {
+            "action_id": "action-005",
+            "action": "Description",
+            "impact": "high",
+            "effort": "low",
+            "why_quick_win": "High impact for minimal effort"
+          }
+        ],
+        "critical_path": [
+          {
+            "action_id": "action-001",
+            "reason": "Blocks multiple other actions"
+          }
+        ]
+      }
+      ```
+    output: "action_plan"
+    timeout: 180
+
+  # Step 6: Generate executive summary
+  - id: "generate-executive-summary"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Generate the final synthesis output with executive summary for stakeholders.
+      
+      REPO CONTEXT:
+      {{merged_findings}}
+      
+      DEDUPLICATED FINDINGS:
+      {{deduplicated_findings}}
+      
+      ROOT CAUSE ANALYSIS:
+      {{root_cause_analysis}}
+      
+      ACTION THEMES:
+      {{action_themes}}
+      
+      ACTION PLAN:
+      {{action_plan}}
+      
+      TASK:
+      Create the final synthesis output that serves as the complete "what to do" document.
+      
+      EXECUTIVE SUMMARY GUIDELINES:
+      - 2-3 paragraphs for stakeholders who won't read details
+      - Lead with the most important finding/recommendation
+      - Include: overall health assessment, key risks, top recommendations
+      - Be specific, not generic (use actual numbers and findings)
+      - End with clear next steps
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "synthesis_summary": {
+          "total_unique_findings": N,
+          "deduplicated_count": N,
+          "root_causes_identified": N,
+          "action_themes": N,
+          "total_actions": N,
+          "repo_health": "A|B|C|D|F",
+          "repo_health_score": N
+        },
+        "root_cause_analysis": [
+          {
+            "root_cause_id": "rc-001",
+            "root_cause": "Description of underlying issue",
+            "symptoms": ["finding-001", "finding-015", "finding-022"],
+            "severity": "critical | high | medium | low",
+            "fix_once_impact": "Fixing this resolves N issues",
+            "recommended_fix": "How to address the root cause"
+          }
+        ],
+        "action_themes": [
+          {
+            "theme_id": "theme-001",
+            "theme": "Theme name",
+            "findings": ["finding-001", "finding-005"],
+            "total_findings": N,
+            "aggregate_severity": "critical | high | medium | low",
+            "recommended_approach": "sprint | incremental | hotfix"
+          }
+        ],
+        "action_plan": [
+          {
+            "priority": 1,
+            "action_id": "action-001",
+            "action": "What to do",
+            "addresses": ["finding-001", "rc-001"],
+            "effort": "low | medium | high",
+            "impact": "low | medium | high",
+            "suggested_assignee": "docs-team | security-team | general"
+          }
+        ],
+        "quick_wins": [
+          {
+            "action_id": "action-005",
+            "action": "Quick win description",
+            "impact": "high",
+            "effort": "low"
+          }
+        ],
+        "executive_summary": "2-3 paragraph summary for stakeholders. First paragraph: overall assessment and health. Second paragraph: key findings and risks. Third paragraph: recommended immediate actions and next steps.",
+        "metadata": {
+          "synthesis_version": "1.0.0",
+          "sources_analyzed": {
+            "aggregated_findings": true,
+            "tier2_findings": true | false,
+            "tier3_findings": true | false
+          },
+          "focus_areas_applied": ["security", "performance"] | [],
+          "generated_at": "timestamp"
+        }
+      }
+      ```
+      
+      IMPORTANT:
+      - Ensure all arrays are properly populated from previous analysis
+      - Executive summary must be specific to this codebase, not generic
+      - Action plan should be in priority order (priority 1 = do first)
+      - Include at least top 10 actions (or all if fewer than 10)
+      - Quick wins section highlights highest ROI items
+    output: "final_synthesis"
+    timeout: 180
+
+output:
+  format: "json"
+  schema: |
+    {
+      "synthesis_summary": {
+        "total_unique_findings": "integer - findings after deduplication",
+        "deduplicated_count": "integer - how many duplicates were removed",
+        "root_causes_identified": "integer - number of root causes found",
+        "action_themes": "integer - number of themes",
+        "total_actions": "integer - number of actions in plan",
+        "repo_health": "string (A|B|C|D|F)",
+        "repo_health_score": "integer (0-100)"
+      },
+      "root_cause_analysis": [
+        {
+          "root_cause_id": "string - unique identifier",
+          "root_cause": "string - description of underlying issue",
+          "symptoms": "array of finding IDs this root cause explains",
+          "severity": "string (critical|high|medium|low)",
+          "fix_once_impact": "string - impact description",
+          "recommended_fix": "string - how to address"
+        }
+      ],
+      "action_themes": [
+        {
+          "theme_id": "string - unique identifier",
+          "theme": "string - theme name",
+          "findings": "array of finding IDs",
+          "total_findings": "integer",
+          "aggregate_severity": "string (critical|high|medium|low)",
+          "recommended_approach": "string (sprint|incremental|hotfix)"
+        }
+      ],
+      "action_plan": [
+        {
+          "priority": "integer - 1 is highest",
+          "action_id": "string - unique identifier",
+          "action": "string - what to do",
+          "addresses": "array of finding/root-cause/theme IDs",
+          "effort": "string (low|medium|high)",
+          "impact": "string (low|medium|high)",
+          "suggested_assignee": "string - team or role"
+        }
+      ],
+      "quick_wins": [
+        {
+          "action_id": "string",
+          "action": "string",
+          "impact": "string",
+          "effort": "string"
+        }
+      ],
+      "executive_summary": "string - 2-3 paragraph summary for stakeholders",
+      "metadata": {
+        "synthesis_version": "string",
+        "sources_analyzed": "object",
+        "focus_areas_applied": "array of strings",
+        "generated_at": "string - timestamp"
+      }
+    }

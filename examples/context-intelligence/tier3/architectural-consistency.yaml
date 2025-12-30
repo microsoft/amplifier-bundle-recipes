@@ -1,0 +1,744 @@
+name: "architectural-consistency"
+description: "Analyze codebase structure to detect architectural inconsistencies - places where code organization deviates from established patterns"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["tier3", "analysis", "architecture", "cross-file", "dependency", "structure"]
+
+# This is a Tier 3 recipe that analyzes repository-wide architectural patterns:
+# - Layer violations: Lower layer importing from higher layer
+# - Circular dependencies: A→B→C→A dependency chains
+# - Misplaced files: Files that don't match directory purpose
+# - Naming convention breaks: Files/modules breaking naming patterns
+# - Structure drift: New files not following established patterns
+# - God classes/modules: Files that do too much
+# - Orphan code: Code not connected to any main path
+#
+# Critical for maintaining clean architecture and preventing architectural erosion.
+#
+# Usage:
+#   amplifier run "execute recipes/tier3/architectural-consistency.yaml with repo_path=. file_list=[{path: 'src/...'}]"
+#   amplifier run "execute recipes/tier3/architectural-consistency.yaml with repo_path=. architecture_hints=layered"
+
+context:
+  file_list: []                          # Required: array of file paths with metadata [{path: "...", size: N, type: "..."}]
+  repo_path: "."                         # Repository root path
+  architecture_hints: ""                 # Optional: "layered", "hexagonal", "modular", "microservices", "monolith"
+
+steps:
+  # Step 1: Analyze directory structure and infer architecture pattern
+  - id: "analyze-structure"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Analyze the directory structure to infer the architectural pattern used in this repository.
+      
+      REPOSITORY PATH: {{repo_path}}
+      FILE LIST:
+      {{file_list}}
+      
+      ARCHITECTURE HINTS (if provided): {{architecture_hints}}
+      
+      ANALYSIS TASKS:
+      
+      1. **DIRECTORY STRUCTURE ANALYSIS**
+         - Identify top-level directories and their apparent purposes
+         - Map directory naming conventions (src/, lib/, pkg/, internal/, etc.)
+         - Detect common architectural markers:
+           * `src/`, `lib/`, `pkg/` = source organization
+           * `controllers/`, `services/`, `repositories/` = layered architecture
+           * `domain/`, `application/`, `infrastructure/` = hexagonal/clean
+           * `features/`, `modules/` = modular/feature-based
+           * `api/`, `web/`, `cli/` = interface separation
+      
+      2. **PATTERN RECOGNITION**
+         - Layered: presentation → business → data layers
+         - Hexagonal: ports/adapters, domain isolation
+         - Modular: self-contained feature modules
+         - Microservices: service boundaries
+         - Monolith: single deployable, internal structure
+         - Flat: minimal structure (small projects)
+      
+      3. **LAYER IDENTIFICATION**
+         - For layered architectures, identify the layers and their order
+         - For hexagonal, identify domain, ports, adapters
+         - For modular, identify module boundaries
+         - Note any hybrid patterns
+      
+      4. **NAMING CONVENTIONS**
+         - File naming patterns (camelCase, snake_case, kebab-case)
+         - Directory naming patterns
+         - Module/package naming conventions
+         - Test file conventions (*_test.py, *.spec.ts, etc.)
+      
+      5. **CONFIDENCE ASSESSMENT**
+         - How consistent is the pattern across the codebase?
+         - Are there clear violations already visible?
+         - Is this a mature or evolving architecture?
+      
+      SMALL REPO CONSIDERATION:
+      - For repos with < 20 files, architecture may be intentionally simple
+      - Don't force complex patterns onto small projects
+      - "flat" or "unknown" are valid for small/simple repos
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "inferred_architecture": {
+          "pattern": "layered | hexagonal | modular | microservices | monolith | flat | unknown",
+          "confidence": "high | medium | low",
+          "evidence": ["evidence1", "evidence2"],
+          "pattern_description": "Description of detected pattern"
+        },
+        "layers": [
+          {
+            "name": "layer name",
+            "directories": ["dir1/", "dir2/"],
+            "purpose": "What this layer does",
+            "level": 1,
+            "can_depend_on": ["layer names this can import from"],
+            "should_not_depend_on": ["layer names this should NOT import from"]
+          }
+        ],
+        "modules": [
+          {
+            "name": "module name",
+            "root_directory": "path/",
+            "purpose": "Module purpose",
+            "is_self_contained": true
+          }
+        ],
+        "naming_conventions": {
+          "file_pattern": "detected pattern (e.g., snake_case)",
+          "directory_pattern": "detected pattern",
+          "test_pattern": "detected test file pattern",
+          "examples": ["example1", "example2"]
+        },
+        "directory_purposes": {
+          "directory_path": "inferred purpose"
+        },
+        "repo_characteristics": {
+          "total_files": N,
+          "total_directories": N,
+          "primary_language": "language",
+          "is_small_repo": true,
+          "maturity_assessment": "mature | evolving | new"
+        }
+      }
+      ```
+    output: "architecture_analysis"
+    timeout: 180
+
+  # Step 2: Build dependency graph from imports
+  - id: "build-dependency-graph"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Build a dependency graph by analyzing imports/requires across all files.
+      
+      REPOSITORY PATH: {{repo_path}}
+      FILE LIST:
+      {{file_list}}
+      
+      ARCHITECTURE ANALYSIS:
+      {{architecture_analysis}}
+      
+      DEPENDENCY EXTRACTION TASKS:
+      
+      1. **IMPORT ANALYSIS**
+         For each file, identify:
+         - Direct imports (import X from 'Y')
+         - Relative imports (from ../utils import X)
+         - Package imports (from package import X)
+         - Dynamic imports (if detectable)
+         
+         Language-specific patterns:
+         - Python: import, from X import
+         - JavaScript/TypeScript: import, require
+         - Go: import "package"
+         - Java: import package.Class
+         - C#: using Namespace
+      
+      2. **DEPENDENCY CLASSIFICATION**
+         - Internal dependencies (within repo)
+         - External dependencies (npm, pip, etc.)
+         - Standard library imports
+         
+         Focus on INTERNAL dependencies for architectural analysis.
+      
+      3. **GRAPH CONSTRUCTION**
+         - Build directed graph: file A → file B means A imports B
+         - Track import counts per file
+         - Identify heavily imported files (central modules)
+         - Identify files with many imports (high coupling)
+      
+      4. **MODULE-LEVEL AGGREGATION**
+         - Aggregate file dependencies to directory/module level
+         - Identify inter-module dependencies
+         - Note module boundaries crossed
+      
+      NOTE: Work with the file list provided. For files you cannot read directly,
+      make reasonable inferences based on file paths and naming conventions.
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "dependency_graph": {
+          "nodes": [
+            {
+              "file": "path/to/file.py",
+              "module": "module_name",
+              "layer": "detected layer",
+              "import_count": N,
+              "imported_by_count": M
+            }
+          ],
+          "edges": [
+            {
+              "from": "path/to/file_a.py",
+              "to": "path/to/file_b.py",
+              "import_type": "direct | relative | package",
+              "crosses_layer": true,
+              "crosses_module": true
+            }
+          ]
+        },
+        "module_dependencies": [
+          {
+            "from_module": "module_a",
+            "to_module": "module_b",
+            "file_pairs": [{"from": "...", "to": "..."}],
+            "dependency_count": N
+          }
+        ],
+        "statistics": {
+          "total_internal_dependencies": N,
+          "total_external_dependencies": M,
+          "most_imported_files": [{"file": "...", "count": N}],
+          "highest_import_count_files": [{"file": "...", "count": N}],
+          "average_imports_per_file": N
+        }
+      }
+      ```
+    output: "dependency_graph"
+    timeout: 240
+
+  # Step 3: Detect layer violations and circular dependencies
+  - id: "detect-violations"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      Analyze the dependency graph to detect layer violations and circular dependencies.
+      
+      ARCHITECTURE ANALYSIS:
+      {{architecture_analysis}}
+      
+      DEPENDENCY GRAPH:
+      {{dependency_graph}}
+      
+      VIOLATION DETECTION:
+      
+      1. **LAYER VIOLATIONS**
+         A layer violation occurs when:
+         - Lower layer imports from higher layer
+         - In layered architecture: data layer imports from presentation
+         - In hexagonal: infrastructure imports from application directly
+         
+         For each detected violation:
+         - Identify the violating import
+         - Explain which layer rule is broken
+         - Assess severity (critical architectural breach vs minor)
+      
+      2. **CIRCULAR DEPENDENCIES**
+         Types of cycles:
+         - Direct: A → B → A
+         - Indirect: A → B → C → A
+         - Complex: Multiple files in cycle
+         
+         For each cycle:
+         - List all files in the cycle
+         - Identify the likely "break point"
+         - Assess impact on maintainability
+      
+      3. **CROSS-MODULE VIOLATIONS**
+         For modular architectures:
+         - Modules importing internal details of other modules
+         - Bypassing module public interfaces
+         - Tight coupling between modules
+      
+      4. **SEVERITY ASSESSMENT**
+         - CRITICAL: Core architectural pattern violated
+         - HIGH: Clear layer/module boundary crossed
+         - MEDIUM: Questionable dependency direction
+         - LOW: Minor convention break
+      
+      IMPORTANT CONSIDERATIONS:
+      - Some cross-layer imports may be intentional (dependency injection, factories)
+      - Circular dependencies in tests are less severe
+      - Small cycles (2 files) are usually easy to fix
+      - Large cycles (5+ files) indicate deeper design issues
+      
+      BE CONSERVATIVE:
+      - Only flag violations with high confidence
+      - Consider that some patterns allow certain cross-layer access
+      - Note when context might justify the dependency
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "layer_violations": [
+          {
+            "id": "lv-001",
+            "type": "upward_dependency",
+            "from_file": "path/to/lower_layer.py",
+            "from_layer": "data",
+            "to_file": "path/to/upper_layer.py",
+            "to_layer": "presentation",
+            "import_statement": "from presentation import X",
+            "rule_violated": "Data layer should not depend on presentation",
+            "severity": "critical | high | medium | low",
+            "confidence": "high | medium | low",
+            "justification_possible": "Could this be intentional? Why?",
+            "recommendation": "How to fix this"
+          }
+        ],
+        "circular_dependencies": [
+          {
+            "id": "cd-001",
+            "cycle_length": N,
+            "files_in_cycle": ["file1.py", "file2.py", "file3.py"],
+            "cycle_path": "file1 → file2 → file3 → file1",
+            "suggested_break_point": {
+              "edge_to_remove": {"from": "file3.py", "to": "file1.py"},
+              "reason": "Why breaking here makes sense"
+            },
+            "severity": "critical | high | medium | low",
+            "impact": "How this affects the codebase"
+          }
+        ],
+        "cross_module_violations": [
+          {
+            "id": "cm-001",
+            "from_module": "module_a",
+            "to_module": "module_b",
+            "violation_type": "internal_access | tight_coupling",
+            "files_involved": [{"from": "...", "to": "..."}],
+            "severity": "high | medium | low",
+            "recommendation": "How to properly decouple"
+          }
+        ],
+        "summary": {
+          "total_layer_violations": N,
+          "total_circular_deps": N,
+          "total_cross_module_violations": N,
+          "most_problematic_file": "File appearing in most violations",
+          "most_problematic_layer": "Layer with most violations"
+        }
+      }
+      ```
+    output: "violations"
+    timeout: 240
+
+  # Step 4: Identify misplaced or misnamed files
+  - id: "detect-misplaced-files"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      Identify files that appear to be misplaced or misnamed based on the established patterns.
+      
+      ARCHITECTURE ANALYSIS:
+      {{architecture_analysis}}
+      
+      FILE LIST:
+      {{file_list}}
+      
+      DEPENDENCY GRAPH:
+      {{dependency_graph}}
+      
+      MISPLACEMENT DETECTION:
+      
+      1. **FILE-DIRECTORY MISMATCH**
+         Files whose content/purpose doesn't match their directory:
+         - A "controller" file in a "services" directory
+         - A "model" file in a "views" directory
+         - Test files outside test directories
+         - Config files in source directories
+         
+         Signals:
+         - File name suggests different purpose than directory
+         - File's imports suggest it belongs elsewhere
+         - File's exports are used by unexpected modules
+      
+      2. **NAMING CONVENTION VIOLATIONS**
+         Files breaking established naming patterns:
+         - snake_case file in camelCase codebase
+         - Missing expected prefixes/suffixes
+         - Inconsistent test file naming
+         - Non-standard module naming
+         
+         Compare against detected conventions from architecture analysis.
+      
+      3. **STRUCTURE DRIFT**
+         New patterns that don't match established structure:
+         - New directory not following convention
+         - Files creating ad-hoc organization
+         - Utility dumping grounds growing organically
+         - Features implemented outside feature structure
+      
+      4. **ORPHAN DETECTION**
+         - Files not imported by anything
+         - Files not in any apparent module
+         - Dead entry points
+         - Leftover experimental code
+         
+         Note: Some orphans are valid (entry points, scripts, configs)
+      
+      FOR EACH ISSUE:
+      - Explain why the file appears misplaced/misnamed
+      - Suggest where it should be or how it should be named
+      - Assess confidence (file might be intentionally placed)
+      
+      SMALL REPO LENIENCY:
+      - Be more lenient on repos with < 30 files
+      - Don't flag minor naming variations in small projects
+      - Focus only on clear structural issues
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "misplaced_files": [
+          {
+            "id": "mp-001",
+            "file": "path/to/file.py",
+            "current_location": "controllers/",
+            "apparent_purpose": "Data access logic",
+            "expected_location": "repositories/ or data/",
+            "evidence": ["File imports database modules", "No HTTP handling code"],
+            "severity": "high | medium | low",
+            "confidence": "high | medium | low",
+            "recommendation": "Move to repositories/ directory"
+          }
+        ],
+        "naming_violations": [
+          {
+            "id": "nv-001",
+            "file": "path/to/file.py",
+            "current_name": "myHelper.py",
+            "expected_pattern": "snake_case",
+            "suggested_name": "my_helper.py",
+            "severity": "low | medium",
+            "confidence": "high | medium | low"
+          }
+        ],
+        "structure_drift": [
+          {
+            "id": "sd-001",
+            "location": "path/to/new_pattern/",
+            "description": "New directory structure not matching conventions",
+            "established_pattern": "What the repo normally does",
+            "deviation": "What this does differently",
+            "recommendation": "How to align with conventions",
+            "severity": "medium | low"
+          }
+        ],
+        "orphan_files": [
+          {
+            "id": "or-001",
+            "file": "path/to/orphan.py",
+            "orphan_type": "not_imported | not_in_module | dead_entry",
+            "is_likely_valid": false,
+            "valid_reason": "null or why this might be intentional",
+            "recommendation": "Delete, integrate, or document purpose"
+          }
+        ],
+        "summary": {
+          "total_misplaced": N,
+          "total_naming_violations": N,
+          "total_structure_drift": N,
+          "total_orphans": N,
+          "likely_valid_orphans": M
+        }
+      }
+      ```
+    output: "misplaced_analysis"
+    timeout: 180
+
+  # Step 5: Find structural anomalies (god classes, orphans)
+  - id: "detect-anomalies"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      Detect structural anomalies that indicate architectural problems.
+      
+      ARCHITECTURE ANALYSIS:
+      {{architecture_analysis}}
+      
+      DEPENDENCY GRAPH:
+      {{dependency_graph}}
+      
+      FILE LIST:
+      {{file_list}}
+      
+      ANOMALY DETECTION:
+      
+      1. **GOD MODULES/CLASSES**
+         Files that do too much:
+         - Unusually large files (lines of code)
+         - Files with many exports/public interfaces
+         - Files imported by too many other files
+         - Files with too many imports (high coupling)
+         
+         Signals:
+         - File size > 2x average
+         - Export count > 10 (or significantly above average)
+         - Imported by > 30% of files
+         - Imports from > 5 different modules
+      
+      2. **UTILITY DUMPING GROUNDS**
+         Directories/files that accumulate unrelated code:
+         - "utils", "helpers", "common" that grow unbounded
+         - Mixed concerns in single file
+         - Catch-all modules
+      
+      3. **ABSTRACTION ISSUES**
+         - Missing abstraction layer (direct cross-cutting dependencies)
+         - Over-abstraction (too many layers for simple operations)
+         - Leaky abstractions (implementation details exposed)
+      
+      4. **COUPLING HOTSPOTS**
+         - Files with bidirectional dependencies with many files
+         - Clusters of tightly coupled files
+         - Files that are "connector" between unrelated modules
+      
+      5. **COHESION PROBLEMS**
+         - Files with unrelated functions grouped together
+         - Modules with inconsistent responsibilities
+         - Mixed domain concepts
+      
+      FOR EACH ANOMALY:
+      - Explain why this is problematic
+      - Assess the severity and impact
+      - Suggest refactoring approach
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "god_modules": [
+          {
+            "id": "gm-001",
+            "file": "path/to/god_file.py",
+            "indicators": {
+              "estimated_size": "large | very_large",
+              "import_count": N,
+              "imported_by_count": M,
+              "export_count": K,
+              "concerns_detected": ["concern1", "concern2"]
+            },
+            "why_problematic": "Explanation of issues",
+            "severity": "critical | high | medium",
+            "suggested_split": [
+              {
+                "new_module": "suggested_name",
+                "responsibilities": ["what it would contain"]
+              }
+            ]
+          }
+        ],
+        "utility_dumping_grounds": [
+          {
+            "id": "ud-001",
+            "location": "path/to/utils/",
+            "issue": "Description of the dumping ground problem",
+            "unrelated_items": ["item1", "item2"],
+            "recommendation": "How to organize properly"
+          }
+        ],
+        "coupling_hotspots": [
+          {
+            "id": "ch-001",
+            "file": "path/to/hotspot.py",
+            "coupling_score": N,
+            "connected_modules": ["module1", "module2"],
+            "bidirectional_deps": ["file1", "file2"],
+            "recommendation": "How to reduce coupling"
+          }
+        ],
+        "abstraction_issues": [
+          {
+            "id": "ai-001",
+            "type": "missing | over | leaky",
+            "location": "path or module",
+            "description": "What's wrong with the abstraction",
+            "impact": "How this affects the codebase",
+            "recommendation": "How to improve"
+          }
+        ],
+        "summary": {
+          "total_god_modules": N,
+          "total_dumping_grounds": N,
+          "total_coupling_hotspots": N,
+          "total_abstraction_issues": N,
+          "highest_risk_file": "File needing most attention"
+        }
+      }
+      ```
+    output: "anomalies"
+    timeout: 180
+
+  # Step 6: Generate architectural health report
+  - id: "generate-report"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Generate a comprehensive architectural health report with findings in standard schema.
+      
+      ARCHITECTURE ANALYSIS:
+      {{architecture_analysis}}
+      
+      DEPENDENCY GRAPH:
+      {{dependency_graph}}
+      
+      VIOLATIONS:
+      {{violations}}
+      
+      MISPLACED FILES:
+      {{misplaced_analysis}}
+      
+      ANOMALIES:
+      {{anomalies}}
+      
+      REPOSITORY PATH: {{repo_path}}
+      
+      REPORT GENERATION:
+      
+      1. **ARCHITECTURAL HEALTH GRADE**
+         Calculate overall grade based on:
+         - A: 0-2 issues, all low severity
+         - B: 3-5 issues, no critical/high severity
+         - C: 6-10 issues, max 1 high severity
+         - D: 11-20 issues or 2+ high severity
+         - F: 20+ issues or any critical severity
+         
+         Adjust for repo size (be lenient on small repos).
+      
+      2. **FINDINGS COMPILATION**
+         Convert all detected issues to standard finding format:
+         - category: "architectural_consistency"
+         - tier: 3
+         - Severity mapping:
+           * CRITICAL → critical
+           * HIGH → high
+           * MEDIUM → medium
+           * LOW → low
+         - Include actionable recommendations
+      
+      3. **DEPENDENCY INSIGHTS**
+         Summarize key metrics:
+         - Total internal dependencies
+         - Circular chains found
+         - Most depended-on files
+         - Highest coupling files
+      
+      4. **PRIORITIZED RECOMMENDATIONS**
+         Order recommendations by:
+         1. Critical violations first
+         2. Quick wins (low effort, high impact)
+         3. Strategic improvements
+         4. Nice-to-haves
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "inferred_architecture": {
+          "pattern": "layered | hexagonal | modular | flat | unknown",
+          "layers": ["layer1", "layer2"],
+          "confidence": "high | medium | low"
+        },
+        "violations": [
+          {
+            "type": "layer_violation | circular_dep | misplaced | naming_break | structure_drift | god_module | orphan",
+            "description": "What's wrong",
+            "location": {
+              "file": "path/to/file",
+              "lines": [1, 10]
+            },
+            "violates_pattern": "What pattern this breaks",
+            "severity": "critical | high | medium | low",
+            "recommendation": "How to fix"
+          }
+        ],
+        "dependency_insights": {
+          "total_dependencies": N,
+          "circular_chains": [
+            {
+              "files": ["file1", "file2", "file3"],
+              "length": 3
+            }
+          ],
+          "most_depended_on": [
+            {"file": "path/to/file", "dependents": N}
+          ],
+          "highest_coupling": [
+            {"file": "path/to/file", "dependencies": N}
+          ]
+        },
+        "summary": {
+          "architectural_health": "A | B | C | D | F",
+          "total_violations": N,
+          "by_type": {
+            "layer_violation": N,
+            "circular_dep": N,
+            "misplaced": N,
+            "naming_break": N,
+            "structure_drift": N,
+            "god_module": N,
+            "orphan": N
+          },
+          "by_severity": {
+            "critical": N,
+            "high": N,
+            "medium": N,
+            "low": N
+          }
+        },
+        "findings": [
+          {
+            "id": "finding-001",
+            "category": "architectural_consistency",
+            "tier": 3,
+            "severity": "critical | high | medium | low",
+            "title": "Descriptive title of the issue",
+            "description": "Detailed description of the architectural issue",
+            "file": "path/to/file",
+            "location": {"line_start": N, "line_end": M},
+            "related_files": ["related1", "related2"],
+            "evidence": "Concrete evidence of the issue",
+            "recommendation": "How to resolve this issue",
+            "effort_estimate": "small | medium | large",
+            "tags": ["architecture", "issue-type", "affected-area"]
+          }
+        ],
+        "prioritized_recommendations": [
+          {
+            "priority": 1,
+            "category": "critical | quick_win | strategic | enhancement",
+            "action": "What to do",
+            "rationale": "Why this is important",
+            "affected_files": ["file1", "file2"],
+            "estimated_effort": "small | medium | large",
+            "expected_benefit": "What improves after this"
+          }
+        ],
+        "architectural_observations": [
+          "General observations about the architecture",
+          "Patterns that are working well",
+          "Areas that need attention"
+        ],
+        "caveats": [
+          "Any limitations of this analysis",
+          "Areas needing human judgment",
+          "Intentional deviations noted"
+        ]
+      }
+      ```
+    output: "final_report"
+    timeout: 240

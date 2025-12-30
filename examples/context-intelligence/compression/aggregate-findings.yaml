@@ -1,0 +1,418 @@
+name: "aggregate-findings"
+description: "Aggregate compressed findings from multiple files into a repository-level summary"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["compression", "aggregation", "scaling", "repository-analysis"]
+
+# This recipe takes compressed findings from compress-file-findings.yaml and aggregates them
+# into a holistic repository-level view. It identifies cross-cutting patterns, calculates
+# overall repo health, and prioritizes issues by their cross-file impact.
+#
+# This is the next step after compress-file-findings.yaml in the compression pipeline:
+# 1. single-file-orchestrator.yaml → raw findings per file
+# 2. compress-file-findings.yaml → compressed findings per file
+# 3. aggregate-findings.yaml (this) → repository-level summary
+#
+# Usage:
+#   amplifier run "execute recipes/compression/aggregate-findings.yaml with repo_path=. compressed_findings=<json_array>"
+
+context:
+  compressed_findings: ""           # Required: JSON array of compressed file findings
+  repo_path: "."                    # Repository path for context
+  aggregation_level: "summary"      # "summary" | "detailed"
+
+steps:
+  # Step 1: Parse all compressed findings from input array
+  - id: "parse-compressed-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Parse and validate the compressed findings array from multiple files.
+      
+      REPO PATH: {{repo_path}}
+      AGGREGATION LEVEL: {{aggregation_level}}
+      
+      COMPRESSED FINDINGS INPUT:
+      {{compressed_findings}}
+      
+      TASK:
+      1. Parse the compressed findings JSON array
+      2. Extract key information from each file's compressed output:
+         - file_path
+         - file_health grade and score (derive score from grade if needed: A=95, B=82, C=67, D=50, F=25)
+         - summary metrics (total_findings, by_severity, by_category)
+         - top_findings array
+         - compressed_findings patterns
+      3. Calculate aggregate counts across all files
+      4. Build a file-level overview
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "parse_status": "success | error",
+        "error_message": null,
+        "file_count": N,
+        "files": [
+          {
+            "file_path": "...",
+            "file_health": "A|B|C|D|F",
+            "health_score": N,
+            "total_findings": N,
+            "by_severity": {"critical": X, "high": Y, "medium": Z, "low": W},
+            "by_category": {...},
+            "top_findings": [...],
+            "compressed_patterns": [...]
+          }
+        ],
+        "aggregate_metrics": {
+          "total_findings": N,
+          "total_by_severity": {"critical": X, "high": Y, "medium": Z, "low": W},
+          "total_by_category": {...},
+          "files_with_issues": N,
+          "clean_files": N
+        }
+      }
+      ```
+      
+      If parsing fails, set parse_status to "error" and provide error_message.
+    output: "parsed_input"
+    timeout: 180
+
+  # Step 2: Identify cross-cutting patterns
+  - id: "identify-cross-cutting-patterns"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Identify cross-cutting patterns - issues that appear across multiple files.
+      
+      PARSED INPUT:
+      {{parsed_input}}
+      
+      CROSS-CUTTING PATTERN DETECTION:
+      
+      A cross-cutting pattern is an issue type that appears in 2+ files, suggesting
+      a systemic problem rather than isolated incidents. Look for:
+      
+      1. **Same Category Patterns**: Issues in the same category across files
+         - e.g., "dead_code" issues in 5 different files
+         
+      2. **Similar Issue Types**: Findings with similar titles/descriptions
+         - e.g., "unused import" in multiple files
+         - e.g., "missing error handling" patterns
+         
+      3. **Severity Clusters**: Files with same severity distribution
+         - e.g., multiple files all have high-severity security issues
+         
+      4. **Pattern Chains**: Issues that might be related
+         - e.g., dead code + unused variables suggests cleanup needed
+      
+      For each cross-cutting pattern, determine:
+      - Is this likely a single root cause (fix once) or independent occurrences?
+      - What's the fix strategy: global fix, per-file fix, or refactoring needed?
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "cross_cutting_patterns": [
+          {
+            "pattern": "Description of the cross-cutting issue",
+            "pattern_type": "category | issue_type | severity_cluster | pattern_chain",
+            "severity": "highest severity among occurrences",
+            "category": "primary category",
+            "affected_files": ["file1.py", "file2.py"],
+            "file_count": N,
+            "total_occurrences": N,
+            "root_cause_hypothesis": "Why this might be happening across files",
+            "fix_strategy": "single_fix | per_file | refactoring",
+            "fix_description": "How to address this pattern",
+            "example_findings": [
+              // 1-2 representative findings from different files
+            ]
+          }
+        ],
+        "isolated_issues": {
+          "count": N,
+          "description": "Issues that only appear in single files"
+        },
+        "pattern_summary": {
+          "total_patterns_found": N,
+          "files_with_shared_patterns": N,
+          "systemic_issue_indicators": ["indicator1", "indicator2"]
+        }
+      }
+      ```
+    output: "cross_cutting_patterns"
+    timeout: 180
+
+  # Step 3: Calculate repository-level health metrics
+  - id: "calculate-repo-health"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Calculate comprehensive repository-level health metrics.
+      
+      PARSED INPUT:
+      {{parsed_input}}
+      
+      CROSS-CUTTING PATTERNS:
+      {{cross_cutting_patterns}}
+      
+      REPO HEALTH CALCULATION:
+      
+      **Base Score Calculation** (weighted average of file health):
+      - Weight files by their finding count (more findings = more weight)
+      - Or use simple average if files have similar finding counts
+      
+      **Adjustment Factors**:
+      - Cross-cutting patterns penalty: -5 points per systemic pattern
+      - Critical findings anywhere: -10 points per critical
+      - High clean file ratio bonus: +5 if >70% files are grade A/B
+      - Consistency bonus: +3 if all files within 2 grades of each other
+      
+      **Grade Thresholds**:
+      - A: 90-100 (excellent repository health)
+      - B: 75-89 (good, minor issues)
+      - C: 60-74 (fair, attention needed)
+      - D: 40-59 (poor, significant work required)
+      - F: 0-39 (failing, critical issues throughout)
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "repo_health": "A | B | C | D | F",
+        "repo_health_score": N,
+        "score_breakdown": {
+          "base_score": N,
+          "cross_cutting_penalty": -N,
+          "critical_penalty": -N,
+          "clean_file_bonus": N,
+          "consistency_bonus": N,
+          "final_score": N
+        },
+        "file_health_distribution": {
+          "A": N,
+          "B": N,
+          "C": N,
+          "D": N,
+          "F": N
+        },
+        "health_indicators": {
+          "critical_files": ["files with grade D or F"],
+          "exemplary_files": ["files with grade A"],
+          "most_common_grade": "X",
+          "grade_variance": "low | medium | high"
+        },
+        "health_summary": "One-sentence summary of overall health"
+      }
+      ```
+    output: "repo_health"
+    timeout: 180
+
+  # Step 4: Prioritize issues by cross-file impact
+  - id: "prioritize-by-impact"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Prioritize all issues by their cross-file impact to determine fix order.
+      
+      PARSED INPUT:
+      {{parsed_input}}
+      
+      CROSS-CUTTING PATTERNS:
+      {{cross_cutting_patterns}}
+      
+      REPO HEALTH:
+      {{repo_health}}
+      
+      IMPACT SCORING FORMULA:
+      
+      For cross-cutting patterns:
+        impact_score = severity_weight × file_count × occurrence_multiplier
+        
+        Severity weights: critical=100, high=75, medium=50, low=25
+        Occurrence multiplier: log2(total_occurrences + 1)
+        
+        Bonus: +20 if fix_strategy is "single_fix" (high ROI)
+        Bonus: +15 if affects critical files (grade D/F)
+      
+      For isolated high-severity issues:
+        impact_score = severity_weight × confidence_multiplier
+        
+        Include if: severity is critical or high
+      
+      PRIORITIZATION RULES:
+      1. Critical issues always rank highest
+      2. Cross-cutting patterns with single-fix strategy are high value
+      3. Issues affecting already-failing files compound problems
+      4. Quick wins (high impact, low effort) should surface early
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "priority_order": [
+          {
+            "rank": 1,
+            "finding_or_pattern": "Description",
+            "type": "cross_cutting | isolated",
+            "impact_score": N,
+            "severity": "...",
+            "affected_files": ["file1", "file2"] or ["single_file"],
+            "occurrence_count": N,
+            "reason": "Why this should be fixed first",
+            "estimated_effort": "low | medium | high",
+            "fix_hint": "Brief suggestion for fixing"
+          }
+        ],
+        "priority_summary": {
+          "must_fix_now": N,
+          "should_fix_soon": N,
+          "consider_fixing": N,
+          "low_priority": N
+        },
+        "quick_wins": [
+          // Top 3 high-impact, low-effort items
+        ]
+      }
+      ```
+    output: "prioritized_issues"
+    timeout: 180
+
+  # Step 5: Generate actionable summary with recommended fix order
+  - id: "generate-summary"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Generate the final aggregated findings report with actionable recommendations.
+      
+      REPO PATH: {{repo_path}}
+      AGGREGATION LEVEL: {{aggregation_level}}
+      
+      PARSED INPUT:
+      {{parsed_input}}
+      
+      CROSS-CUTTING PATTERNS:
+      {{cross_cutting_patterns}}
+      
+      REPO HEALTH:
+      {{repo_health}}
+      
+      PRIORITIZED ISSUES:
+      {{prioritized_issues}}
+      
+      TASK:
+      Assemble all analysis into the final aggregated output format.
+      
+      For the actionable_summary:
+      - Write a concise executive summary (2-3 sentences max)
+      - Include the top 3 specific recommendations
+      - Focus on highest-impact actions
+      - Make it actionable, not just descriptive
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "repo_path": "{{repo_path}}",
+        "repo_health": "A | B | C | D | F",
+        "repo_health_score": 0-100,
+        "summary": {
+          "total_files_analyzed": N,
+          "total_findings": N,
+          "by_severity": {"critical": X, "high": Y, "medium": Z, "low": W},
+          "by_category": {...},
+          "files_with_issues": N,
+          "clean_files": N
+        },
+        "cross_cutting_patterns": [
+          {
+            "pattern": "description",
+            "severity": "...",
+            "affected_files": ["file1", "file2"],
+            "file_count": N,
+            "total_occurrences": N,
+            "root_cause_hypothesis": "Why this might be happening across files",
+            "fix_strategy": "Single fix or per-file"
+          }
+        ],
+        "priority_order": [
+          {
+            "rank": 1,
+            "finding_or_pattern": "...",
+            "impact_score": N,
+            "reason": "Why this should be fixed first"
+          }
+        ],
+        "file_health_distribution": {
+          "A": N, "B": N, "C": N, "D": N, "F": N
+        },
+        "actionable_summary": "One-paragraph executive summary with top 3 recommendations",
+        "metadata": {
+          "aggregation_version": "1.0.0",
+          "aggregation_level": "{{aggregation_level}}",
+          "patterns_identified": N,
+          "prioritized_items": N
+        }
+      }
+      ```
+      
+      IMPORTANT:
+      - Ensure the output is valid JSON
+      - The actionable_summary must be specific and useful
+      - Priority order should include at least top 5 items (or all if fewer)
+      - Cross-cutting patterns should only include patterns affecting 2+ files
+    output: "final_aggregated_output"
+    timeout: 180
+
+output:
+  format: "json"
+  schema: |
+    {
+      "repo_path": "string",
+      "repo_health": "string (A|B|C|D|F)",
+      "repo_health_score": "integer (0-100)",
+      "summary": {
+        "total_files_analyzed": "integer",
+        "total_findings": "integer",
+        "by_severity": {
+          "critical": "integer",
+          "high": "integer",
+          "medium": "integer",
+          "low": "integer"
+        },
+        "by_category": "object",
+        "files_with_issues": "integer",
+        "clean_files": "integer"
+      },
+      "cross_cutting_patterns": [
+        {
+          "pattern": "string",
+          "severity": "string",
+          "affected_files": "array of strings",
+          "file_count": "integer",
+          "total_occurrences": "integer",
+          "root_cause_hypothesis": "string",
+          "fix_strategy": "string"
+        }
+      ],
+      "priority_order": [
+        {
+          "rank": "integer",
+          "finding_or_pattern": "string",
+          "impact_score": "number",
+          "reason": "string"
+        }
+      ],
+      "file_health_distribution": {
+        "A": "integer",
+        "B": "integer",
+        "C": "integer",
+        "D": "integer",
+        "F": "integer"
+      },
+      "actionable_summary": "string",
+      "metadata": {
+        "aggregation_version": "string",
+        "aggregation_level": "string",
+        "patterns_identified": "integer",
+        "prioritized_items": "integer"
+      }
+    }

@@ -1,0 +1,631 @@
+name: "categorize-findings"
+description: "Categorize synthesized findings into actionable buckets for routing to different teams or processes"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["synthesis", "categorization", "routing", "triage", "workflow"]
+
+# This recipe takes synthesized findings and categorizes them into actionable buckets
+# for routing to appropriate teams or automated processes.
+#
+# Categories/Routes:
+# - auto_fixable: Can be fixed automatically by the system
+# - quick_wins: Low effort, high impact - do now
+# - tech_debt: Important but not urgent - backlog
+# - needs_discussion: Requires team decision
+# - security_review: Needs security team review
+# - documentation: Doc updates needed
+# - false_positives: Likely not real issues
+#
+# Usage:
+#   amplifier run "execute recipes/synthesis/categorize-findings.yaml with synthesized_findings=<json>"
+
+context:
+  synthesized_findings: ""              # Required: Output from synthesize-findings.yaml
+  routing_rules: ""                     # Optional: Custom routing rules (JSON)
+
+steps:
+  # Step 1: Parse synthesized findings
+  - id: "parse-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Parse and validate the synthesized findings input for categorization.
+      
+      SYNTHESIZED FINDINGS INPUT:
+      {{synthesized_findings}}
+      
+      CUSTOM ROUTING RULES (if provided):
+      {{routing_rules}}
+      
+      TASK:
+      1. Parse the synthesized findings JSON
+      2. Extract each finding with its metadata:
+         - finding_id
+         - title/description
+         - severity (critical, high, medium, low)
+         - category (dead_code, comment_conflict, naming_mismatch, etc.)
+         - confidence level
+         - affected files/locations
+         - suggested_fix (if available)
+         - effort_estimate (if available)
+         - tags or labels
+      3. Parse custom routing rules if provided
+      4. Validate data integrity
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "parse_status": "success | error",
+        "error_message": null,
+        "total_findings": N,
+        "findings": [
+          {
+            "finding_id": "...",
+            "title": "...",
+            "description": "...",
+            "severity": "critical | high | medium | low",
+            "category": "...",
+            "confidence": "high | medium | low",
+            "affected_files": ["file1.py", "file2.py"],
+            "locations": [{"file": "...", "line": N}],
+            "suggested_fix": "...",
+            "effort_estimate": "trivial | low | medium | high",
+            "is_automatable": true | false,
+            "requires_human_decision": true | false,
+            "security_related": true | false,
+            "documentation_related": true | false,
+            "tags": ["tag1", "tag2"]
+          }
+        ],
+        "custom_routing_rules": {
+          "parsed": true | false,
+          "rules": [...] 
+        },
+        "severity_distribution": {
+          "critical": N,
+          "high": N,
+          "medium": N,
+          "low": N
+        }
+      }
+      ```
+    output: "parsed_findings"
+    timeout: 180
+
+  # Step 2: Apply routing rules to each finding
+  - id: "apply-routing-rules"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Apply routing rules to classify each finding into the appropriate category.
+      
+      PARSED FINDINGS:
+      {{parsed_findings}}
+      
+      DEFAULT ROUTING RULES:
+      
+      **auto_fixable** - Can be fixed automatically:
+      - is_automatable = true
+      - Has clear, mechanical fix (unused imports, formatting, simple refactors)
+      - High confidence findings with trivial effort
+      - Examples: unused variables, missing type hints, import ordering
+      
+      **quick_wins** - Low effort, high impact (do now):
+      - effort_estimate = trivial or low
+      - severity = high or medium
+      - NOT automatable (requires human but easy)
+      - Clear action with immediate benefit
+      - Examples: obvious bug fixes, simple naming improvements
+      
+      **tech_debt** - Important but not urgent (backlog):
+      - effort_estimate = medium or high
+      - severity = medium or low
+      - Not time-sensitive
+      - Improves long-term maintainability
+      - Examples: refactoring, code cleanup, architecture improvements
+      
+      **needs_discussion** - Requires team decision:
+      - requires_human_decision = true
+      - Ambiguous fixes or trade-offs
+      - Architecture/design decisions
+      - Multiple valid solutions
+      - Examples: API changes, breaking changes, design patterns
+      
+      **security_review** - Needs security team:
+      - security_related = true
+      - Any finding mentioning: auth, credentials, injection, XSS, CSRF
+      - Severity = critical with security implications
+      - Examples: hardcoded secrets, SQL injection, auth bypass
+      
+      **documentation** - Doc updates needed:
+      - documentation_related = true
+      - Comment/doc mismatches
+      - Missing documentation for public APIs
+      - Examples: outdated README, missing docstrings
+      
+      **false_positives** - Likely not real issues:
+      - confidence = low AND severity = low
+      - Known false positive patterns
+      - Intentional code patterns flagged incorrectly
+      - Examples: intentional dead code for debugging, test fixtures
+      
+      APPLY RULES:
+      1. Evaluate each finding against all category rules
+      2. Assign primary category (most specific match wins)
+      3. Note secondary categories if applicable
+      4. Apply custom routing rules if provided (they override defaults)
+      
+      PRIORITY ORDER FOR CONFLICTS:
+      1. security_review (always prioritize security)
+      2. auto_fixable (easy wins)
+      3. quick_wins (human easy wins)
+      4. needs_discussion (blocking decisions)
+      5. tech_debt (backlog items)
+      6. documentation (lower priority)
+      7. false_positives (deprioritize)
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "categorized_findings": [
+          {
+            "finding_id": "...",
+            "title": "...",
+            "primary_category": "auto_fixable | quick_wins | tech_debt | needs_discussion | security_review | documentation | false_positives",
+            "secondary_categories": [],
+            "routing_reason": "Why this category was chosen",
+            "confidence_in_routing": "high | medium | low",
+            "custom_rule_applied": false,
+            "original_severity": "...",
+            "original_confidence": "..."
+          }
+        ],
+        "routing_statistics": {
+          "auto_fixable": N,
+          "quick_wins": N,
+          "tech_debt": N,
+          "needs_discussion": N,
+          "security_review": N,
+          "documentation": N,
+          "false_positives": N
+        },
+        "custom_rules_applied_count": N
+      }
+      ```
+    output: "routed_findings"
+    timeout: 180
+
+  # Step 3: Group by category
+  - id: "group-by-category"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Group all routed findings by their primary category.
+      
+      PARSED FINDINGS:
+      {{parsed_findings}}
+      
+      ROUTED FINDINGS:
+      {{routed_findings}}
+      
+      TASK:
+      1. Group findings by primary_category
+      2. Within each category, sort by severity (critical > high > medium > low)
+      3. Then sort by confidence (high > medium > low)
+      4. Calculate category-level metrics
+      5. Identify patterns within each category
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "grouped_findings": {
+          "auto_fixable": {
+            "findings": [
+              {
+                "finding_id": "...",
+                "title": "...",
+                "description": "...",
+                "severity": "...",
+                "affected_files": [...],
+                "suggested_fix": "...",
+                "automation_type": "linter | formatter | codemod | script"
+              }
+            ],
+            "count": N,
+            "severity_breakdown": {"critical": 0, "high": N, "medium": N, "low": N},
+            "common_patterns": ["pattern1", "pattern2"]
+          },
+          "quick_wins": {
+            "findings": [...],
+            "count": N,
+            "severity_breakdown": {...},
+            "total_estimated_effort": "X hours",
+            "common_patterns": [...]
+          },
+          "tech_debt": {
+            "findings": [...],
+            "count": N,
+            "severity_breakdown": {...},
+            "total_estimated_effort": "X hours/days",
+            "common_patterns": [...]
+          },
+          "needs_discussion": {
+            "findings": [...],
+            "count": N,
+            "severity_breakdown": {...},
+            "discussion_topics": ["topic1", "topic2"],
+            "stakeholders_needed": ["team1", "team2"]
+          },
+          "security_review": {
+            "findings": [...],
+            "count": N,
+            "severity_breakdown": {...},
+            "risk_level": "critical | high | medium | low",
+            "common_patterns": [...]
+          },
+          "documentation": {
+            "findings": [...],
+            "count": N,
+            "severity_breakdown": {...},
+            "doc_types_needed": ["api_docs", "readme", "comments"]
+          },
+          "false_positives": {
+            "findings": [...],
+            "count": N,
+            "reasons": ["reason1", "reason2"],
+            "should_update_rules": true | false
+          }
+        },
+        "grouping_summary": {
+          "total_grouped": N,
+          "largest_category": "...",
+          "empty_categories": ["cat1", "cat2"]
+        }
+      }
+      ```
+    output: "grouped_findings"
+    timeout: 180
+
+  # Step 4: Generate per-category action lists
+  - id: "generate-action-lists"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Generate specific, actionable task lists for each category.
+      
+      GROUPED FINDINGS:
+      {{grouped_findings}}
+      
+      TASK:
+      Create actionable next steps for each category. Each action should be:
+      - Specific and concrete
+      - Assignable to a person or system
+      - Have clear completion criteria
+      
+      CATEGORY-SPECIFIC ACTIONS:
+      
+      **auto_fixable**: Generate automation commands/scripts
+      **quick_wins**: Create prioritized task list for sprint
+      **tech_debt**: Create backlog items with effort estimates
+      **needs_discussion**: Create agenda items with context
+      **security_review**: Create security review tickets with urgency
+      **documentation**: Create doc update tasks
+      **false_positives**: Create rule update suggestions
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "action_lists": {
+          "auto_fixable": {
+            "actions": [
+              {
+                "action_id": "auto-1",
+                "description": "Run automated fix for...",
+                "command": "npx eslint --fix ... | python -m autoflake ...",
+                "affected_files": [...],
+                "finding_ids": ["f1", "f2"],
+                "estimated_time_saved": "X minutes"
+              }
+            ],
+            "total_actions": N,
+            "automation_ready": true,
+            "estimated_total_time_saved": "X hours"
+          },
+          "quick_wins": {
+            "actions": [
+              {
+                "action_id": "qw-1",
+                "description": "Fix specific issue...",
+                "priority": 1,
+                "effort": "15 minutes",
+                "impact": "high",
+                "finding_ids": ["f3"],
+                "assignee_type": "any_developer"
+              }
+            ],
+            "total_actions": N,
+            "recommended_for_sprint": true,
+            "total_effort": "X hours"
+          },
+          "tech_debt": {
+            "actions": [
+              {
+                "action_id": "td-1",
+                "description": "Refactor...",
+                "priority": "medium",
+                "effort": "2 hours",
+                "finding_ids": ["f4", "f5"],
+                "suggested_milestone": "next_quarter"
+              }
+            ],
+            "total_actions": N,
+            "backlog_ready": true,
+            "total_effort": "X days"
+          },
+          "needs_discussion": {
+            "actions": [
+              {
+                "action_id": "nd-1",
+                "topic": "Discussion topic...",
+                "context": "Background information...",
+                "options": ["option1", "option2"],
+                "finding_ids": ["f6"],
+                "stakeholders": ["team_lead", "architect"],
+                "urgency": "next_standup | next_planning | when_convenient"
+              }
+            ],
+            "total_actions": N,
+            "meeting_agenda_ready": true
+          },
+          "security_review": {
+            "actions": [
+              {
+                "action_id": "sec-1",
+                "description": "Review security issue...",
+                "risk_level": "high",
+                "finding_ids": ["f7"],
+                "assignee_type": "security_team",
+                "sla": "24_hours | 1_week | next_sprint"
+              }
+            ],
+            "total_actions": N,
+            "security_ticket_ready": true,
+            "highest_risk": "critical | high | medium | low"
+          },
+          "documentation": {
+            "actions": [
+              {
+                "action_id": "doc-1",
+                "description": "Update documentation for...",
+                "doc_type": "api_doc | readme | inline_comment | changelog",
+                "finding_ids": ["f8"],
+                "effort": "30 minutes"
+              }
+            ],
+            "total_actions": N,
+            "total_effort": "X hours"
+          },
+          "false_positives": {
+            "actions": [
+              {
+                "action_id": "fp-1",
+                "description": "Update rule to ignore...",
+                "rule_to_update": "rule_name",
+                "finding_ids": ["f9"],
+                "confidence": "high | medium"
+              }
+            ],
+            "total_actions": N,
+            "rule_updates_suggested": N
+          }
+        },
+        "action_summary": {
+          "total_actions": N,
+          "automated_actions": N,
+          "manual_actions": N,
+          "blocking_actions": N
+        }
+      }
+      ```
+    output: "action_lists"
+    timeout: 180
+
+  # Step 5: Create routing summary
+  - id: "create-routing-summary"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Create the final routing summary with recommended workflow.
+      
+      GROUPED FINDINGS:
+      {{grouped_findings}}
+      
+      ACTION LISTS:
+      {{action_lists}}
+      
+      TASK:
+      1. Compile final categorized output
+      2. Generate routing summary with statistics
+      3. Create recommended workflow description
+      4. Produce executive summary
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "categorized": {
+          "auto_fixable": {
+            "findings": [...],
+            "count": N,
+            "estimated_time_saved": "X hours",
+            "automation_ready": true,
+            "actions": [...]
+          },
+          "quick_wins": {
+            "findings": [...],
+            "count": N,
+            "total_effort": "X hours",
+            "recommended_sprint": true,
+            "actions": [...]
+          },
+          "tech_debt": {
+            "findings": [...],
+            "count": N,
+            "total_effort": "X days",
+            "backlog_priority": "high | medium | low",
+            "actions": [...]
+          },
+          "needs_discussion": {
+            "findings": [...],
+            "count": N,
+            "topics": [...],
+            "stakeholders": [...],
+            "actions": [...]
+          },
+          "security_review": {
+            "findings": [...],
+            "count": N,
+            "risk_level": "critical | high | medium | low",
+            "requires_immediate_action": true | false,
+            "actions": [...]
+          },
+          "documentation": {
+            "findings": [...],
+            "count": N,
+            "doc_types": [...],
+            "total_effort": "X hours",
+            "actions": [...]
+          },
+          "false_positives": {
+            "findings": [...],
+            "count": N,
+            "rule_updates_suggested": N,
+            "actions": [...]
+          }
+        },
+        "routing_summary": {
+          "total_routed": N,
+          "by_category": {
+            "auto_fixable": N,
+            "quick_wins": N,
+            "tech_debt": N,
+            "needs_discussion": N,
+            "security_review": N,
+            "documentation": N,
+            "false_positives": N
+          },
+          "by_severity": {
+            "critical": N,
+            "high": N,
+            "medium": N,
+            "low": N
+          },
+          "automation_potential": {
+            "fully_automatable": N,
+            "partially_automatable": N,
+            "manual_only": N,
+            "automation_coverage": "X%"
+          },
+          "effort_breakdown": {
+            "immediate": "X hours (auto_fixable + quick_wins)",
+            "short_term": "X hours (needs_discussion resolution)",
+            "long_term": "X days (tech_debt)"
+          },
+          "recommended_workflow": "Step-by-step description of how to process these findings efficiently. Start with auto_fixable to get quick wins, then tackle quick_wins in the current sprint. Schedule needs_discussion items for the next team meeting. Add tech_debt to the backlog with appropriate priority. Route security_review items to the security team immediately if risk is high. Batch documentation updates. Review false_positives to improve future detection accuracy."
+        },
+        "executive_summary": "One-paragraph summary of the categorization results, highlighting key metrics and recommended next actions.",
+        "metadata": {
+          "categorization_version": "1.0.0",
+          "total_findings_processed": N,
+          "custom_rules_used": true | false,
+          "timestamp": "ISO-8601 timestamp"
+        }
+      }
+      ```
+      
+      IMPORTANT:
+      - Ensure all findings are accounted for (no orphans)
+      - The recommended_workflow should be actionable and specific
+      - Executive summary should be concise but informative
+      - Include all actions from the action_lists in the appropriate categories
+    output: "final_output"
+    timeout: 180
+
+output:
+  format: "json"
+  schema: |
+    {
+      "categorized": {
+        "auto_fixable": {
+          "findings": "array - findings that can be automatically fixed",
+          "count": "integer",
+          "estimated_time_saved": "string - e.g., '2 hours'",
+          "automation_ready": "boolean",
+          "actions": "array - automation commands/scripts"
+        },
+        "quick_wins": {
+          "findings": "array - low effort, high impact findings",
+          "count": "integer",
+          "total_effort": "string - e.g., '4 hours'",
+          "recommended_sprint": "boolean",
+          "actions": "array - prioritized task list"
+        },
+        "tech_debt": {
+          "findings": "array - important but not urgent findings",
+          "count": "integer",
+          "total_effort": "string - e.g., '3 days'",
+          "backlog_priority": "string - high|medium|low",
+          "actions": "array - backlog items"
+        },
+        "needs_discussion": {
+          "findings": "array - findings requiring team decision",
+          "count": "integer",
+          "topics": "array - discussion topics",
+          "stakeholders": "array - required participants",
+          "actions": "array - agenda items"
+        },
+        "security_review": {
+          "findings": "array - security-related findings",
+          "count": "integer",
+          "risk_level": "string - critical|high|medium|low",
+          "requires_immediate_action": "boolean",
+          "actions": "array - security review tickets"
+        },
+        "documentation": {
+          "findings": "array - documentation-related findings",
+          "count": "integer",
+          "doc_types": "array - types of docs needed",
+          "total_effort": "string",
+          "actions": "array - doc update tasks"
+        },
+        "false_positives": {
+          "findings": "array - likely false positive findings",
+          "count": "integer",
+          "rule_updates_suggested": "integer",
+          "actions": "array - rule update suggestions"
+        }
+      },
+      "routing_summary": {
+        "total_routed": "integer - total findings processed",
+        "by_category": "object - count per category",
+        "by_severity": "object - count per severity level",
+        "automation_potential": {
+          "fully_automatable": "integer",
+          "partially_automatable": "integer",
+          "manual_only": "integer",
+          "automation_coverage": "string - percentage"
+        },
+        "effort_breakdown": {
+          "immediate": "string - auto + quick wins effort",
+          "short_term": "string - discussion resolution effort",
+          "long_term": "string - tech debt effort"
+        },
+        "recommended_workflow": "string - step-by-step processing guide"
+      },
+      "executive_summary": "string - one-paragraph summary",
+      "metadata": {
+        "categorization_version": "string",
+        "total_findings_processed": "integer",
+        "custom_rules_used": "boolean",
+        "timestamp": "string - ISO-8601"
+      }
+    }

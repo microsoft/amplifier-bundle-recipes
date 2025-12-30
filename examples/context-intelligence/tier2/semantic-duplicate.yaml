@@ -1,0 +1,497 @@
+name: "semantic-duplicate"
+description: "Detect semantic code duplication - code that does the same thing but is implemented differently"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["tier2", "analysis", "duplication", "cross-file", "dry-principle"]
+
+# This is a Tier 2 recipe that compares two (or more) code files for semantic duplication:
+# - Identical logic with different variable names
+# - Near-identical implementations with minor variations
+# - Structural clones with same patterns
+# - Behavioral duplicates producing same outputs
+# - Similar data structure definitions
+# - Configuration handling duplicates
+#
+# Critical for DRY principle enforcement.
+#
+# Usage:
+#   amplifier run "execute recipes/tier2/semantic-duplicate.yaml with file_a=src/utils.py file_b=src/helpers.py"
+#   amplifier run "execute recipes/tier2/semantic-duplicate.yaml with file_a=lib/auth.js file_b=services/auth.js similarity_threshold=0.8"
+
+context:
+  file_a: ""                          # Required: path to first file
+  file_b: ""                          # Required: path to second file
+  similarity_threshold: 0.7           # Minimum similarity score to flag (0.0-1.0)
+  check_types:                        # Types of duplication to check (default: all)
+    - "identical_logic"
+    - "near_identical"
+    - "structural"
+    - "behavioral"
+    - "data_structure"
+    - "config"
+
+steps:
+  # Step 1: Load both files
+  - id: "load-file-a"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the code file: {{file_a}}
+      Return the complete content with line numbers.
+      Include information about the file type/language.
+    output: "file_a_content"
+    timeout: 60
+
+  - id: "load-file-b"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the code file: {{file_b}}
+      Return the complete content with line numbers.
+      Include information about the file type/language.
+    output: "file_b_content"
+    timeout: 60
+
+  # Step 2: Extract function/class signatures from file A
+  - id: "extract-signatures-a"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Extract all code elements (functions, classes, methods) from this file.
+      
+      FILE A: {{file_a}}
+      CONTENT:
+      {{file_a_content}}
+      
+      FOR EACH ELEMENT, EXTRACT:
+      
+      1. **FUNCTION/METHOD SIGNATURES**
+         - Name and parameters
+         - Return type (if available)
+         - Line range (start to end)
+         - Core algorithm/logic description
+         - Key operations performed
+         - Data transformations applied
+      
+      2. **CLASS DEFINITIONS**
+         - Class name and inheritance
+         - Key attributes/properties
+         - Methods and their purposes
+         - Line range
+      
+      3. **CONFIGURATION PATTERNS**
+         - Config loading/parsing logic
+         - Default value definitions
+         - Environment variable handling
+      
+      4. **DATA STRUCTURES**
+         - Dataclass/struct definitions
+         - Dictionary schemas
+         - Type definitions
+      
+      5. **BEHAVIORAL SUMMARY**
+         - What inputs does each element accept?
+         - What outputs/side effects does it produce?
+         - What is the core business logic?
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "file": "{{file_a}}",
+        "language": "detected language",
+        "elements": [
+          {
+            "id": "elem-a-001",
+            "type": "function | method | class | config | data_structure",
+            "name": "element name",
+            "location": {"line_start": N, "line_end": M},
+            "signature": "full signature if applicable",
+            "parameters": ["param1", "param2"],
+            "returns": "return description",
+            "logic_summary": "What this element does algorithmically",
+            "key_operations": ["operation1", "operation2"],
+            "data_flow": "inputs -> transformations -> outputs",
+            "complexity_estimate": "simple | moderate | complex"
+          }
+        ],
+        "total_elements": N,
+        "total_lines": M
+      }
+      ```
+    output: "signatures_a"
+    timeout: 180
+
+  # Step 3: Extract function/class signatures from file B
+  - id: "extract-signatures-b"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Extract all code elements (functions, classes, methods) from this file.
+      
+      FILE B: {{file_b}}
+      CONTENT:
+      {{file_b_content}}
+      
+      FOR EACH ELEMENT, EXTRACT:
+      
+      1. **FUNCTION/METHOD SIGNATURES**
+         - Name and parameters
+         - Return type (if available)
+         - Line range (start to end)
+         - Core algorithm/logic description
+         - Key operations performed
+         - Data transformations applied
+      
+      2. **CLASS DEFINITIONS**
+         - Class name and inheritance
+         - Key attributes/properties
+         - Methods and their purposes
+         - Line range
+      
+      3. **CONFIGURATION PATTERNS**
+         - Config loading/parsing logic
+         - Default value definitions
+         - Environment variable handling
+      
+      4. **DATA STRUCTURES**
+         - Dataclass/struct definitions
+         - Dictionary schemas
+         - Type definitions
+      
+      5. **BEHAVIORAL SUMMARY**
+         - What inputs does each element accept?
+         - What outputs/side effects does it produce?
+         - What is the core business logic?
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "file": "{{file_b}}",
+        "language": "detected language",
+        "elements": [
+          {
+            "id": "elem-b-001",
+            "type": "function | method | class | config | data_structure",
+            "name": "element name",
+            "location": {"line_start": N, "line_end": M},
+            "signature": "full signature if applicable",
+            "parameters": ["param1", "param2"],
+            "returns": "return description",
+            "logic_summary": "What this element does algorithmically",
+            "key_operations": ["operation1", "operation2"],
+            "data_flow": "inputs -> transformations -> outputs",
+            "complexity_estimate": "simple | moderate | complex"
+          }
+        ],
+        "total_elements": N,
+        "total_lines": M
+      }
+      ```
+    output: "signatures_b"
+    timeout: 180
+
+  # Step 4: Compare semantically - look for behavioral equivalence
+  - id: "semantic-comparison"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      Compare elements from both files to detect SEMANTIC duplication.
+      Focus on behavioral equivalence, not just textual similarity.
+      
+      FILE A ELEMENTS:
+      {{signatures_a}}
+      
+      FILE B ELEMENTS:
+      {{signatures_b}}
+      
+      FILE A CONTENT:
+      {{file_a_content}}
+      
+      FILE B CONTENT:
+      {{file_b_content}}
+      
+      SIMILARITY THRESHOLD: {{similarity_threshold}}
+      DUPLICATION TYPES TO CHECK: {{check_types}}
+      
+      DUPLICATION CATEGORIES:
+      
+      1. **IDENTICAL_LOGIC** (score >= 0.95)
+         - Same algorithm, different variable/function names
+         - Cosmetic differences only (whitespace, comments)
+         - Example: `def add(a, b): return a + b` vs `def sum(x, y): return x + y`
+      
+      2. **NEAR_IDENTICAL** (score 0.85-0.95)
+         - Same core logic with minor variations
+         - Different error handling or edge cases
+         - Additional logging/debugging in one version
+         - Example: Same sort algorithm, one has null checks
+      
+      3. **STRUCTURAL** (score 0.70-0.85)
+         - Same code structure/pattern, different implementations
+         - Template method pattern duplicated
+         - Similar control flow with different operations
+         - Example: Two parsers with same structure but different field mappings
+      
+      4. **BEHAVIORAL** (score 0.70-0.90)
+         - Functions that produce the same output for same inputs
+         - Different algorithms achieving same result
+         - One may be optimized version of another
+         - Example: Bubble sort vs insertion sort (same result, different impl)
+      
+      5. **DATA_STRUCTURE** (score >= 0.80)
+         - Similar class/struct definitions
+         - Overlapping field sets
+         - Same data modeling approach
+         - Example: UserDTO and UserEntity with 80% same fields
+      
+      6. **CONFIG** (score >= 0.75)
+         - Similar configuration handling
+         - Duplicate default value definitions
+         - Same environment variable patterns
+         - Example: Two modules loading same config differently
+      
+      COMPARISON RULES:
+      - Be CONSERVATIVE - only flag high-confidence duplicates
+      - Consider that some duplication is INTENTIONAL (polymorphism, overloading)
+      - Look for actual behavioral equivalence, not superficial similarity
+      - Ignore trivial duplicates (getters/setters, single-line utilities)
+      - Consider cross-language semantic equivalence if files are different languages
+      
+      FOR EACH POTENTIAL DUPLICATE PAIR:
+      - Calculate similarity score based on behavioral equivalence
+      - Only include if score >= {{similarity_threshold}}
+      - Provide concrete evidence why they are duplicates
+      - Assess whether consolidation is practical
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "comparison_metadata": {
+          "file_a": "{{file_a}}",
+          "file_b": "{{file_b}}",
+          "threshold": {{similarity_threshold}},
+          "types_checked": {{check_types}},
+          "elements_compared": {"file_a": N, "file_b": M}
+        },
+        "duplicate_pairs": [
+          {
+            "pair_id": "dup-001",
+            "type": "identical_logic | near_identical | structural | behavioral | data_structure | config",
+            "element_a": {
+              "id": "elem-a-001",
+              "name": "function name",
+              "location": {"line_start": N, "line_end": M}
+            },
+            "element_b": {
+              "id": "elem-b-001", 
+              "name": "function name",
+              "location": {"line_start": N, "line_end": M}
+            },
+            "similarity_score": 0.0-1.0,
+            "confidence": "high | medium | low",
+            "evidence": {
+              "shared_logic": "Description of shared algorithm/behavior",
+              "differences": "What differs between them",
+              "code_snippets": {
+                "a": "key code from A",
+                "b": "key code from B"
+              }
+            },
+            "is_intentional": false,
+            "intentional_reason": "null or why this might be intentional (polymorphism, etc.)"
+          }
+        ],
+        "rejected_candidates": [
+          {
+            "element_a": "name",
+            "element_b": "name",
+            "reason": "Why this was not flagged despite surface similarity"
+          }
+        ]
+      }
+      ```
+    output: "comparison_results"
+    timeout: 300
+
+  # Step 5: Rank duplicates by confidence and impact
+  - id: "rank-duplicates"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Rank and prioritize the detected duplicates by consolidation opportunity.
+      
+      COMPARISON RESULTS:
+      {{comparison_results}}
+      
+      FILE A CONTENT:
+      {{file_a_content}}
+      
+      FILE B CONTENT:
+      {{file_b_content}}
+      
+      RANKING CRITERIA (in order of importance):
+      
+      1. **IMPACT SCORE** (0-10)
+         - Lines of code that could be reduced
+         - Maintenance burden reduction
+         - Bug fix consolidation benefit
+         - Test coverage simplification
+      
+      2. **CONFIDENCE SCORE** (0-10)
+         - How certain are we these are true duplicates?
+         - Could consolidation break something?
+         - Are there hidden dependencies?
+      
+      3. **EFFORT SCORE** (0-10, lower is better)
+         - How hard would consolidation be?
+         - Are there API compatibility concerns?
+         - How many callers need updating?
+      
+      4. **RISK SCORE** (0-10, lower is better)
+         - Could consolidation introduce bugs?
+         - Are there subtle behavioral differences?
+         - Testing complexity for the change
+      
+      FOR EACH DUPLICATE:
+      - Calculate composite priority = (Impact + Confidence) - (Effort + Risk) / 2
+      - Estimate lines reducible if consolidated
+      - Determine consolidation approach
+      
+      CONSOLIDATION APPROACHES:
+      - **EXTRACT**: Pull common code into shared utility
+      - **MERGE**: Combine into single implementation with parameters
+      - **INHERIT**: Use inheritance/composition pattern
+      - **DELEGATE**: Have one call the other
+      - **TEMPLATE**: Create template/generic version
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "ranked_duplicates": [
+          {
+            "pair_id": "dup-001",
+            "priority_rank": 1,
+            "scores": {
+              "impact": N,
+              "confidence": N,
+              "effort": N,
+              "risk": N,
+              "composite": N
+            },
+            "lines_reducible": N,
+            "consolidation_approach": "extract | merge | inherit | delegate | template",
+            "consolidation_details": {
+              "strategy": "Detailed consolidation strategy",
+              "target_location": "Where consolidated code should live",
+              "api_changes": "Required interface changes",
+              "migration_steps": ["step1", "step2"]
+            }
+          }
+        ],
+        "consolidation_summary": {
+          "total_pairs": N,
+          "high_priority": N,
+          "medium_priority": N,
+          "low_priority": N,
+          "total_lines_reducible": N,
+          "recommended_first_action": "Which duplicate to tackle first and why"
+        }
+      }
+      ```
+    output: "ranked_results"
+    timeout: 180
+
+  # Step 6: Format as findings with consolidation recommendations
+  - id: "format-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Convert ranked duplicate analysis to final output with standard finding schema.
+      
+      RANKED RESULTS:
+      {{ranked_results}}
+      
+      COMPARISON RESULTS:
+      {{comparison_results}}
+      
+      FILE A: {{file_a}}
+      FILE B: {{file_b}}
+      SIMILARITY THRESHOLD: {{similarity_threshold}}
+      
+      Generate the final semantic duplication report.
+      
+      FINDING SCHEMA MAPPING:
+      - category: "semantic_duplication"
+      - tier: 2
+      - related_files: [file_a, file_b]
+      - severity mapping:
+        * HIGH: identical_logic or near_identical with high impact
+        * MEDIUM: structural or behavioral duplicates
+        * LOW: data_structure or config duplicates
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "duplicates": [
+          {
+            "type": "identical_logic | near_identical | structural | behavioral | data_structure | config",
+            "file_a": {
+              "path": "{{file_a}}",
+              "location": {"line_start": N, "line_end": M},
+              "element": "function/class name"
+            },
+            "file_b": {
+              "path": "{{file_b}}",
+              "location": {"line_start": N, "line_end": M},
+              "element": "function/class name"
+            },
+            "similarity_score": 0.0-1.0,
+            "evidence": "Why these are considered duplicates",
+            "consolidation_suggestion": "How to merge these"
+          }
+        ],
+        "summary": {
+          "total_duplicates": N,
+          "by_type": {
+            "identical_logic": N,
+            "near_identical": N,
+            "structural": N,
+            "behavioral": N,
+            "data_structure": N,
+            "config": N
+          },
+          "estimated_lines_reducible": N,
+          "top_consolidation_opportunity": "Description of highest-impact consolidation"
+        },
+        "findings": [
+          {
+            "id": "finding-001",
+            "category": "semantic_duplication",
+            "tier": 2,
+            "severity": "high | medium | low",
+            "title": "Semantic duplicate detected: [element names]",
+            "description": "Detailed description of the duplication",
+            "file": "{{file_a}}",
+            "location": {"line_start": N, "line_end": M},
+            "related_files": ["{{file_a}}", "{{file_b}}"],
+            "evidence": "Code evidence",
+            "recommendation": "How to resolve",
+            "effort_estimate": "small | medium | large",
+            "tags": ["duplication", "dry-violation", "refactor-candidate"]
+          }
+        ],
+        "actionable_recommendations": [
+          {
+            "priority": 1,
+            "action": "Consolidate X and Y",
+            "rationale": "Why this should be done first",
+            "estimated_benefit": "Lines saved, maintenance reduction",
+            "implementation_notes": "How to approach this"
+          }
+        ],
+        "caveats": [
+          "List any duplicates that might be intentional",
+          "Note any uncertain classifications"
+        ]
+      }
+      ```
+    output: "formatted_findings"
+    timeout: 180

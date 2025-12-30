@@ -1,0 +1,384 @@
+name: "compress-file-findings"
+description: "Compress full file findings into token-efficient summaries for large-scale analysis"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["compression", "aggregation", "scaling", "token-efficiency"]
+
+# This recipe takes full findings from single-file-orchestrator and compresses them
+# into a token-efficient format. Critical for scaling to large repositories where
+# we cannot keep all raw findings in context.
+#
+# Compression strategy:
+# 1. Keep top N findings in full detail (ranked by severity × confidence)
+# 2. Group similar findings into pattern summaries
+# 3. Generate file health metrics and summary
+#
+# Usage:
+#   amplifier run "execute recipes/compression/compress-file-findings.yaml with file_path=src/foo.py findings=<json>"
+
+context:
+  file_path: ""                     # Required: path to the analyzed file
+  findings: ""                      # Required: JSON array of findings from single-file-orchestrator
+  compression_level: "summary"      # "summary" | "detailed" | "minimal"
+  max_findings_detail: 3            # Number of findings to keep in full detail
+
+steps:
+  # Step 1: Parse and validate findings input
+  - id: "parse-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Parse the input findings and extract key metrics.
+      
+      FILE PATH: {{file_path}}
+      COMPRESSION LEVEL: {{compression_level}}
+      MAX DETAIL FINDINGS: {{max_findings_detail}}
+      
+      RAW FINDINGS INPUT:
+      {{findings}}
+      
+      TASK:
+      1. Parse the findings JSON (handle both array and object with "findings" key)
+      2. Count total findings
+      3. Count by severity: critical, high, medium, low, info
+      4. Count by category (dead_code, comment_code_conflict, etc.)
+      5. Count by confidence level
+      6. Count actionable findings
+      7. Estimate original token count (rough: chars / 4)
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "parse_status": "success | error",
+        "error_message": null,
+        "findings_array": [
+          // Parsed findings array (preserve all fields)
+        ],
+        "metrics": {
+          "total_findings": N,
+          "by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+          "by_category": {},
+          "by_confidence": {"high": 0, "medium": 0, "low": 0},
+          "actionable_count": N,
+          "estimated_original_tokens": N
+        }
+      }
+      ```
+      
+      If parsing fails, set parse_status to "error" and provide error_message.
+    output: "parsed_findings"
+    timeout: 120
+
+  # Step 2: Rank and prioritize findings
+  - id: "rank-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Rank all findings by priority for compression decisions.
+      
+      PARSED FINDINGS:
+      {{parsed_findings}}
+      
+      PRIORITY SCORING RULES:
+      Calculate a priority score for each finding using:
+      
+      SEVERITY WEIGHTS:
+      - critical: 100
+      - high: 75
+      - medium: 50
+      - low: 25
+      - info: 10
+      
+      CONFIDENCE MULTIPLIERS:
+      - high: 1.0
+      - medium: 0.7
+      - low: 0.4
+      
+      BONUS POINTS:
+      - actionable=true: +15
+      - has suggested_fix: +10
+      - fix_complexity=trivial or simple: +5
+      
+      FINAL SCORE = (severity_weight × confidence_multiplier) + bonuses
+      
+      TASK:
+      1. Calculate priority score for each finding
+      2. Sort findings by score (highest first)
+      3. Note the ranking position for each finding
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "ranked_findings": [
+          {
+            "rank": 1,
+            "priority_score": N,
+            "finding_id": "...",
+            "severity": "...",
+            "confidence": "...",
+            "category": "...",
+            "title": "...",
+            "full_finding": {/* complete finding object */}
+          }
+        ],
+        "score_distribution": {
+          "high_priority": N,     // score >= 70
+          "medium_priority": N,   // score 40-69
+          "low_priority": N       // score < 40
+        }
+      }
+      ```
+    output: "ranked_findings"
+    timeout: 120
+
+  # Step 3: Select top findings to keep in detail
+  - id: "select-top-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Select the top findings to keep in full detail.
+      
+      RANKED FINDINGS:
+      {{ranked_findings}}
+      
+      COMPRESSION LEVEL: {{compression_level}}
+      MAX FINDINGS DETAIL: {{max_findings_detail}}
+      
+      SELECTION RULES BY COMPRESSION LEVEL:
+      
+      **minimal**: Keep only critical/high severity findings (max 2)
+      **summary**: Keep top N by priority score (N = max_findings_detail)
+      **detailed**: Keep top N + all high-confidence findings (max 2× N)
+      
+      ALWAYS INCLUDE (regardless of count):
+      - Any finding with severity=critical
+      - Findings that might indicate security issues
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "top_findings": [
+          // Full finding objects for those kept in detail
+        ],
+        "remaining_finding_ids": [
+          // IDs of findings that will be compressed
+        ],
+        "selection_summary": {
+          "kept_in_detail": N,
+          "to_compress": M,
+          "selection_reason": "Brief explanation of selection criteria applied"
+        }
+      }
+      ```
+    output: "selected_findings"
+    timeout: 120
+
+  # Step 4: Compress remaining findings into patterns
+  - id: "compress-patterns"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Compress the remaining findings into pattern summaries.
+      
+      RANKED FINDINGS (full list):
+      {{ranked_findings}}
+      
+      FINDINGS TO COMPRESS (IDs):
+      {{selected_findings}}
+      
+      COMPRESSION TASK:
+      Group similar findings into patterns. Two findings are "similar" if:
+      - Same category AND same severity
+      - Similar issue type (e.g., multiple unused imports → one pattern)
+      - Affect similar code constructs
+      
+      For each pattern group, extract:
+      1. Pattern description (what the issue is)
+      2. Count of findings matching this pattern
+      3. Representative severity (highest in group)
+      4. Example line number (first occurrence)
+      5. Example title (most descriptive from group)
+      
+      COMPRESSION LEVEL: {{compression_level}}
+      - minimal: Aggressive grouping, category-level only
+      - summary: Group by category + issue type
+      - detailed: Fine-grained patterns, preserve more distinctions
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "compressed_findings": [
+          {
+            "pattern": "Description of the pattern (e.g., 'Unused import statements')",
+            "count": N,
+            "severity": "highest severity in group",
+            "confidence": "highest confidence in group", 
+            "category": "...",
+            "example_line": N,
+            "example_title": "Most descriptive title from group",
+            "actionable_count": N,
+            "finding_ids": ["id1", "id2"]
+          }
+        ],
+        "compression_stats": {
+          "original_finding_count": N,
+          "pattern_count": M,
+          "compression_ratio": "N:M"
+        }
+      }
+      ```
+    output: "compressed_patterns"
+    timeout: 180
+
+  # Step 5: Calculate file health grade
+  - id: "calculate-health"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Calculate a file health grade based on all findings.
+      
+      PARSED METRICS:
+      {{parsed_findings}}
+      
+      RANKED FINDINGS:
+      {{ranked_findings}}
+      
+      GRADING RUBRIC:
+      
+      Start with 100 points, subtract:
+      - Each critical finding: -25 points
+      - Each high severity finding: -15 points
+      - Each medium severity finding: -5 points
+      - Each low severity finding: -2 points
+      - Each info finding: -0 points
+      
+      GRADE THRESHOLDS:
+      - A: 90-100 (excellent, minimal issues)
+      - B: 75-89 (good, minor issues)
+      - C: 60-74 (fair, some issues need attention)
+      - D: 40-59 (poor, significant issues)
+      - F: 0-39 (failing, critical issues)
+      
+      Also consider:
+      - High actionable percentage is positive (issues can be fixed)
+      - High confidence findings are more certain
+      - Pattern of issues (e.g., all dead code vs mixed issues)
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "file_health": "A | B | C | D | F",
+        "health_score": N,
+        "health_factors": {
+          "severity_penalty": -N,
+          "actionability_bonus": "+N% actionable",
+          "confidence_note": "X% high confidence findings"
+        },
+        "file_notes": "One-paragraph summary of file health explaining the grade and key issues"
+      }
+      ```
+    output: "health_assessment"
+    timeout: 120
+
+  # Step 6: Assemble final compressed output
+  - id: "assemble-output"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Assemble the final compressed findings output.
+      
+      FILE PATH: {{file_path}}
+      COMPRESSION LEVEL: {{compression_level}}
+      
+      PARSED FINDINGS (for metrics):
+      {{parsed_findings}}
+      
+      SELECTED TOP FINDINGS:
+      {{selected_findings}}
+      
+      COMPRESSED PATTERNS:
+      {{compressed_patterns}}
+      
+      HEALTH ASSESSMENT:
+      {{health_assessment}}
+      
+      TASK:
+      Assemble all pieces into the final compressed output format.
+      Calculate token reduction by comparing:
+      - Original: estimated tokens from parsed_findings
+      - Compressed: estimate tokens in final output (chars / 4)
+      
+      OUTPUT FORMAT (this is the final recipe output):
+      ```json
+      {
+        "file_path": "{{file_path}}",
+        "compression_level": "{{compression_level}}",
+        "file_health": "A | B | C | D | F",
+        "summary": {
+          "total_findings": N,
+          "by_severity": {"critical": 0, "high": X, "medium": Y, "low": Z, "info": W},
+          "by_category": {"dead_code": A, "comment_code_conflict": B, ...},
+          "by_confidence": {"high": X, "medium": Y, "low": Z},
+          "actionable_count": N
+        },
+        "top_findings": [
+          // Full detail for top N findings (complete finding objects)
+        ],
+        "compressed_findings": [
+          {
+            "pattern": "description",
+            "count": N,
+            "severity": "...",
+            "confidence": "...",
+            "category": "...",
+            "example_line": N,
+            "example_title": "...",
+            "actionable_count": N
+          }
+        ],
+        "file_notes": "One-paragraph summary of file health",
+        "token_reduction": {
+          "original_tokens": N,
+          "compressed_tokens": M,
+          "reduction_percent": "X%"
+        },
+        "metadata": {
+          "compression_version": "1.0.0",
+          "findings_kept_detail": N,
+          "findings_compressed": M,
+          "patterns_created": P
+        }
+      }
+      ```
+      
+      IMPORTANT:
+      - Ensure all top_findings have complete finding objects (all schema fields)
+      - Compressed findings should have enough info to regenerate action items
+      - The output must be valid JSON
+    output: "final_compressed_output"
+    timeout: 180
+
+output:
+  format: "json"
+  schema: |
+    {
+      "file_path": "string",
+      "compression_level": "string",
+      "file_health": "string (A|B|C|D|F)",
+      "summary": {
+        "total_findings": "integer",
+        "by_severity": "object",
+        "by_category": "object",
+        "by_confidence": "object",
+        "actionable_count": "integer"
+      },
+      "top_findings": "array of complete finding objects",
+      "compressed_findings": "array of pattern summaries",
+      "file_notes": "string",
+      "token_reduction": {
+        "original_tokens": "integer",
+        "compressed_tokens": "integer",
+        "reduction_percent": "string"
+      },
+      "metadata": "object"
+    }

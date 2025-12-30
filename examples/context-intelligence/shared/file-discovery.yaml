@@ -1,0 +1,52 @@
+name: "file-discovery"
+description: "Discover files in a directory matching patterns with exclusions"
+version: "1.1.0"
+author: "Context Intelligence System"
+tags: ["shared", "utility", "discovery"]
+
+# This utility recipe discovers files matching patterns.
+# Used by orchestrators that need to process multiple files.
+#
+# NOTE: A bash-step optimized version (file-discovery-bash.yaml) exists
+# for use when bash step support is available.
+#
+# Usage:
+#   amplifier run "execute recipes/shared/file-discovery.yaml with root_path=/path/to/dir"
+
+context:
+  root_path: ""                    # Required: root directory to search
+  file_pattern: "*.py"             # Glob pattern for files
+  exclude_patterns: "__pycache__,.git,node_modules,venv,.venv,__init__.py"
+  max_depth: 5                     # Maximum directory depth
+
+steps:
+  - id: "discover-files"
+    agent: "foundation:explorer"
+    prompt: |
+      Find all files matching the pattern in the given directory.
+      
+      ROOT PATH: {{root_path}}
+      FILE PATTERN: {{file_pattern}}
+      EXCLUDE PATTERNS: {{exclude_patterns}}
+      MAX DEPTH: {{max_depth}}
+      
+      TASK:
+      1. Use the glob tool to find all files matching {{file_pattern}} under {{root_path}}
+      2. Exclude any paths containing these patterns: {{exclude_patterns}}
+      3. Limit to {{max_depth}} directory levels deep
+      4. Return absolute paths only
+      
+      OUTPUT FORMAT (JSON only, no commentary):
+      ```json
+      {
+        "root_path": "{{root_path}}",
+        "pattern": "{{file_pattern}}",
+        "files": [
+          "/absolute/path/to/file1.py",
+          "/absolute/path/to/file2.py"
+        ],
+        "total_found": N
+      }
+      ```
+    output: "discovery_result"
+    timeout: 120

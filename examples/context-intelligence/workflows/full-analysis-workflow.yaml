@@ -1,0 +1,1212 @@
+name: "full-analysis-workflow"
+description: "Master workflow that orchestrates a complete repository analysis from start to finish"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["workflow", "orchestrator", "comprehensive", "multi-tier", "end-to-end"]
+
+# This is the master workflow that chains together all individual analysis recipes
+# into a cohesive pipeline. It provides end-to-end repository analysis from discovery
+# through to report generation and optional auto-fixing.
+#
+# PIPELINE STAGES:
+# 1. Discovery      - Find and classify all files in the repository
+# 2. Tier 1         - Single-file analyses (dead code, naming, comments, etc.)
+# 3. Compression    - Compress findings per file for scalability
+# 4. Tier 2         - Pairwise comparisons (doc-code accuracy, duplicates)
+# 5. Tier 3         - Cross-cutting analysis (architecture, DRY violations)
+# 6. Aggregation    - Aggregate all findings into repo-level summary
+# 7. Synthesis      - Create prioritized action plan
+# 8. Categorization - Route findings to appropriate teams/processes
+# 9. Execution      - Execute auto-fixable items (if enabled)
+# 10. Report        - Generate final comprehensive report
+#
+# Usage:
+#   # Quick analysis (tier 1 only, dry run)
+#   amplifier run "execute recipes/workflows/full-analysis-workflow.yaml with repo_path=/path/to/repo analysis_depth=quick"
+#
+#   # Standard analysis (tier 1 + tier 2)
+#   amplifier run "execute recipes/workflows/full-analysis-workflow.yaml with repo_path=/path/to/repo"
+#
+#   # Deep analysis with auto-fix
+#   amplifier run "execute recipes/workflows/full-analysis-workflow.yaml with repo_path=/path/to/repo analysis_depth=deep dry_run=false"
+
+context:
+  repo_path: ""                      # Required: Repository path to analyze
+  max_files: 50                      # Maximum files to analyze
+  analysis_depth: "standard"         # "quick" | "standard" | "deep"
+  skip_tiers: "[]"                   # JSON array of tiers to skip, e.g., '["tier3"]'
+  dry_run: true                      # If true, don't execute fixes
+  working_dir: "./ai_working"        # Working directory for intermediate files
+  backup_dir: "./ai_working/backups" # Backup directory for modified files
+
+recursion:
+  max_depth: 5
+  max_total_steps: 500
+
+stages:
+  # ==========================================================================
+  # STAGE 1: DISCOVERY
+  # ==========================================================================
+  # Find and classify all files in the repository
+  - name: "discovery"
+    steps:
+      - id: "record-start-time"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"discovery\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "discovery_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "discover-files"
+        type: "bash"
+        command: |
+          # Find analyzable files in the repository
+          # Supports Python, JavaScript/TypeScript, and documentation files
+          
+          find_files() {
+            find "{{repo_path}}" -type f \( \
+              -name "*.py" -o \
+              -name "*.js" -o \
+              -name "*.ts" -o \
+              -name "*.jsx" -o \
+              -name "*.tsx" -o \
+              -name "*.md" -o \
+              -name "*.yaml" -o \
+              -name "*.yml" \
+            \) \
+              ! -path "*/__pycache__/*" \
+              ! -path "*/.git/*" \
+              ! -path "*/node_modules/*" \
+              ! -path "*/.venv/*" \
+              ! -path "*/venv/*" \
+              ! -path "*/.env/*" \
+              ! -path "*/dist/*" \
+              ! -path "*/build/*" \
+              ! -path "*/*.egg-info/*" \
+              2>/dev/null | head -n {{max_files}}
+          }
+          
+          # Build JSON output
+          files=$(find_files | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          count=$(echo "$files" | jq 'length')
+          
+          # Classify files by type
+          python_files=$(echo "$files" | jq '[.[] | select(endswith(".py"))]')
+          python_count=$(echo "$python_files" | jq 'length')
+          
+          js_files=$(echo "$files" | jq '[.[] | select(endswith(".js") or endswith(".jsx") or endswith(".ts") or endswith(".tsx"))]')
+          js_count=$(echo "$js_files" | jq 'length')
+          
+          doc_files=$(echo "$files" | jq '[.[] | select(endswith(".md"))]')
+          doc_count=$(echo "$doc_files" | jq 'length')
+          
+          config_files=$(echo "$files" | jq '[.[] | select(endswith(".yaml") or endswith(".yml"))]')
+          config_count=$(echo "$config_files" | jq 'length')
+          
+          # Filter for tier1 analysis (code files only, no tests)
+          tier1_files=$(echo "$files" | jq '[.[] | select(
+            (endswith(".py") or endswith(".js") or endswith(".jsx") or endswith(".ts") or endswith(".tsx")) and
+            (contains("test") | not) and
+            (contains("_test.") | not) and
+            (contains(".test.") | not)
+          )]')
+          tier1_count=$(echo "$tier1_files" | jq 'length')
+          
+          echo "{
+            \"all_files\": $files,
+            \"total_count\": $count,
+            \"by_type\": {
+              \"python\": {\"count\": $python_count, \"files\": $python_files},
+              \"javascript\": {\"count\": $js_count, \"files\": $js_files},
+              \"documentation\": {\"count\": $doc_count, \"files\": $doc_files},
+              \"config\": {\"count\": $config_count, \"files\": $config_files}
+            },
+            \"tier1_candidates\": $tier1_files,
+            \"tier1_count\": $tier1_count,
+            \"discovery_complete\": true
+          }"
+        output: "discovered_files"
+        parse_json: true
+        timeout: 120
+
+      - id: "record-discovery-end"
+        type: "bash"
+        command: |
+          start_epoch={{discovery_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          echo "{\"stage\": \"discovery\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration}"
+        output: "discovery_timing_end"
+        parse_json: true
+        timeout: 10
+
+  # ==========================================================================
+  # STAGE 2: TIER 1 ANALYSIS
+  # ==========================================================================
+  # Run single-file analyses on all candidate files
+  - name: "tier1-analysis"
+    steps:
+      - id: "record-tier1-start"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"tier1\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "tier1_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "analyze-files"
+        foreach: "{{discovered_files.tier1_candidates}}"
+        as: "current_file"
+        type: "recipe"
+        recipe: "../tier1/single-file-orchestrator.yaml"
+        context:
+          file_path: "{{current_file}}"
+          skip_verification: "true"
+        collect: "tier1_raw_analyses"
+        on_error: "continue"
+
+      - id: "record-tier1-end"
+        type: "bash"
+        command: |
+          start_epoch={{tier1_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          echo "{\"stage\": \"tier1\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration}"
+        output: "tier1_timing_end"
+        parse_json: true
+        timeout: 10
+
+  # ==========================================================================
+  # STAGE 3: COMPRESSION
+  # ==========================================================================
+  # Compress findings per file for scalability
+  - name: "compression"
+    steps:
+      - id: "record-compression-start"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"compression\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "compression_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "compress-findings"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Compress the Tier 1 analysis findings for scalability.
+          
+          RAW TIER 1 ANALYSES:
+          {{tier1_raw_analyses}}
+          
+          COMPRESSION SETTINGS:
+          - Analysis depth: {{analysis_depth}}
+          - Compression level: {% if analysis_depth == "quick" %}minimal{% elif analysis_depth == "deep" %}detailed{% else %}summary{% endif %}
+          - Max findings to keep in detail per file: {% if analysis_depth == "quick" %}2{% elif analysis_depth == "deep" %}5{% else %}3{% endif %}
+          
+          TASK:
+          For each file's analysis results:
+          1. Extract and parse the findings
+          2. Calculate file health grade (A-F based on finding severity)
+          3. Keep top N findings in full detail (by severity × confidence)
+          4. Compress remaining findings into pattern summaries
+          5. Calculate summary metrics
+          
+          OUTPUT FORMAT:
+          ```json
+          {
+            "compressed_findings": [
+              {
+                "file_path": "...",
+                "file_health": "A|B|C|D|F",
+                "health_score": 0-100,
+                "summary": {
+                  "total_findings": N,
+                  "by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+                  "by_category": {...}
+                },
+                "top_findings": [...],
+                "compressed_patterns": [...],
+                "file_notes": "Brief health summary"
+              }
+            ],
+            "compression_stats": {
+              "files_processed": N,
+              "total_findings": N,
+              "findings_kept_detail": N,
+              "patterns_created": N
+            }
+          }
+          ```
+        output: "compressed_findings"
+        timeout: 300
+
+      - id: "record-compression-end"
+        type: "bash"
+        command: |
+          start_epoch={{compression_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          echo "{\"stage\": \"compression\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration}"
+        output: "compression_timing_end"
+        parse_json: true
+        timeout: 10
+
+  # ==========================================================================
+  # STAGE 4: TIER 2 ANALYSIS (conditional)
+  # ==========================================================================
+  # Pairwise comparisons - doc/code accuracy, semantic duplicates
+  - name: "tier2-analysis"
+    steps:
+      - id: "check-tier2-skip"
+        type: "bash"
+        command: |
+          skip_tiers='{{skip_tiers}}'
+          analysis_depth='{{analysis_depth}}'
+          
+          # Skip tier2 if explicitly in skip_tiers or if analysis_depth is "quick"
+          if echo "$skip_tiers" | grep -q "tier2" || [ "$analysis_depth" = "quick" ]; then
+            echo '{"skip": true, "reason": "Tier 2 skipped per configuration"}'
+          else
+            echo '{"skip": false, "reason": "Tier 2 will run"}'
+          fi
+        output: "tier2_skip_check"
+        parse_json: true
+        timeout: 10
+
+      # Set default empty values for tier2 when skipped
+      - id: "set-tier2-defaults"
+        condition: "{{tier2_skip_check.skip}} == true"
+        type: "bash"
+        command: |
+          echo '{"tier2_findings": [], "tier2_summary": {"total_findings": 0, "skipped": true, "reason": "Tier 2 skipped per configuration"}, "pairs_analyzed": 0}'
+        output: "tier2_findings"
+        parse_json: true
+        timeout: 10
+
+      - id: "set-tier2-timing-defaults"
+        condition: "{{tier2_skip_check.skip}} == true"
+        type: "bash"
+        command: |
+          echo '{"stage": "tier2", "duration_seconds": 0, "skipped": true}'
+        output: "tier2_timing_end"
+        parse_json: true
+        timeout: 10
+
+      - id: "record-tier2-start"
+        condition: "{{tier2_skip_check.skip}} == false"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"tier2\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "tier2_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "run-tier2-analysis"
+        condition: "{{tier2_skip_check.skip}} == false"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Perform Tier 2 pairwise analysis on the repository.
+          
+          DISCOVERED FILES:
+          {{discovered_files}}
+          
+          COMPRESSED TIER 1 FINDINGS:
+          {{compressed_findings}}
+          
+          TIER 2 ANALYSIS TYPES:
+          1. **Doc-Code Accuracy**: Compare documentation files with their associated code
+             - README.md vs actual functionality
+             - Docstrings vs function behavior
+             - API documentation vs implementation
+          
+          2. **Semantic Duplicates**: Find conceptually similar code that might be consolidated
+             - Functions with similar logic
+             - Classes with overlapping responsibilities
+             - Repeated patterns across files
+          
+          3. **Cross-Document Contradictions**: Find inconsistencies between documentation
+             - Different docs saying different things about the same feature
+             - Outdated examples
+          
+          TASK:
+          1. Identify doc-code pairs from discovered files
+          2. Identify potential duplicate candidates from tier1 findings
+          3. Analyze each pair/set for issues
+          4. Report findings with file associations
+          
+          OUTPUT FORMAT:
+          ```json
+          {
+            "tier2_findings": [
+              {
+                "finding_id": "tier2-001",
+                "analysis_type": "doc_code_accuracy | semantic_duplicate | cross_doc_contradiction",
+                "severity": "critical | high | medium | low",
+                "confidence": "high | medium | low",
+                "description": "What was found",
+                "files_involved": ["file1.py", "file2.md"],
+                "evidence": "Specific evidence",
+                "suggested_action": "How to fix"
+              }
+            ],
+            "tier2_summary": {
+              "total_findings": N,
+              "pairs_analyzed": N,
+              "by_type": {"doc_code_accuracy": N, "semantic_duplicate": N, "cross_doc_contradiction": N}
+            }
+          }
+          ```
+        output: "tier2_findings"
+        timeout: 300
+
+      - id: "record-tier2-end"
+        condition: "{{tier2_skip_check.skip}} == false"
+        type: "bash"
+        command: |
+          start_epoch={{tier2_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          echo "{\"stage\": \"tier2\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration}"
+        output: "tier2_timing_end"
+        parse_json: true
+        timeout: 10
+
+  # ==========================================================================
+  # STAGE 5: TIER 3 ANALYSIS (conditional - deep only)
+  # ==========================================================================
+  # Cross-cutting analysis - architecture, DRY violations
+  - name: "tier3-analysis"
+    steps:
+      - id: "check-tier3-skip"
+        type: "bash"
+        command: |
+          skip_tiers='{{skip_tiers}}'
+          analysis_depth='{{analysis_depth}}'
+          
+          # Tier3 only runs for "deep" analysis and if not explicitly skipped
+          if echo "$skip_tiers" | grep -q "tier3" || [ "$analysis_depth" != "deep" ]; then
+            echo '{"skip": true, "reason": "Tier 3 only runs for deep analysis"}'
+          else
+            echo '{"skip": false, "reason": "Tier 3 will run (deep analysis)"}'
+          fi
+        output: "tier3_skip_check"
+        parse_json: true
+        timeout: 10
+
+      # Set default empty values for tier3 when skipped
+      - id: "set-tier3-defaults"
+        condition: "{{tier3_skip_check.skip}} == true"
+        type: "bash"
+        command: |
+          echo '{"tier3_findings": [], "tier3_summary": {"total_findings": 0, "skipped": true, "reason": "Tier 3 only runs for deep analysis"}, "architectural_assessment": null}'
+        output: "tier3_findings"
+        parse_json: true
+        timeout: 10
+
+      - id: "set-tier3-timing-defaults"
+        condition: "{{tier3_skip_check.skip}} == true"
+        type: "bash"
+        command: |
+          echo '{"stage": "tier3", "duration_seconds": 0, "skipped": true}'
+        output: "tier3_timing_end"
+        parse_json: true
+        timeout: 10
+
+      - id: "record-tier3-start"
+        condition: "{{tier3_skip_check.skip}} == false"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"tier3\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "tier3_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "run-tier3-analysis"
+        condition: "{{tier3_skip_check.skip}} == false"
+        agent: "foundation:zen-architect"
+        mode: "ARCHITECT"
+        prompt: |
+          Perform Tier 3 cross-cutting architectural analysis.
+          
+          REPOSITORY: {{repo_path}}
+          
+          DISCOVERED FILES:
+          {{discovered_files}}
+          
+          COMPRESSED TIER 1 FINDINGS:
+          {{compressed_findings}}
+          
+          TIER 2 FINDINGS:
+          {{tier2_findings}}
+          
+          TIER 3 ANALYSIS TYPES:
+          
+          1. **Architectural Consistency**:
+             - Is the codebase following consistent patterns?
+             - Are there layering violations (e.g., UI calling database directly)?
+             - Is dependency direction correct?
+          
+          2. **DRY Violations**:
+             - Code that should be abstracted but isn't
+             - Repeated logic across multiple locations
+             - Configuration duplication
+          
+          3. **Cross-Cutting Concerns**:
+             - Error handling patterns
+             - Logging consistency
+             - Security patterns (auth, validation)
+          
+          4. **Codebase Health Indicators**:
+             - Complexity hotspots
+             - Test coverage patterns
+             - Documentation completeness
+          
+          TASK:
+          1. Analyze the overall architecture based on file structure and findings
+          2. Identify cross-cutting patterns and anti-patterns
+          3. Assess systemic issues that span multiple files
+          4. Provide architectural recommendations
+          
+          OUTPUT FORMAT:
+          ```json
+          {
+            "tier3_findings": [
+              {
+                "finding_id": "tier3-001",
+                "analysis_type": "architectural_consistency | dry_violation | cross_cutting_concern | health_indicator",
+                "severity": "critical | high | medium | low",
+                "confidence": "high | medium | low",
+                "description": "What was found",
+                "scope": "repository-wide | module | subsystem",
+                "affected_areas": ["area1", "area2"],
+                "impact": "Impact description",
+                "recommendation": "How to address"
+              }
+            ],
+            "architectural_assessment": {
+              "overall_architecture": "Description of current architecture",
+              "strengths": ["strength1", "strength2"],
+              "weaknesses": ["weakness1", "weakness2"],
+              "technical_debt_level": "low | medium | high | critical"
+            },
+            "tier3_summary": {
+              "total_findings": N,
+              "by_type": {...}
+            }
+          }
+          ```
+        output: "tier3_findings"
+        timeout: 420
+
+      - id: "record-tier3-end"
+        condition: "{{tier3_skip_check.skip}} == false"
+        type: "bash"
+        command: |
+          start_epoch={{tier3_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          echo "{\"stage\": \"tier3\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration}"
+        output: "tier3_timing_end"
+        parse_json: true
+        timeout: 10
+
+  # ==========================================================================
+  # STAGE 6: AGGREGATION
+  # ==========================================================================
+  # Aggregate all findings into repo-level summary
+  - name: "aggregation"
+    steps:
+      - id: "record-aggregation-start"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"aggregation\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "aggregation_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "aggregate-all-findings"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Aggregate all findings from all tiers into a unified repository report.
+          
+          REPOSITORY: {{repo_path}}
+          ANALYSIS DEPTH: {{analysis_depth}}
+          
+          DISCOVERY RESULTS:
+          {{discovered_files}}
+          
+          COMPRESSED TIER 1 FINDINGS:
+          {{compressed_findings}}
+          
+          TIER 2 FINDINGS (if available):
+          {{tier2_findings}}
+          
+          TIER 3 FINDINGS (if available):
+          {{tier3_findings}}
+          
+          TASK:
+          1. Merge all findings from all tiers
+          2. Identify cross-cutting patterns (issues appearing in multiple files/analyses)
+          3. Calculate overall repository health score
+          4. Create priority ordering by impact
+          5. Generate actionable summary
+          
+          HEALTH SCORE CALCULATION:
+          - Start with 100 points
+          - Deduct based on finding severity across all files
+          - Adjust for cross-cutting patterns (systemic issues are worse)
+          - Grade: A(90-100), B(75-89), C(60-74), D(40-59), F(0-39)
+          
+          OUTPUT FORMAT:
+          ```json
+          {
+            "repo_path": "{{repo_path}}",
+            "repo_health": "A|B|C|D|F",
+            "repo_health_score": 0-100,
+            "summary": {
+              "total_files_analyzed": N,
+              "total_findings": N,
+              "by_severity": {"critical": N, "high": N, "medium": N, "low": N},
+              "by_tier": {"tier1": N, "tier2": N, "tier3": N},
+              "by_category": {...}
+            },
+            "cross_cutting_patterns": [
+              {
+                "pattern": "description",
+                "severity": "...",
+                "affected_files": [...],
+                "occurrences": N,
+                "root_cause_hypothesis": "...",
+                "fix_strategy": "..."
+              }
+            ],
+            "priority_order": [
+              {
+                "rank": 1,
+                "finding_or_pattern": "...",
+                "type": "tier1 | tier2 | tier3 | cross_cutting",
+                "impact_score": N,
+                "reason": "Why prioritized"
+              }
+            ],
+            "file_health_distribution": {"A": N, "B": N, "C": N, "D": N, "F": N},
+            "actionable_summary": "Executive summary with top recommendations"
+          }
+          ```
+        output: "aggregated_findings"
+        timeout: 300
+
+      - id: "record-aggregation-end"
+        type: "bash"
+        command: |
+          start_epoch={{aggregation_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          echo "{\"stage\": \"aggregation\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration}"
+        output: "aggregation_timing_end"
+        parse_json: true
+        timeout: 10
+
+  # ==========================================================================
+  # STAGE 7: SYNTHESIS
+  # ==========================================================================
+  # Create prioritized action plan
+  - name: "synthesis"
+    steps:
+      - id: "record-synthesis-start"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"synthesis\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "synthesis_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "synthesize-action-plan"
+        agent: "foundation:zen-architect"
+        mode: "ARCHITECT"
+        prompt: |
+          Synthesize all findings into a prioritized action plan.
+          
+          AGGREGATED FINDINGS:
+          {{aggregated_findings}}
+          
+          TIER 2 FINDINGS:
+          {{tier2_findings}}
+          
+          TIER 3 FINDINGS:
+          {{tier3_findings}}
+          
+          SYNTHESIS TASKS:
+          
+          1. **Deduplicate**: Find and merge duplicate/overlapping findings
+          
+          2. **Root Cause Analysis**: Identify root causes where fixing one issue resolves multiple symptoms
+          
+          3. **Theme Grouping**: Group findings into actionable themes:
+             - Documentation Quality
+             - Security Hardening
+             - Performance Optimization
+             - Code Cleanup
+             - Error Handling
+             - Testing Gaps
+             - Architecture Improvements
+          
+          4. **Prioritization**: Create action plan using Impact × Urgency / Effort
+          
+          5. **Quick Wins**: Identify high-impact, low-effort items
+          
+          OUTPUT FORMAT:
+          ```json
+          {
+            "synthesis_summary": {
+              "total_unique_findings": N,
+              "deduplicated_count": N,
+              "root_causes_identified": N,
+              "action_themes": N,
+              "total_actions": N,
+              "repo_health": "A|B|C|D|F",
+              "repo_health_score": 0-100
+            },
+            "root_cause_analysis": [
+              {
+                "root_cause_id": "rc-001",
+                "root_cause": "Description",
+                "symptoms": ["finding-001", "finding-005"],
+                "severity": "high",
+                "fix_once_impact": "Fixes N issues",
+                "recommended_fix": "How to address"
+              }
+            ],
+            "action_themes": [
+              {
+                "theme_id": "theme-001",
+                "theme": "Theme name",
+                "findings": [...],
+                "total_findings": N,
+                "aggregate_severity": "high",
+                "recommended_approach": "sprint | incremental | hotfix"
+              }
+            ],
+            "action_plan": [
+              {
+                "priority": 1,
+                "action_id": "action-001",
+                "action": "What to do",
+                "addresses": ["finding-001", "rc-001"],
+                "effort": "low | medium | high",
+                "impact": "low | medium | high | critical",
+                "suggested_assignee": "team or role"
+              }
+            ],
+            "quick_wins": [
+              {
+                "action_id": "...",
+                "action": "...",
+                "impact": "high",
+                "effort": "low"
+              }
+            ],
+            "executive_summary": "2-3 paragraph summary for stakeholders"
+          }
+          ```
+        output: "synthesized_findings"
+        timeout: 360
+
+      - id: "record-synthesis-end"
+        type: "bash"
+        command: |
+          start_epoch={{synthesis_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          echo "{\"stage\": \"synthesis\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration}"
+        output: "synthesis_timing_end"
+        parse_json: true
+        timeout: 10
+
+  # ==========================================================================
+  # STAGE 8: CATEGORIZATION
+  # ==========================================================================
+  # Route findings to appropriate categories for action
+  - name: "categorization"
+    steps:
+      - id: "record-categorization-start"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"categorization\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "categorization_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "categorize-findings"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Categorize all findings into actionable buckets for routing.
+          
+          SYNTHESIZED FINDINGS:
+          {{synthesized_findings}}
+          
+          CATEGORIZATION BUCKETS:
+          
+          1. **auto_fixable**: Can be fixed automatically
+             - Unused imports, formatting, simple refactors
+             - High confidence with mechanical fix
+          
+          2. **quick_wins**: Low effort, high impact (do now)
+             - Easy fixes, obvious improvements
+             - Can be done by any developer
+          
+          3. **tech_debt**: Important but not urgent (backlog)
+             - Refactoring, code cleanup
+             - Improves long-term maintainability
+          
+          4. **needs_discussion**: Requires team decision
+             - Architecture changes, API modifications
+             - Multiple valid solutions
+          
+          5. **security_review**: Needs security team
+             - Auth, credentials, injection risks
+             - Any security-related findings
+          
+          6. **documentation**: Doc updates needed
+             - Outdated docs, missing docstrings
+             - README improvements
+          
+          7. **false_positives**: Likely not real issues
+             - Low confidence, intentional patterns
+          
+          OUTPUT FORMAT:
+          ```json
+          {
+            "categorized": {
+              "auto_fixable": {
+                "findings": [...],
+                "count": N,
+                "automation_ready": true
+              },
+              "quick_wins": {
+                "findings": [...],
+                "count": N,
+                "total_effort": "X hours"
+              },
+              "tech_debt": {
+                "findings": [...],
+                "count": N,
+                "backlog_priority": "high | medium | low"
+              },
+              "needs_discussion": {
+                "findings": [...],
+                "count": N,
+                "topics": [...]
+              },
+              "security_review": {
+                "findings": [...],
+                "count": N,
+                "risk_level": "critical | high | medium | low"
+              },
+              "documentation": {
+                "findings": [...],
+                "count": N
+              },
+              "false_positives": {
+                "findings": [...],
+                "count": N
+              }
+            },
+            "routing_summary": {
+              "total_routed": N,
+              "automation_potential": {
+                "fully_automatable": N,
+                "manual_only": N,
+                "automation_coverage": "X%"
+              }
+            }
+          }
+          ```
+        output: "categorized_findings"
+        timeout: 240
+
+      - id: "record-categorization-end"
+        type: "bash"
+        command: |
+          start_epoch={{categorization_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          echo "{\"stage\": \"categorization\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration}"
+        output: "categorization_timing_end"
+        parse_json: true
+        timeout: 10
+
+  # ==========================================================================
+  # STAGE 9: EXECUTION (conditional - only if not dry_run)
+  # ==========================================================================
+  # Execute auto-fixable items
+  # NOTE: Approval is only meaningful when dry_run=false. When dry_run=true,
+  # the execution steps will be skipped regardless of approval.
+  - name: "execution"
+    approval:
+      required: true
+      prompt: |
+        AUTO-FIX EXECUTION REVIEW
+        
+        ⚠️  Dry Run Mode: {{dry_run}}
+        
+        {{#if dry_run}}
+        NOTE: Since dry_run=true, NO CHANGES will be made regardless of approval.
+        The report will still be generated. Approve to continue to the report stage.
+        {{else}}
+        The following auto-fixable items have been identified:
+        
+        {{categorized_findings}}
+        
+        If you APPROVE:
+        - Auto-fixable items will be applied
+        - Backups will be created before changes
+        - Changes can be rolled back if needed
+        
+        If you DENY:
+        - No changes will be made
+        - Report will still be generated
+        {{/if}}
+        
+        Approve to proceed?
+      timeout: 0
+      default: "deny"
+    steps:
+      - id: "check-execution-mode"
+        type: "bash"
+        command: |
+          # Handle both string "true" and boolean true (rendered as True or true)
+          dry_run_val="{{dry_run}}"
+          dry_run_lower=$(echo "$dry_run_val" | tr '[:upper:]' '[:lower:]')
+          if [ "$dry_run_lower" = "true" ] || [ "$dry_run_lower" = "1" ] || [ "$dry_run_lower" = "yes" ]; then
+            echo '{"execute": false, "reason": "Dry run mode - no changes made"}'
+          else
+            echo '{"execute": true, "reason": "Execution mode enabled"}'
+          fi
+        output: "execution_mode"
+        parse_json: true
+        timeout: 10
+
+      # Set default values when execution is skipped
+      - id: "set-execution-defaults"
+        condition: "{{execution_mode.execute}} == false"
+        type: "bash"
+        command: |
+          echo '{"execution_results": {"total_attempted": 0, "successful": 0, "failed": 0, "skipped": 0, "changes": [], "dry_run": true}, "backup_created": false}'
+        output: "execution_results"
+        parse_json: true
+        timeout: 10
+
+      - id: "set-execution-timing-defaults"
+        condition: "{{execution_mode.execute}} == false"
+        type: "bash"
+        command: |
+          echo '{"stage": "execution", "duration_seconds": 0, "skipped": true, "reason": "dry_run mode"}'
+        output: "execution_timing_end"
+        parse_json: true
+        timeout: 10
+
+      - id: "record-execution-start"
+        condition: "{{execution_mode.execute}} == true"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"execution\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "execution_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "execute-auto-fixes"
+        condition: "{{execution_mode.execute}} == true"
+        agent: "foundation:modular-builder"
+        prompt: |
+          Execute the auto-fixable items from the categorized findings.
+          
+          AUTO-FIXABLE FINDINGS:
+          {{categorized_findings}}
+          
+          BACKUP DIRECTORY: {{backup_dir}}
+          
+          EXECUTION RULES:
+          1. Create backup of each file before modifying
+          2. Apply fixes one at a time
+          3. Verify each fix after application
+          4. Stop if any fix fails verification
+          5. Track all changes for the report
+          
+          SAFETY:
+          - Only apply fixes marked as auto_fixable
+          - Only apply high-confidence fixes
+          - Create backups before any changes
+          - Verify syntax is valid after changes
+          
+          Return execution results in JSON format:
+          ```json
+          {
+            "execution_results": {
+              "total_attempted": N,
+              "successful": N,
+              "failed": N,
+              "skipped": N,
+              "changes": [
+                {
+                  "file": "...",
+                  "finding_id": "...",
+                  "status": "executed | failed | skipped",
+                  "change_description": "...",
+                  "backup_path": "..."
+                }
+              ]
+            },
+            "backup_created": true,
+            "backup_location": "..."
+          }
+          ```
+        output: "execution_results"
+        timeout: 600
+
+      - id: "record-execution-end"
+        condition: "{{execution_mode.execute}} == true"
+        type: "bash"
+        command: |
+          start_epoch={{execution_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          echo "{\"stage\": \"execution\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration}"
+        output: "execution_timing_end"
+        parse_json: true
+        timeout: 10
+
+  # ==========================================================================
+  # STAGE 10: REPORT GENERATION
+  # ==========================================================================
+  # Generate comprehensive final report
+  - name: "report"
+    steps:
+      - id: "record-report-start"
+        type: "bash"
+        command: |
+          echo "{\"stage\": \"report\", \"start_time\": \"$(date -Iseconds)\", \"start_epoch\": $(date +%s)}"
+        output: "report_timing_start"
+        parse_json: true
+        timeout: 10
+
+      - id: "generate-final-report"
+        agent: "foundation:zen-architect"
+        mode: "ARCHITECT"
+        prompt: |
+          Generate the comprehensive final analysis report.
+          
+          WORKFLOW CONFIGURATION:
+          - Repository: {{repo_path}}
+          - Analysis Depth: {{analysis_depth}}
+          - Skip Tiers: {{skip_tiers}}
+          - Dry Run: {{dry_run}}
+          - Max Files: {{max_files}}
+          
+          TIMING DATA:
+          - Discovery: {{discovery_timing_end}}
+          - Tier 1: {{tier1_timing_end}}
+          - Compression: {{compression_timing_end}}
+          - Tier 2: {{tier2_timing_end}}
+          - Tier 3: {{tier3_timing_end}}
+          - Aggregation: {{aggregation_timing_end}}
+          - Synthesis: {{synthesis_timing_end}}
+          - Categorization: {{categorization_timing_end}}
+          - Execution: {{execution_timing_end}}
+          
+          ANALYSIS RESULTS:
+          
+          Discovery:
+          {{discovered_files}}
+          
+          Aggregated Findings:
+          {{aggregated_findings}}
+          
+          Synthesized Results:
+          {{synthesized_findings}}
+          
+          Categorized Findings:
+          {{categorized_findings}}
+          
+          Execution Results (if any):
+          {{execution_results}}
+          
+          TASK:
+          Generate the final comprehensive report in the required output schema format.
+          
+          Calculate totals from the timing data for each stage that ran.
+          Determine stages_completed and stages_skipped based on what actually executed.
+          
+          EXECUTIVE SUMMARY REQUIREMENTS:
+          - 2-3 paragraphs summarizing overall repository health
+          - Key findings and risks
+          - Top 3 recommendations
+          - Clear next steps
+          
+          OUTPUT FORMAT:
+          ```json
+          {
+            "workflow_id": "wf-YYYYMMDD-HHMMSS",
+            "repo_path": "{{repo_path}}",
+            "analysis_depth": "{{analysis_depth}}",
+            "stages_completed": ["discovery", "tier1", ...],
+            "stages_skipped": ["tier3"],
+            "timing": {
+              "total_duration_seconds": N,
+              "by_stage": {
+                "discovery": N,
+                "tier1": N,
+                "compression": N,
+                "tier2": N,
+                "tier3": N,
+                "aggregation": N,
+                "synthesis": N,
+                "categorization": N,
+                "execution": N,
+                "report": N
+              }
+            },
+            "results": {
+              "discovery": {
+                "total_files": N,
+                "tier1_candidates": N,
+                "by_type": {...}
+              },
+              "tier1": {
+                "files_analyzed": N,
+                "total_findings": N,
+                "by_severity": {...}
+              },
+              "tier2": {
+                "pairs_analyzed": N,
+                "findings": N
+              },
+              "tier3": {
+                "findings": N,
+                "architectural_assessment": "..."
+              },
+              "synthesis": {
+                "root_causes": N,
+                "action_themes": N,
+                "actions_planned": N
+              },
+              "execution": {
+                "attempted": N,
+                "successful": N,
+                "failed": N
+              }
+            },
+            "final_report": {
+              "repo_health": "A|B|C|D|F",
+              "total_findings": N,
+              "actionable": N,
+              "auto_fixed": N,
+              "remaining": N,
+              "executive_summary": "Comprehensive 2-3 paragraph summary..."
+            }
+          }
+          ```
+        output: "final_report"
+        timeout: 300
+
+      - id: "save-report"
+        type: "bash"
+        command: |
+          mkdir -p {{working_dir}}/reports
+          timestamp=$(date +%Y%m%d_%H%M%S)
+          report_file="{{working_dir}}/reports/full-analysis-report-$timestamp.json"
+          
+          # Use heredoc to safely write JSON with special characters
+          cat > "$report_file" << 'REPORT_EOF'
+          {{final_report}}
+          REPORT_EOF
+          
+          echo "{\"report_file\": \"$report_file\", \"timestamp\": \"$timestamp\", \"saved\": true}"
+        output: "saved_report"
+        parse_json: true
+        timeout: 60
+
+      - id: "record-report-end"
+        type: "bash"
+        command: |
+          start_epoch={{report_timing_start.start_epoch}}
+          end_epoch=$(date +%s)
+          duration=$((end_epoch - start_epoch))
+          
+          # Calculate total workflow duration
+          workflow_start={{discovery_timing_start.start_epoch}}
+          total_duration=$((end_epoch - workflow_start))
+          
+          echo "{\"stage\": \"report\", \"end_time\": \"$(date -Iseconds)\", \"duration_seconds\": $duration, \"total_workflow_duration\": $total_duration}"
+        output: "report_timing_end"
+        parse_json: true
+        timeout: 10
+
+output:
+  format: "json"
+  schema: |
+    {
+      "workflow_id": "string - unique workflow identifier",
+      "repo_path": "string - repository path analyzed",
+      "analysis_depth": "string - quick | standard | deep",
+      "stages_completed": "array of string - stages that ran successfully",
+      "stages_skipped": "array of string - stages that were skipped",
+      "timing": {
+        "total_duration_seconds": "integer - total workflow time",
+        "by_stage": {
+          "discovery": "integer - seconds for discovery stage",
+          "tier1": "integer - seconds for tier1 analysis",
+          "compression": "integer - seconds for compression",
+          "tier2": "integer or null - seconds for tier2 (if run)",
+          "tier3": "integer or null - seconds for tier3 (if run)",
+          "aggregation": "integer - seconds for aggregation",
+          "synthesis": "integer - seconds for synthesis",
+          "categorization": "integer - seconds for categorization",
+          "execution": "integer or null - seconds for execution (if run)",
+          "report": "integer - seconds for report generation"
+        }
+      },
+      "results": {
+        "discovery": {
+          "total_files": "integer - total files discovered",
+          "tier1_candidates": "integer - files eligible for tier1 analysis",
+          "by_type": "object - file counts by type (python, javascript, etc.)"
+        },
+        "tier1": {
+          "files_analyzed": "integer - number of files analyzed",
+          "total_findings": "integer - total findings from tier1",
+          "by_severity": "object - counts by severity level"
+        },
+        "tier2": {
+          "pairs_analyzed": "integer - doc/code pairs analyzed",
+          "findings": "integer - tier2 findings count"
+        },
+        "tier3": {
+          "findings": "integer - tier3 findings count",
+          "architectural_assessment": "string - brief architecture summary"
+        },
+        "synthesis": {
+          "root_causes": "integer - root causes identified",
+          "action_themes": "integer - action themes created",
+          "actions_planned": "integer - total actions in plan"
+        },
+        "execution": {
+          "attempted": "integer - fixes attempted",
+          "successful": "integer - fixes that succeeded",
+          "failed": "integer - fixes that failed"
+        }
+      },
+      "final_report": {
+        "repo_health": "string - A|B|C|D|F grade",
+        "total_findings": "integer - total unique findings",
+        "actionable": "integer - findings that can be acted upon",
+        "auto_fixed": "integer - findings that were auto-fixed (if execution ran)",
+        "remaining": "integer - findings still needing attention",
+        "executive_summary": "string - comprehensive 2-3 paragraph summary with key findings and recommendations"
+      }
+    }

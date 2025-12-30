@@ -1,0 +1,642 @@
+name: "progressive-iteration"
+description: "Multi-round refinement of findings through adversarial challenge using challenger/defender/adjudicator pattern"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["verification", "adversarial", "iteration", "debate", "quality"]
+
+# This recipe implements Pattern 8: Progressive Iteration with Adversarial Debate
+#
+# DESIGN PRINCIPLE:
+# Findings are refined through structured debate where:
+# - Challenger attempts to disprove each finding with counter-evidence
+# - Defender provides additional supporting evidence
+# - Adjudicator makes final determination based on evidence strength
+#
+# This creates higher confidence in verified findings and filters out false positives
+# more effectively than single-pass verification.
+#
+# Usage:
+#   amplifier run "execute recipes/verification/progressive-iteration.yaml with findings=<json> source_content=<content>"
+#
+# Input: Array of findings to verify + source material
+# Output: Verified/rejected findings with debate summaries and confidence changes
+
+context:
+  findings: ""                           # Required: Array of findings to verify (JSON)
+  source_content: ""                     # Required: The source material (code/docs) for reference
+  max_rounds: 3                          # Optional: Maximum debate rounds per finding
+  confidence_threshold: 0.9              # Optional: Minimum confidence to skip verification
+  focus_severities: '["critical", "high", "medium"]'  # Optional: Which severities to verify
+
+recursion:
+  max_depth: 5
+  max_total_steps: 50
+
+steps:
+  # Step 1: Filter findings to those needing verification
+  - id: "filter-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Filter the findings to identify which ones need adversarial verification.
+      
+      FINDINGS TO EVALUATE:
+      {{findings}}
+      
+      CONFIDENCE THRESHOLD: {{confidence_threshold}}
+      FOCUS SEVERITIES: {{focus_severities}}
+      
+      FILTERING CRITERIA:
+      A finding NEEDS verification if:
+      1. Its confidence score is BELOW the threshold ({{confidence_threshold}})
+      2. Its severity is in the focus_severities list
+      
+      A finding can SKIP verification if:
+      1. Its confidence score is >= {{confidence_threshold}} (already high confidence)
+      2. Its severity is NOT in focus_severities (e.g., "low" severity findings)
+      
+      For each finding, determine:
+      - Should it be verified? (yes/no)
+      - Why? (below threshold, in focus severities, etc.)
+      - What is the current confidence level?
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "filter_summary": {
+          "total_findings": N,
+          "needs_verification": N,
+          "skipped_high_confidence": N,
+          "skipped_low_severity": N
+        },
+        "findings_to_verify": [
+          {
+            "finding_id": "id from original finding",
+            "title": "finding title",
+            "severity": "critical | high | medium | low",
+            "current_confidence": 0.0-1.0,
+            "verification_reason": "confidence below threshold | in focus severity",
+            "original_finding": { /* full original finding object */ }
+          }
+        ],
+        "findings_skipped": [
+          {
+            "finding_id": "id",
+            "title": "finding title", 
+            "skip_reason": "confidence >= threshold | severity not in focus",
+            "current_confidence": 0.0-1.0,
+            "original_finding": { /* full original finding object */ }
+          }
+        ]
+      }
+      ```
+      
+      IMPORTANT:
+      - Preserve ALL original finding data in the original_finding field
+      - Parse confidence as a decimal (0.85 means 85% confident)
+      - If confidence is not specified, assume 0.5 (medium confidence, needs verification)
+    output: "filtered_findings"
+    timeout: 120
+
+  # Step 2: Initialize debate state for findings that need verification
+  - id: "initialize-debates"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Initialize the debate state for all findings that need verification.
+      
+      FILTERED FINDINGS:
+      {{filtered_findings}}
+      
+      SOURCE CONTENT:
+      {{source_content}}
+      
+      MAX ROUNDS: {{max_rounds}}
+      
+      For each finding that needs verification, create an initial debate context:
+      
+      1. Extract the core claim to be debated
+      2. Identify the specific evidence cited
+      3. Note the location (line numbers) if available
+      4. Set up the debate tracking structure
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "debates": [
+          {
+            "finding_id": "id",
+            "original_finding": { /* full finding */ },
+            "core_claim": "The specific claim being made about an issue",
+            "cited_evidence": "The exact evidence quoted in the finding",
+            "location": {
+              "file": "filename",
+              "line_start": N,
+              "line_end": M
+            },
+            "current_round": 0,
+            "max_rounds": {{max_rounds}},
+            "debate_status": "pending",
+            "rounds": [],
+            "challenger_points": [],
+            "defender_points": [],
+            "early_termination": false,
+            "early_termination_reason": null
+          }
+        ],
+        "total_debates": N,
+        "source_summary": "Brief description of the source material being referenced"
+      }
+      ```
+    output: "debate_state"
+    timeout: 120
+
+  # Step 3: Run challenger round (odd rounds)
+  - id: "challenger-round"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      You are the CHALLENGER. Your job is to attempt to DISPROVE each finding.
+      
+      Your stance is SKEPTICAL. You believe the finding might be wrong and you're looking for evidence to prove it.
+      
+      DEBATE STATE:
+      {{debate_state}}
+      
+      SOURCE CONTENT:
+      {{source_content}}
+      
+      DEBATE RULES:
+      1. You MUST cite specific evidence for counter-claims (line numbers, exact quotes)
+      2. You cannot simply assert "this is wrong" - you need to show WHY
+      3. Consider alternative interpretations of the code/documentation
+      4. Look for context that might make the "issue" actually correct behavior
+      5. Check if the finding misunderstood something
+      
+      CHALLENGER STRATEGIES:
+      - **Naming Convention**: Does this codebase follow a pattern that explains the behavior?
+      - **Intentional Design**: Could this be intentional, not a bug?
+      - **Context Missing**: Is there surrounding code that changes the meaning?
+      - **Version/Feature**: Could this be a deliberate API choice?
+      - **Quote Mismatch**: Does the quoted evidence actually match the source?
+      
+      For EACH finding in the debate state, provide your challenge:
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "challenger_responses": [
+          {
+            "finding_id": "id",
+            "round_number": 1,
+            "challenge_type": "naming_convention | intentional_design | context_missing | quote_mismatch | logic_error | other",
+            "challenge_summary": "One sentence summary of your counter-argument",
+            "detailed_argument": "Your detailed counter-argument with evidence",
+            "evidence_cited": [
+              {
+                "type": "line_reference | quote | pattern | external",
+                "location": "line N or N/A",
+                "content": "The exact evidence you're citing",
+                "relevance": "Why this evidence supports your challenge"
+              }
+            ],
+            "alternative_interpretation": "How else could this code/doc be interpreted?",
+            "confidence_in_challenge": "high | medium | low",
+            "knockout_punch": true | false,
+            "knockout_reason": "If true, why this challenge is unanswerable"
+          }
+        ],
+        "debates_concluded_early": [
+          {
+            "finding_id": "id",
+            "reason": "Challenger made unanswerable point",
+            "recommendation": "reject"
+          }
+        ]
+      }
+      ```
+      
+      IMPORTANT:
+      - Be thorough but fair - don't make up evidence
+      - If you genuinely cannot find a counter-argument, say so
+      - A "knockout_punch" should only be true if the finding is clearly wrong
+    output: "challenger_response"
+    timeout: 180
+
+  # Step 4: Run defender round (even rounds)
+  - id: "defender-round"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      You are the DEFENDER. Your job is to SUPPORT each finding against the challenger's attacks.
+      
+      Your stance is ADVOCACY. You believe the finding is correct and you're providing additional evidence.
+      
+      DEBATE STATE:
+      {{debate_state}}
+      
+      CHALLENGER'S ARGUMENTS:
+      {{challenger_response}}
+      
+      SOURCE CONTENT:
+      {{source_content}}
+      
+      DEBATE RULES:
+      1. You MUST reference line numbers and exact code/text
+      2. You must directly address each of the challenger's points
+      3. You can introduce NEW evidence not in the original finding
+      4. You can strengthen weak points in the original analysis
+      5. If the challenger made a valid point, acknowledge it but pivot to stronger evidence
+      
+      DEFENDER STRATEGIES:
+      - **Type Contracts**: Explicit type hints, return types, docstrings that promise behavior
+      - **Caller Expectations**: How other code uses this - what do they expect?
+      - **Documentation**: What does the doc explicitly say vs what challenger infers?
+      - **Test Evidence**: Do tests reveal expected behavior that matches the finding?
+      - **Semantic Analysis**: Variable names, function names that imply expected behavior
+      
+      For EACH finding, respond to the challenger:
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "defender_responses": [
+          {
+            "finding_id": "id",
+            "round_number": 2,
+            "challenges_addressed": [
+              {
+                "challenger_point": "What the challenger argued",
+                "rebuttal": "Your counter to their argument",
+                "evidence": "Specific evidence supporting your rebuttal"
+              }
+            ],
+            "new_evidence": [
+              {
+                "type": "type_hint | docstring | caller_usage | test | semantic",
+                "location": "line N",
+                "content": "The exact evidence",
+                "significance": "Why this strengthens the finding"
+              }
+            ],
+            "strengthened_claim": "The refined claim after considering challenger's points",
+            "concessions": ["Any valid points from challenger you acknowledge"],
+            "confidence_in_defense": "high | medium | low",
+            "knockout_punch": true | false,
+            "knockout_reason": "If true, why this defense is unanswerable"
+          }
+        ],
+        "debates_concluded_early": [
+          {
+            "finding_id": "id",
+            "reason": "Defender made unanswerable point",
+            "recommendation": "verify"
+          }
+        ]
+      }
+      ```
+      
+      IMPORTANT:
+      - Be honest - if the challenger made a strong point, don't ignore it
+      - New evidence should be real, not invented
+      - A "knockout_punch" should only be true if the finding is unambiguously correct
+    output: "defender_response"
+    timeout: 180
+
+  # Step 5: Update debate state and check for more rounds
+  - id: "update-debate-state"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Update the debate state with the latest round results and determine if more rounds are needed.
+      
+      CURRENT DEBATE STATE:
+      {{debate_state}}
+      
+      CHALLENGER RESPONSE:
+      {{challenger_response}}
+      
+      DEFENDER RESPONSE:
+      {{defender_response}}
+      
+      MAX ROUNDS: {{max_rounds}}
+      
+      DECISION CRITERIA:
+      1. If either side made a "knockout_punch" → end debate early
+      2. If max_rounds reached → proceed to adjudication
+      3. If both sides are recycling arguments → end debate (no new information)
+      4. Otherwise → continue to next round
+      
+      For each debate, update:
+      - Current round number
+      - Add points from this round to challenger_points and defender_points
+      - Determine if debate should continue or proceed to adjudication
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "updated_debates": [
+          {
+            "finding_id": "id",
+            "current_round": N,
+            "debate_status": "continue | ready_for_adjudication | early_termination",
+            "rounds": [
+              {
+                "round_number": 1,
+                "challenger": { /* challenger response for this round */ },
+                "defender": { /* defender response for this round */ }
+              }
+            ],
+            "challenger_points": ["Point 1", "Point 2"],
+            "defender_points": ["Point 1", "Point 2"],
+            "early_termination": true | false,
+            "early_termination_reason": "knockout by challenger | knockout by defender | max rounds | stalemate",
+            "preliminary_lean": "verify | reject | uncertain",
+            "preliminary_lean_reason": "Why this preliminary assessment"
+          }
+        ],
+        "debates_needing_more_rounds": N,
+        "debates_ready_for_adjudication": N,
+        "next_action": "more_rounds | adjudicate"
+      }
+      ```
+    output: "updated_debate_state"
+    timeout: 120
+
+  # Step 6: Adjudicator makes final determination
+  - id: "adjudicate"
+    agent: "foundation:zen-architect"
+    mode: "REVIEW"
+    prompt: |
+      You are the ADJUDICATOR. You have observed the entire debate between Challenger and Defender.
+      
+      Your job is to make the FINAL DETERMINATION on each finding based on EVIDENCE STRENGTH.
+      
+      UPDATED DEBATE STATE:
+      {{updated_debate_state}}
+      
+      SOURCE CONTENT:
+      {{source_content}}
+      
+      ORIGINAL FINDINGS:
+      {{filtered_findings}}
+      
+      ADJUDICATION PRINCIPLES:
+      1. **Evidence over assertion**: Count evidence quality, not assertion quantity
+      2. **Explicit over implicit**: Type hints > naming conventions
+      3. **Direct over indirect**: Code that says X > inference that X might be true
+      4. **Multiple sources**: Evidence from multiple places > single source
+      5. **Acknowledge uncertainty**: "uncertain" is a valid verdict
+      
+      VERDICT OPTIONS:
+      - **VERIFIED**: The finding is accurate. The issue exists as described.
+      - **REJECTED**: The finding is wrong. No real issue exists.
+      - **UNCERTAIN**: Could go either way. Needs human review.
+      
+      CONFIDENCE ADJUSTMENT:
+      Based on the debate, adjust the finding's confidence:
+      - Strong defender win with new evidence → confidence UP (+0.1 to +0.3)
+      - Weak challenger, strong defender → confidence UP (+0.05 to +0.15)
+      - Balanced debate → confidence SAME (±0.05)
+      - Strong challenger points → confidence DOWN (-0.1 to -0.2)
+      - Knockout by challenger → confidence DOWN significantly (-0.3 or more)
+      
+      For EACH finding, provide your adjudication:
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "adjudications": [
+          {
+            "finding_id": "id",
+            "verdict": "verified | rejected | uncertain",
+            "original_confidence": 0.0-1.0,
+            "final_confidence": 0.0-1.0,
+            "confidence_change": "+0.2 | -0.3 | 0",
+            "reasoning": "Detailed explanation of why this verdict was reached",
+            "key_evidence_for": [
+              "Most compelling evidence supporting the finding"
+            ],
+            "key_evidence_against": [
+              "Most compelling evidence against the finding"
+            ],
+            "debate_summary": {
+              "rounds": N,
+              "challenger_points": ["Key challenger arguments"],
+              "defender_points": ["Key defender arguments"],
+              "turning_point": "The argument or evidence that most influenced the decision",
+              "adjudicator_reasoning": "Why I weighed evidence this way"
+            },
+            "recommendation": "What to do with this finding (fix, ignore, investigate further)"
+          }
+        ],
+        "adjudication_summary": {
+          "total_adjudicated": N,
+          "verified": N,
+          "rejected": N,
+          "uncertain": N,
+          "average_confidence_change": "+/-X.XX",
+          "most_contentious": "finding_id of most debated finding"
+        }
+      }
+      ```
+      
+      EXAMPLE ADJUDICATION:
+      ```
+      Finding: "get_user() returns user_id not User object"
+      
+      Challenger argued: "The function name follows the pattern get_X() returning X_id 
+      throughout this codebase. See get_session() line 45, get_context() line 78."
+      
+      Defender argued: "However, the return type hint on line 23 explicitly says '-> User', 
+      and the docstring says 'Returns the User object'. Callers on lines 102, 156 expect 
+      a User object."
+      
+      ADJUDICATION:
+      VERDICT: VERIFIED
+      REASONING: The type hint and docstring explicitly promise User object, which 
+      contradicts the actual behavior. The naming convention argument is weaker than 
+      the explicit type contract. The defender provided direct evidence (type hint, 
+      docstring, caller expectations) vs challenger's indirect evidence (pattern inference).
+      CONFIDENCE: 0.95 (up from 0.7 original)
+      ```
+    output: "adjudication_results"
+    timeout: 240
+
+  # Step 7: Format final verification results
+  - id: "format-results"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Format the final verification results combining all adjudications with skipped findings.
+      
+      ADJUDICATION RESULTS:
+      {{adjudication_results}}
+      
+      FILTERED FINDINGS (includes skipped):
+      {{filtered_findings}}
+      
+      UPDATED DEBATE STATE:
+      {{updated_debate_state}}
+      
+      TASK:
+      Create the final output combining:
+      1. Findings that were verified through debate
+      2. Findings that were rejected through debate
+      3. Findings that were skipped (high confidence or low severity)
+      4. Aggregate statistics
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "verification_summary": {
+          "total_findings": N,
+          "verified": N,
+          "rejected": N,
+          "uncertain": N,
+          "confidence_upgraded": N,
+          "confidence_downgraded": N,
+          "skipped_high_confidence": N,
+          "skipped_low_severity": N
+        },
+        "verified_findings": [
+          {
+            "original_finding": { /* complete original finding */ },
+            "verification_status": "verified",
+            "final_confidence": 0.0-1.0,
+            "confidence_change": "+0.2",
+            "debate_summary": {
+              "rounds": N,
+              "challenger_points": ["..."],
+              "defender_points": ["..."],
+              "adjudicator_reasoning": "..."
+            }
+          }
+        ],
+        "rejected_findings": [
+          {
+            "original_finding": { /* complete original finding */ },
+            "verification_status": "rejected",
+            "final_confidence": 0.0-1.0,
+            "confidence_change": "-0.3",
+            "rejection_reason": "Why this finding was rejected",
+            "debate_summary": {
+              "rounds": N,
+              "challenger_points": ["..."],
+              "defender_points": ["..."],
+              "adjudicator_reasoning": "..."
+            }
+          }
+        ],
+        "uncertain_findings": [
+          {
+            "original_finding": { /* complete original finding */ },
+            "verification_status": "uncertain",
+            "final_confidence": 0.0-1.0,
+            "confidence_change": "0",
+            "uncertainty_reason": "Why this finding is uncertain",
+            "recommended_action": "What human reviewer should check",
+            "debate_summary": {
+              "rounds": N,
+              "challenger_points": ["..."],
+              "defender_points": ["..."],
+              "adjudicator_reasoning": "..."
+            }
+          }
+        ],
+        "skipped_findings": [
+          {
+            "original_finding": { /* complete original finding */ },
+            "verification_status": "skipped",
+            "skip_reason": "high_confidence | low_severity",
+            "original_confidence": 0.0-1.0
+          }
+        ],
+        "metadata": {
+          "total_rounds_executed": N,
+          "average_rounds_per_finding": N.N,
+          "verification_rate": "85%",
+          "early_terminations": N,
+          "max_rounds_setting": {{max_rounds}},
+          "confidence_threshold_setting": {{confidence_threshold}},
+          "focus_severities_setting": {{focus_severities}}
+        }
+      }
+      ```
+      
+      IMPORTANT:
+      - Preserve ALL original finding data
+      - Calculate percentages correctly (verified / total_verified_attempted * 100)
+      - Include both debated and skipped findings in totals
+      - Order verified_findings by final_confidence descending
+      - Order rejected_findings by confidence_change ascending (most reduced first)
+    output: "final_results"
+    timeout: 120
+
+output:
+  format: "json"
+  schema: |
+    {
+      "verification_summary": {
+        "total_findings": "integer - total findings input",
+        "verified": "integer - findings confirmed as valid",
+        "rejected": "integer - findings determined to be false positives",
+        "uncertain": "integer - findings needing human review",
+        "confidence_upgraded": "integer - findings with increased confidence",
+        "confidence_downgraded": "integer - findings with decreased confidence",
+        "skipped_high_confidence": "integer - findings skipped due to high confidence",
+        "skipped_low_severity": "integer - findings skipped due to low severity"
+      },
+      "verified_findings": [
+        {
+          "original_finding": "object - the complete original finding",
+          "verification_status": "string - always 'verified'",
+          "final_confidence": "number - 0.0 to 1.0",
+          "confidence_change": "string - e.g., '+0.2', '-0.1', '0'",
+          "debate_summary": {
+            "rounds": "integer - number of debate rounds",
+            "challenger_points": "array of strings - key challenger arguments",
+            "defender_points": "array of strings - key defender arguments",
+            "adjudicator_reasoning": "string - why the verdict was reached"
+          }
+        }
+      ],
+      "rejected_findings": [
+        {
+          "original_finding": "object - the complete original finding",
+          "verification_status": "string - always 'rejected'",
+          "final_confidence": "number - 0.0 to 1.0",
+          "confidence_change": "string - e.g., '-0.3'",
+          "rejection_reason": "string - why this was rejected",
+          "debate_summary": "object - same structure as verified"
+        }
+      ],
+      "uncertain_findings": [
+        {
+          "original_finding": "object - the complete original finding",
+          "verification_status": "string - always 'uncertain'",
+          "final_confidence": "number - 0.0 to 1.0",
+          "confidence_change": "string",
+          "uncertainty_reason": "string - why uncertain",
+          "recommended_action": "string - what human should check",
+          "debate_summary": "object - same structure as verified"
+        }
+      ],
+      "skipped_findings": [
+        {
+          "original_finding": "object - the complete original finding",
+          "verification_status": "string - always 'skipped'",
+          "skip_reason": "string - 'high_confidence' or 'low_severity'",
+          "original_confidence": "number - 0.0 to 1.0"
+        }
+      ],
+      "metadata": {
+        "total_rounds_executed": "integer - sum of all debate rounds",
+        "average_rounds_per_finding": "number - average rounds per debated finding",
+        "verification_rate": "string - percentage of verified findings (e.g., '85%')",
+        "early_terminations": "integer - debates ended before max_rounds",
+        "max_rounds_setting": "integer - the max_rounds parameter used",
+        "confidence_threshold_setting": "number - the confidence_threshold used",
+        "focus_severities_setting": "array - the focus_severities used"
+      }
+    }

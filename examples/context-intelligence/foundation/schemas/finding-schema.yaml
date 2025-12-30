@@ -1,0 +1,157 @@
+# Finding Schema v1.0.0
+# Standardized output format for all analysis recipes
+#
+# All analysis recipes MUST output findings in this format.
+# This enables consistent aggregation, compression, and routing.
+
+schema:
+  version: "1.0.0"
+  description: "Standard format for analysis findings across all tiers"
+
+# Example finding structure (use this format in recipe outputs)
+finding_format:
+  # Required fields
+  id: "string"                    # Unique ID: {recipe}-{file_hash}-{sequence}
+  recipe: "string"                # Which recipe generated this (e.g., "comment-code-conflict")
+  tier: "integer"                 # 1, 2, or 3
+  
+  # Location
+  file_path: "string"             # Primary file where finding exists
+  line_start: "integer | null"    # Starting line number (null if N/A)
+  line_end: "integer | null"      # Ending line number (null if N/A)
+  related_files: "list[string]"   # Other files involved (tier 2+)
+  
+  # Classification
+  category: "string"              # See categories below
+  severity: "string"              # critical | high | medium | low | info
+  confidence: "string"            # high | medium | low
+  
+  # Content
+  title: "string"                 # One-line summary (max 100 chars)
+  description: "string"           # Detailed explanation
+  evidence: "string"              # Code snippet or quote demonstrating issue
+  
+  # Resolution
+  actionable: "boolean"           # Can this be auto-fixed?
+  suggested_fix: "string | null"  # How to fix (if known)
+  fix_complexity: "string | null" # trivial | simple | moderate | complex
+  
+  # Metadata
+  detected_at: "string"           # ISO timestamp
+  verification_status: "string"   # pending | verified | rejected | disputed
+
+# Valid categories (closed set)
+categories:
+  # Tier 1 categories
+  - "dead_code"                   # Unused/unreachable code
+  - "comment_code_conflict"       # Comments don't match code
+  - "internal_inconsistency"      # Logical contradictions
+  - "naming_mismatch"             # Names don't match behavior
+  - "complexity_hotspot"          # High complexity areas
+  
+  # Tier 2 categories  
+  - "doc_code_mismatch"           # Documentation doesn't match code
+  - "semantic_duplicate"          # Duplicated logic across files
+  - "cross_doc_contradiction"     # Conflicting documentation
+  - "example_invalid"             # Examples don't work with current code
+  - "api_contract_drift"          # Implementation differs from contract
+  
+  # Tier 3 categories
+  - "dry_violation"               # Repeated patterns that should consolidate
+  - "architectural_inconsistency" # Inconsistent patterns across modules
+  - "coverage_gap"                # Missing documentation or tests
+
+# Valid severities with guidance
+severities:
+  critical:
+    description: "Security vulnerability, data loss risk, or broken functionality"
+    auto_fixable: false
+    requires_human: true
+    
+  high:
+    description: "Significant bug, major inconsistency, or misleading documentation"
+    auto_fixable: "sometimes"
+    requires_human: true
+    
+  medium:
+    description: "Minor bug, inconsistency, or unclear documentation"
+    auto_fixable: "usually"
+    requires_human: "for ambiguous cases"
+    
+  low:
+    description: "Style issue, minor improvement opportunity, or edge case"
+    auto_fixable: true
+    requires_human: false
+    
+  info:
+    description: "Observation only, no action required"
+    auto_fixable: false
+    requires_human: false
+
+# Confidence levels with guidance
+confidence_levels:
+  high:
+    description: "Clear evidence, unambiguous interpretation"
+    threshold: "Use for definite issues with strong evidence"
+    verification: "Quick check sufficient"
+    
+  medium:
+    description: "Good evidence but some interpretation required"
+    threshold: "Use when context could change meaning"
+    verification: "Full verification recommended"
+    
+  low:
+    description: "Possible issue but uncertain"
+    threshold: "Use for heuristic matches, edge cases"
+    verification: "Adversarial verification required"
+
+# Example output (what recipes should produce)
+example_output:
+  findings:
+    - id: "comment-code-conflict-abc123-001"
+      recipe: "comment-code-conflict"
+      tier: 1
+      file_path: "amplifier_core/session.py"
+      line_start: 45
+      line_end: 52
+      related_files: []
+      category: "comment_code_conflict"
+      severity: "medium"
+      confidence: "high"
+      title: "Docstring claims method returns bool but it returns Optional[str]"
+      description: |
+        The docstring for `get_session_id()` states "Returns True if session is valid"
+        but the actual return type is `Optional[str]` returning the session ID or None.
+        This could mislead developers about the method's behavior.
+      evidence: |
+        ```python
+        def get_session_id(self) -> Optional[str]:
+            \"\"\"Returns True if session is valid.\"\"\"  # <-- WRONG
+            return self._session_id
+        ```
+      actionable: true
+      suggested_fix: "Update docstring to: 'Returns the session ID if set, or None otherwise.'"
+      fix_complexity: "trivial"
+      detected_at: "2025-12-27T11:30:00Z"
+      verification_status: "pending"
+      
+  summary:
+    total_findings: 1
+    by_severity:
+      critical: 0
+      high: 0
+      medium: 1
+      low: 0
+      info: 0
+    by_confidence:
+      high: 1
+      medium: 0
+      low: 0
+    actionable_count: 1
+    
+  metadata:
+    recipe: "comment-code-conflict"
+    recipe_version: "1.0.0"
+    file_analyzed: "amplifier_core/session.py"
+    analysis_duration_ms: 2500
+    tokens_used: 4200

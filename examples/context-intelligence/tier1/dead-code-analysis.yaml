@@ -1,0 +1,121 @@
+name: "dead-code-analysis"
+description: "Detect unreachable code, unused functions, and obsolete code paths"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["tier1", "analysis", "dead-code", "python"]
+
+# This recipe analyzes a single Python file for dead code:
+# - Functions/methods never called within the file
+# - Unreachable code after return/raise
+# - Unused imports
+# - Commented-out code blocks
+# - Obsolete conditional branches
+#
+# Usage:
+#   amplifier run "execute recipes/tier1/dead-code-analysis.yaml with file_path=path/to/file.py"
+
+context:
+  file_path: ""                    # Required: path to Python file
+  check_external_usage: false      # If true, note that external usage can't be verified
+
+steps:
+  - id: "read-file"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the Python file at: {{file_path}}
+      Return the complete content with line numbers.
+    output: "file_content"
+    timeout: 60
+
+  - id: "analyze-dead-code"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Analyze this Python file for dead code patterns.
+      
+      FILE:
+      {{file_content}}
+      
+      DETECT THESE PATTERNS:
+      
+      1. **UNREACHABLE CODE**
+         - Code after return/raise statements
+         - Code after sys.exit() or os._exit()
+         - Else branches that can never execute
+         - Code inside `if False:` or similar
+      
+      2. **UNUSED DEFINITIONS** (within this file)
+         - Functions defined but never called
+         - Methods defined but never used
+         - Classes defined but never instantiated
+         - Variables assigned but never read
+         Note: Mark confidence as "medium" if the definition might be used externally
+      
+      3. **UNUSED IMPORTS**
+         - Modules imported but no symbols used
+         - Specific imports that aren't referenced
+         Note: TYPE_CHECKING imports are intentionally unused at runtime
+      
+      4. **COMMENTED-OUT CODE**
+         - Large blocks of commented code (>3 lines)
+         - Commented function definitions
+         - TODO/FIXME with attached commented code
+         Note: Single-line comments explaining code are NOT dead code
+      
+      5. **OBSOLETE CONDITIONALS**
+         - Version checks for old Python (e.g., `if sys.version_info < (3, 6)`)
+         - Feature flags that are always true/false
+         - Platform checks that are always one way
+      
+      BE CONSERVATIVE:
+      - Functions starting with _ might be framework hooks (confidence: medium)
+      - __dunder__ methods are often used implicitly (skip unless clearly dead)
+      - Imports used only in type hints are valid
+      - check_external_usage={{check_external_usage}} - if false, note limitations
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "findings": [
+          {
+            "type": "unreachable | unused_definition | unused_import | commented_code | obsolete_conditional",
+            "location": {"line_start": N, "line_end": M},
+            "name": "function/variable/import name if applicable",
+            "evidence": "Code snippet showing the issue",
+            "severity": "medium | low",
+            "confidence": "high | medium | low",
+            "reason": "Why this is dead code",
+            "caveat": "Any limitations (e.g., might be used externally)"
+          }
+        ],
+        "summary": {
+          "total_findings": N,
+          "by_type": {...},
+          "lines_of_dead_code": N,
+          "percentage_dead": "X%"
+        }
+      }
+      ```
+    output: "raw_findings"
+    timeout: 300
+
+  - id: "format-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Convert findings to standard schema format.
+      
+      RAW FINDINGS:
+      {{raw_findings}}
+      
+      SOURCE FILE: {{file_path}}
+      
+      Map to standard schema:
+      - category: "dead_code"
+      - severity: medium for unused definitions, low for commented code
+      - Set actionable=true for clear dead code, false for uncertain cases
+      - fix_complexity: trivial for imports/comments, simple for functions
+      
+      OUTPUT: Standard finding schema JSON (see schemas/finding-schema.yaml)
+    output: "formatted_findings"
+    timeout: 120

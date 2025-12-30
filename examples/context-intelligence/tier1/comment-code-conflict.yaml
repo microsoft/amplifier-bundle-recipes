@@ -1,0 +1,204 @@
+name: "comment-code-conflict"
+description: "Detect conflicts between comments/docstrings and actual code behavior"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["tier1", "analysis", "documentation", "python"]
+
+# This recipe analyzes a single Python file for conflicts between:
+# - Docstrings and function/method behavior
+# - Inline comments and adjacent code
+# - Type hints and actual return values
+# - Parameter descriptions and usage
+#
+# Usage:
+#   amplifier run "execute recipes/tier1/comment-code-conflict.yaml with file_path=amplifier-core/amplifier_core/session.py"
+#
+# Output: Findings in standard schema format (see schemas/finding-schema.yaml)
+
+context:
+  file_path: ""                    # Required: path to Python file to analyze
+  include_low_confidence: false    # Optional: include uncertain findings
+
+steps:
+  # Step 1: Read and understand the file
+  - id: "read-file"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the Python file at: {{file_path}}
+      
+      Return the complete file content. I need to analyze it for comment/code conflicts.
+      
+      OUTPUT FORMAT:
+      ```
+      FILE_PATH: {{file_path}}
+      FILE_SIZE: [size in bytes]
+      LINE_COUNT: [number of lines]
+      
+      CONTENT:
+      [complete file content with line numbers]
+      ```
+    output: "file_content"
+    timeout: 60
+
+  # Step 2: Deep analysis for conflicts
+  - id: "analyze-conflicts"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Analyze this Python file for conflicts between comments/documentation and actual code behavior.
+      
+      FILE TO ANALYZE:
+      {{file_content}}
+      
+      LOOK FOR THESE SPECIFIC CONFLICT TYPES:
+      
+      1. **DOCSTRING vs BEHAVIOR**
+         - Docstring says function does X, but code does Y
+         - Docstring describes parameters that don't exist
+         - Docstring omits parameters that do exist
+         - Docstring claims return type that differs from actual/hints
+         - Docstring describes exceptions that aren't raised
+         - Docstring describes side effects that don't happen
+      
+      2. **INLINE COMMENT vs CODE**
+         - Comment says "# do X" but code does something else
+         - Comment is stale (describes old behavior)
+         - TODO/FIXME that has been addressed but comment remains
+         - Comment describes removed functionality
+      
+      3. **TYPE HINT vs REALITY**
+         - Return type hint says X but function returns Y
+         - Parameter type hint doesn't match actual usage
+         - Optional[] hint but no None handling
+         - Type hint is less specific than actual return
+      
+      4. **PARAMETER DOCS vs USAGE**
+         - Args section describes param A but it's actually used as B
+         - Default value in docs differs from code default
+         - Param marked optional in docs but required in code
+      
+      ANALYSIS APPROACH:
+      - Read each function/method carefully
+      - Compare docstring claims to actual implementation
+      - Check type hints against return statements
+      - Look for inline comments that contradict adjacent code
+      - Consider the SEMANTIC meaning, not just syntax
+      
+      BE CONSERVATIVE:
+      - Only report CLEAR conflicts, not style issues
+      - If code behavior is ambiguous, note it but mark confidence as "low"
+      - Don't flag missing docs as conflicts (that's a different analysis)
+      - Focus on MISLEADING docs, not incomplete ones
+      
+      OUTPUT FORMAT:
+      For each finding, provide:
+      ```json
+      {
+        "findings": [
+          {
+            "type": "docstring_behavior | inline_comment | type_hint | param_doc",
+            "location": {"line_start": N, "line_end": M},
+            "claim": "What the comment/doc says",
+            "reality": "What the code actually does",
+            "evidence": "Relevant code snippet",
+            "severity": "high | medium | low",
+            "confidence": "high | medium | low",
+            "suggested_fix": "How to resolve the conflict"
+          }
+        ],
+        "summary": {
+          "total_findings": N,
+          "by_type": {"docstring_behavior": X, "inline_comment": Y, ...},
+          "functions_analyzed": N,
+          "lines_analyzed": N
+        }
+      }
+      ```
+      
+      If NO conflicts found, return:
+      ```json
+      {
+        "findings": [],
+        "summary": {
+          "total_findings": 0,
+          "status": "clean",
+          "functions_analyzed": N,
+          "lines_analyzed": N
+        }
+      }
+      ```
+    output: "raw_findings"
+    timeout: 300
+
+  # Step 3: Format findings to standard schema
+  - id: "format-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Convert the raw analysis findings to the standard finding schema format.
+      
+      RAW FINDINGS:
+      {{raw_findings}}
+      
+      SOURCE FILE: {{file_path}}
+      
+      STANDARD SCHEMA (each finding must have these fields):
+      ```json
+      {
+        "id": "comment-code-conflict-{hash}-{seq}",
+        "recipe": "comment-code-conflict",
+        "tier": 1,
+        "file_path": "{{file_path}}",
+        "line_start": N,
+        "line_end": M,
+        "related_files": [],
+        "category": "comment_code_conflict",
+        "severity": "critical|high|medium|low|info",
+        "confidence": "high|medium|low",
+        "title": "One-line summary (max 100 chars)",
+        "description": "Detailed explanation of the conflict",
+        "evidence": "Code snippet showing the conflict",
+        "actionable": true|false,
+        "suggested_fix": "How to fix or null",
+        "fix_complexity": "trivial|simple|moderate|complex",
+        "detected_at": "ISO timestamp",
+        "verification_status": "pending"
+      }
+      ```
+      
+      SEVERITY MAPPING:
+      - **high**: Docstring is actively misleading about critical behavior
+      - **medium**: Documentation is incorrect but impact is moderate
+      - **low**: Minor inconsistency or edge case
+      - **info**: Observation only (use sparingly)
+      
+      CONFIDENCE MAPPING:
+      - **high**: Clear, unambiguous conflict with strong evidence
+      - **medium**: Likely conflict but some interpretation needed
+      - **low**: Possible conflict, needs verification
+      
+      FILTERING:
+      - Include findings with confidence >= medium by default
+      - If include_low_confidence is true: {{include_low_confidence}}, include all
+      
+      OUTPUT:
+      Return the complete findings object:
+      ```json
+      {
+        "findings": [...],
+        "summary": {
+          "total_findings": N,
+          "by_severity": {"high": X, "medium": Y, "low": Z},
+          "by_confidence": {"high": X, "medium": Y, "low": Z},
+          "actionable_count": N
+        },
+        "metadata": {
+          "recipe": "comment-code-conflict",
+          "recipe_version": "1.0.0",
+          "file_analyzed": "{{file_path}}",
+          "analysis_timestamp": "ISO timestamp"
+        }
+      }
+      ```
+    output: "formatted_findings"
+    timeout: 120

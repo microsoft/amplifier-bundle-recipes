@@ -1,0 +1,142 @@
+name: "single-file-orchestrator"
+description: "Run all Tier 1 analyses on a single file and aggregate findings"
+version: "1.0.1"
+author: "Context Intelligence System"
+tags: ["tier1", "orchestrator", "aggregation"]
+
+# This recipe orchestrates all Tier 1 analyses on a single file:
+# 1. Comment/code conflicts
+# 2. Dead code detection
+# 3. Internal consistency
+# 4. Naming/semantic mismatches
+#
+# All analyses run (no conditional skipping to avoid undefined variable issues).
+# Uses recipe composition to run each analysis as a sub-recipe.
+#
+# Usage:
+#   amplifier run "execute recipes/tier1/single-file-orchestrator.yaml with file_path=path/to/file.py"
+
+context:
+  file_path: ""                    # Required: path to file to analyze
+  skip_verification: false         # Skip verification prioritization step
+
+recursion:
+  max_depth: 3
+  max_total_steps: 50
+
+steps:
+  # Step 1: Run comment-code-conflict analysis
+  - id: "analyze-comments"
+    type: "recipe"
+    recipe: "comment-code-conflict.yaml"
+    context:
+      file_path: "{{file_path}}"
+    output: "comment_findings"
+
+  # Step 2: Run dead-code analysis
+  - id: "analyze-dead-code"
+    type: "recipe"
+    recipe: "dead-code-analysis.yaml"
+    context:
+      file_path: "{{file_path}}"
+    output: "dead_code_findings"
+
+  # Step 3: Run internal-consistency analysis
+  - id: "analyze-consistency"
+    type: "recipe"
+    recipe: "internal-consistency.yaml"
+    context:
+      file_path: "{{file_path}}"
+    output: "consistency_findings"
+
+  # Step 4: Run naming-semantic-mismatch analysis
+  - id: "analyze-naming"
+    type: "recipe"
+    recipe: "naming-semantic-mismatch.yaml"
+    context:
+      file_path: "{{file_path}}"
+    output: "naming_findings"
+
+  # Step 5: Aggregate all findings
+  - id: "aggregate-findings"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Aggregate findings from all Tier 1 analyses into a unified report.
+      
+      FILE ANALYZED: {{file_path}}
+      
+      FINDINGS FROM EACH ANALYSIS:
+      
+      **Comment/Code Conflicts:**
+      {{comment_findings}}
+      
+      **Dead Code:**
+      {{dead_code_findings}}
+      
+      **Internal Consistency:**
+      {{consistency_findings}}
+      
+      **Naming Mismatches:**
+      {{naming_findings}}
+      
+      TASK:
+      1. Extract all individual findings from each analysis
+      2. Combine into a single list (preserve original finding IDs)
+      3. Remove exact duplicates (same issue found by multiple analyses)
+      4. Sort by severity (high → medium → low)
+      5. Calculate summary statistics
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "file_path": "{{file_path}}",
+        "tier": 1,
+        "analyses_run": ["comment-code-conflict", "dead-code-analysis", "internal-consistency", "naming-semantic-mismatch"],
+        "all_findings": [
+          // All findings merged, each with original schema
+        ],
+        "summary": {
+          "total_findings": N,
+          "by_severity": {"high": X, "medium": Y, "low": Z, "info": W},
+          "by_category": {"comment_code_conflict": A, "dead_code": B, "internal_inconsistency": C, "naming_mismatch": D},
+          "by_confidence": {"high": X, "medium": Y, "low": Z},
+          "actionable_count": N
+        },
+        "high_priority": [
+          // Finding IDs with severity=high or (severity=medium AND confidence=high)
+        ]
+      }
+      ```
+      
+      If a particular analysis found no issues, note that in a clean_analyses array.
+    output: "aggregated_findings"
+    timeout: 180
+
+  # Step 6: Prioritize for verification (optional)
+  - id: "prioritize-verification"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    condition: "{{skip_verification}} != 'true'"
+    prompt: |
+      Determine which findings should go through adversarial verification.
+      
+      AGGREGATED FINDINGS:
+      {{aggregated_findings}}
+      
+      VERIFICATION PRIORITY RULES:
+      1. MUST VERIFY: severity=high OR (severity=medium AND confidence!=high)
+      2. SHOULD VERIFY: severity=medium AND confidence=high
+      3. SKIP VERIFY: severity=low or info (accept as-is or defer)
+      
+      OUTPUT:
+      ```json
+      {
+        "must_verify": ["finding-id-1", "finding-id-2"],
+        "should_verify": ["finding-id-3"],
+        "skip_verify": ["finding-id-4", "finding-id-5"],
+        "verification_summary": "X findings need verification, Y can proceed"
+      }
+      ```
+    output: "verification_priorities"
+    timeout: 60

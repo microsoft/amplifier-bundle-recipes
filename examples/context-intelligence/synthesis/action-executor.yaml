@@ -1,0 +1,630 @@
+name: "action-executor"
+description: "Execute auto-fixable findings from categorize-findings - turn analysis into action"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["synthesis", "execution", "auto-fix", "code-quality", "staged", "approval-gates"]
+
+# This recipe takes categorized findings marked as "auto_fixable" and executes the fixes.
+# It is the final step in the analysis pipeline that turns findings into actual code changes.
+#
+# DESIGN PRINCIPLES:
+# 1. Safety First: dry_run=true by default, approval_required=true by default
+# 2. Reversible: Always create backup/rollback capability before making changes
+# 3. Incremental: Execute fixes one at a time with verification between
+# 4. Transparent: Show exactly what will change before doing it
+#
+# SUPPORTED FIX TYPES:
+# - doc_update: Update docstrings, comments, README files
+# - import_cleanup: Remove unused imports
+# - dead_code_removal: Remove clearly dead/unreachable code
+# - naming_fix: Rename variables/functions for clarity
+# - formatting_fix: Code formatting issues (whitespace, line length, etc.)
+#
+# INPUT:
+# This recipe expects findings from categorize-findings.yaml with auto_fixable=true
+# Each finding should have:
+# - id, file_path, line_start, line_end
+# - category, fix_type, fix_description
+# - suggested_fix (the actual fix content)
+#
+# Usage:
+#   # Dry run (default) - just show what would be done
+#   amplifier run "execute recipes/synthesis/action-executor.yaml with auto_fixable_findings=<json>"
+#
+#   # Execute with approval gates
+#   amplifier run "execute recipes/synthesis/action-executor.yaml with auto_fixable_findings=<json> dry_run=false"
+#
+#   # Execute without approval (use carefully!)
+#   amplifier run "execute recipes/synthesis/action-executor.yaml with auto_fixable_findings=<json> dry_run=false approval_required=false"
+
+context:
+  auto_fixable_findings: ""       # Required: JSON array of findings from categorize-findings.yaml
+  dry_run: true                   # Default true: Only show what would be done, don't execute
+  approval_required: true         # Default true: Pause for approval before executing fixes
+  backup_dir: "./ai_working/backups"  # Directory for backup files before modifications
+  working_dir: "./ai_working"     # Working directory for intermediate files
+
+recursion:
+  max_depth: 3
+  max_total_steps: 100
+
+stages:
+  # ==========================================================================
+  # STAGE 1: Parse and Validate Findings
+  # ==========================================================================
+  # No approval needed - just parsing and validating input
+  - name: "parse-and-validate"
+    steps:
+      - id: "validate-input"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Parse and validate the auto_fixable findings input.
+          
+          ## INPUT
+          
+          Auto-fixable findings:
+          {{auto_fixable_findings}}
+          
+          ## VALIDATION RULES
+          
+          Each finding MUST have:
+          - id: Unique identifier
+          - file_path: Path to the file to modify
+          - line_start, line_end: Location of code to fix
+          - fix_type: One of [doc_update, import_cleanup, dead_code_removal, naming_fix, formatting_fix]
+          - fix_description: What the fix will do
+          - suggested_fix: The actual fix content or transformation
+          
+          ## SUPPORTED FIX TYPES
+          
+          1. **doc_update**: Update docstrings, comments, README
+             - Safe: Only changes documentation, not code logic
+             - Example: Add missing docstring, fix outdated comment
+             
+          2. **import_cleanup**: Remove unused imports
+             - Safe: Removes imports that are definitely not used
+             - Verify: No dynamic imports, no TYPE_CHECKING usage
+             
+          3. **dead_code_removal**: Remove clearly dead code
+             - Caution: Must be absolutely certain code is unreachable
+             - Example: Code after return statement, commented-out blocks
+             
+          4. **naming_fix**: Rename variables/functions for clarity
+             - Caution: Ensure all references are updated
+             - Example: Rename `x` to `user_count`
+             
+          5. **formatting_fix**: Code formatting issues
+             - Safe: Whitespace, line length, trailing commas
+             - Example: Fix indentation, remove trailing whitespace
+          
+          ## OUTPUT FORMAT
+          
+          ```json
+          {
+            "validation_status": "success | partial | failed",
+            "total_findings": N,
+            "valid_findings": N,
+            "invalid_findings": N,
+            "findings": [
+              {
+                "id": "finding-id",
+                "file_path": "path/to/file.py",
+                "line_start": N,
+                "line_end": M,
+                "fix_type": "doc_update | import_cleanup | dead_code_removal | naming_fix | formatting_fix",
+                "fix_description": "What will be changed",
+                "suggested_fix": "The actual fix content",
+                "validation": {
+                  "is_valid": true,
+                  "issues": []
+                },
+                "risk_level": "safe | caution | risky",
+                "dependencies": ["other-finding-ids that must be applied first"]
+              }
+            ],
+            "validation_errors": [
+              {"finding_id": "...", "error": "What's wrong"}
+            ],
+            "warnings": [
+              "Any warnings about the findings"
+            ]
+          }
+          ```
+          
+          IMPORTANT:
+          - Filter out any findings that are not truly auto_fixable
+          - Flag findings with incomplete information
+          - Identify dependencies between fixes (e.g., rename before reference update)
+          - Assess risk level based on fix type and scope
+        output: "validated_findings"
+        timeout: 180
+
+      - id: "check-file-access"
+        type: "bash"
+        command: |
+          # Extract unique file paths and check they exist
+          echo '{{validated_findings}}' > /tmp/validated_findings.json
+          
+          # Create backup directory if needed
+          mkdir -p {{backup_dir}}
+          mkdir -p {{working_dir}}/fixes
+          
+          # Extract file paths and check accessibility
+          files=$(cat /tmp/validated_findings.json | jq -r '.findings[].file_path' 2>/dev/null | sort -u)
+          
+          accessible=0
+          missing=0
+          missing_list=""
+          
+          for f in $files; do
+            if [ -f "$f" ]; then
+              accessible=$((accessible + 1))
+            else
+              missing=$((missing + 1))
+              missing_list="$missing_list $f"
+            fi
+          done
+          
+          echo "{\"accessible_files\": $accessible, \"missing_files\": $missing, \"missing_list\": \"$missing_list\", \"backup_dir\": \"{{backup_dir}}\"}"
+        output: "file_access_check"
+        parse_json: true
+        timeout: 60
+
+  # ==========================================================================
+  # STAGE 2: Generate Fix Plan
+  # ==========================================================================
+  - name: "generate-plan"
+    steps:
+      - id: "create-fix-plan"
+        agent: "foundation:zen-architect"
+        mode: "ARCHITECT"
+        prompt: |
+          Generate a detailed fix plan for the validated findings.
+          
+          ## VALIDATED FINDINGS
+          {{validated_findings}}
+          
+          ## FILE ACCESS CHECK
+          {{file_access_check}}
+          
+          ## EXECUTION MODE
+          - dry_run: {{dry_run}}
+          - approval_required: {{approval_required}}
+          
+          ## TASK
+          
+          Create a fix plan that:
+          1. Orders fixes by dependency (independent fixes first)
+          2. Groups fixes by file (minimize file operations)
+          3. Prioritizes safe fixes over risky ones
+          4. Identifies exact changes for each fix
+          
+          For each fix, determine:
+          - The exact "before" content (what will be replaced)
+          - The exact "after" content (what it will become)
+          - Any pre-conditions that must be verified
+          - Post-fix verification steps
+          
+          ## EXECUTION ORDER RULES
+          
+          1. **File-independent fixes first**: Fixes that don't affect other fixes
+          2. **Bottom-up within files**: Apply fixes from bottom of file to top
+             (so line numbers remain valid for subsequent fixes)
+          3. **Safe fixes before risky**: doc_update, formatting_fix first
+          4. **Respect dependencies**: If fix B depends on fix A, A comes first
+          
+          ## OUTPUT FORMAT
+          
+          ```json
+          {
+            "execution_mode": "dry_run | approved | auto",
+            "plan_created_at": "ISO timestamp",
+            "total_fixes": N,
+            "fixes_by_type": {
+              "doc_update": N,
+              "import_cleanup": N,
+              "dead_code_removal": N,
+              "naming_fix": N,
+              "formatting_fix": N
+            },
+            "fixes_by_risk": {
+              "safe": N,
+              "caution": N,
+              "risky": N
+            },
+            "fix_plan": [
+              {
+                "order": 1,
+                "finding_id": "...",
+                "fix_type": "...",
+                "file": "path/to/file.py",
+                "line_start": N,
+                "line_end": M,
+                "change_description": "Human-readable description of what will change",
+                "before": "Exact content that will be replaced",
+                "after": "Exact content it will become",
+                "risk_level": "safe | caution | risky",
+                "status": "planned",
+                "pre_conditions": ["Conditions to verify before applying"],
+                "post_verification": ["How to verify the fix worked"],
+                "rollback_command": "Command to undo this fix"
+              }
+            ],
+            "files_affected": ["list of unique files"],
+            "estimated_changes": {
+              "lines_removed": N,
+              "lines_added": N,
+              "files_modified": N
+            },
+            "warnings": ["Any warnings about the plan"]
+          }
+          ```
+          
+          IMPORTANT:
+          - The "before" content MUST match exactly what's in the file
+          - The "after" content MUST be complete and valid
+          - Include enough context in before/after for unique matching
+          - Skip any findings where we can't determine exact changes
+        output: "fix_plan"
+        timeout: 300
+
+      - id: "format-plan-summary"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Create a human-readable summary of the fix plan for review.
+          
+          ## FIX PLAN
+          {{fix_plan}}
+          
+          ## DRY RUN MODE
+          dry_run: {{dry_run}}
+          
+          ## TASK
+          
+          Create a clear, readable summary that shows:
+          1. Overall statistics
+          2. List of changes by file
+          3. Risk assessment
+          4. What will happen next
+          
+          Format as markdown for easy reading.
+          
+          If dry_run=true, emphasize that this is just a preview and no changes will be made.
+          If dry_run=false, emphasize that changes will be made after approval.
+          
+          OUTPUT: Return the markdown summary as a string.
+        output: "plan_summary"
+        timeout: 120
+
+  # ==========================================================================
+  # STAGE 3: Execute Fixes (with approval gate)
+  # ==========================================================================
+  # This stage only runs if dry_run=false
+  # Approval gate shows the plan and asks for confirmation
+  - name: "execute-fixes"
+    approval:
+      required: true
+      prompt: |
+        FIX PLAN READY FOR EXECUTION
+        
+        {{plan_summary}}
+        
+        ## EXECUTION SUMMARY
+        
+        Total fixes to apply: See fix_plan above
+        Mode: {{dry_run}} (if true, this is DRY RUN - no changes made)
+        
+        ## WHAT HAPPENS NEXT
+        
+        If you APPROVE:
+        - Backup files will be created in {{backup_dir}}
+        - Fixes will be applied one at a time
+        - Each fix will be verified after application
+        - A rollback is available if issues are found
+        
+        If you DENY:
+        - No changes will be made
+        - You can review the plan and re-run with modifications
+        
+        Approve to proceed with fix execution?
+      timeout: 0  # Wait forever for approval
+      default: "deny"
+    steps:
+      - id: "check-dry-run"
+        type: "bash"
+        command: |
+          if [ "{{dry_run}}" = "true" ]; then
+            echo '{"skip_execution": true, "reason": "dry_run mode - no changes made"}'
+          else
+            echo '{"skip_execution": false, "reason": "executing fixes"}'
+          fi
+        output: "execution_check"
+        parse_json: true
+        timeout: 10
+
+      - id: "create-backups"
+        condition: "{{execution_check.skip_execution}} == false"
+        type: "bash"
+        command: |
+          # Create timestamped backup directory
+          timestamp=$(date +%Y%m%d_%H%M%S)
+          backup_path="{{backup_dir}}/$timestamp"
+          mkdir -p "$backup_path"
+          
+          # Get list of files to backup from the plan
+          echo '{{fix_plan}}' > /tmp/fix_plan.json
+          files=$(cat /tmp/fix_plan.json | jq -r '.files_affected[]' 2>/dev/null)
+          
+          backed_up=0
+          for f in $files; do
+            if [ -f "$f" ]; then
+              # Create directory structure in backup
+              dir=$(dirname "$f")
+              mkdir -p "$backup_path/$dir"
+              cp "$f" "$backup_path/$f"
+              backed_up=$((backed_up + 1))
+            fi
+          done
+          
+          echo "{\"backup_path\": \"$backup_path\", \"files_backed_up\": $backed_up, \"timestamp\": \"$timestamp\"}"
+        output: "backup_result"
+        parse_json: true
+        timeout: 120
+
+      - id: "execute-fixes-sequentially"
+        condition: "{{execution_check.skip_execution}} == false"
+        agent: "foundation:modular-builder"
+        prompt: |
+          Execute the fix plan by applying each fix in order.
+          
+          ## FIX PLAN
+          {{fix_plan}}
+          
+          ## BACKUP CREATED
+          {{backup_result}}
+          
+          ## EXECUTION INSTRUCTIONS
+          
+          For each fix in the plan (in order):
+          
+          1. **Read the file**: Get current content
+          2. **Verify pre-conditions**: Ensure the "before" content exists
+          3. **Apply the fix**: Replace "before" with "after" content
+          4. **Verify the fix**: Ensure the change was applied correctly
+          5. **Record result**: Success or failure with details
+          
+          ## SAFETY RULES
+          
+          - STOP if a fix fails verification - don't continue to dependent fixes
+          - Use exact string matching for "before" content
+          - Ensure "after" content is syntactically valid
+          - Log every change for audit trail
+          
+          ## TOOLS TO USE
+          
+          - read_file: To read current file content
+          - edit_file: To apply fixes (use old_string/new_string)
+          - Do NOT use write_file for entire file rewrites
+          
+          Apply each fix and report results.
+          
+          Return a JSON object with:
+          ```json
+          {
+            "execution_results": [
+              {
+                "finding_id": "...",
+                "status": "executed | failed | skipped",
+                "file": "...",
+                "change_applied": true/false,
+                "verification_passed": true/false,
+                "error": "error message if failed",
+                "details": "what was changed"
+              }
+            ],
+            "summary": {
+              "total": N,
+              "executed": N,
+              "failed": N,
+              "skipped": N
+            }
+          }
+          ```
+        output: "execution_results"
+        timeout: 600
+
+  # ==========================================================================
+  # STAGE 4: Verification and Report
+  # ==========================================================================
+  - name: "verification"
+    steps:
+      - id: "verify-changes"
+        condition: "{{execution_check.skip_execution}} == false"
+        type: "bash"
+        command: |
+          # Get list of modified files
+          echo '{{fix_plan}}' > /tmp/fix_plan_verify.json
+          files=$(cat /tmp/fix_plan_verify.json | jq -r '.files_affected[]' 2>/dev/null)
+          
+          # Basic syntax check for Python files
+          syntax_errors=0
+          checked=0
+          
+          for f in $files; do
+            if [ -f "$f" ] && [[ "$f" == *.py ]]; then
+              checked=$((checked + 1))
+              if ! python3 -m py_compile "$f" 2>/dev/null; then
+                syntax_errors=$((syntax_errors + 1))
+                echo "Syntax error in: $f" >&2
+              fi
+            fi
+          done
+          
+          # Check if tests exist and can be run
+          tests_available=false
+          if [ -d "tests" ] || [ -d "test" ]; then
+            tests_available=true
+          fi
+          
+          echo "{\"files_checked\": $checked, \"syntax_errors\": $syntax_errors, \"syntax_valid\": $([ $syntax_errors -eq 0 ] && echo true || echo false), \"tests_available\": $tests_available}"
+        output: "verification_result"
+        parse_json: true
+        timeout: 120
+
+      - id: "generate-final-report"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Generate the final execution report.
+          
+          ## INPUTS
+          
+          Validated Findings:
+          {{validated_findings}}
+          
+          Fix Plan:
+          {{fix_plan}}
+          
+          Execution Mode:
+          - dry_run: {{dry_run}}
+          - approval_required: {{approval_required}}
+          
+          Execution Check:
+          {{execution_check}}
+          
+          {% if execution_check.skip_execution == false %}
+          Backup Result:
+          {{backup_result}}
+          
+          Execution Results:
+          {{execution_results}}
+          
+          Verification Result:
+          {{verification_result}}
+          {% endif %}
+          
+          ## TASK
+          
+          Generate the final report in the required schema format.
+          
+          ## OUTPUT FORMAT
+          
+          ```json
+          {
+            "execution_mode": "dry_run | approved | auto",
+            "fix_plan": [
+              {
+                "finding_id": "...",
+                "fix_type": "...",
+                "file": "...",
+                "change_description": "What will/did change",
+                "before": "...",
+                "after": "...",
+                "status": "planned | approved | executed | failed | skipped"
+              }
+            ],
+            "execution_summary": {
+              "total_fixes_planned": N,
+              "executed": N,
+              "failed": N,
+              "skipped": N
+            },
+            "verification": {
+              "files_modified": ["list of files"],
+              "tests_passed": true/false/null,
+              "syntax_valid": true/false,
+              "rollback_available": true/false,
+              "backup_location": "path to backup"
+            },
+            "recommendations": [
+              "Any follow-up actions recommended"
+            ],
+            "report_generated_at": "ISO timestamp"
+          }
+          ```
+          
+          For dry_run mode:
+          - execution_summary should show planned fixes
+          - status should be "planned" for all fixes
+          - verification.files_modified should be empty
+          - verification.rollback_available should be false
+          
+          For executed mode:
+          - Update status based on actual execution results
+          - Include verification results
+          - Include backup location for rollback
+        output: "final_report"
+        timeout: 180
+
+      - id: "write-report"
+        type: "bash"
+        command: |
+          # Save the final report
+          mkdir -p {{working_dir}}/reports
+          timestamp=$(date +%Y%m%d_%H%M%S)
+          report_file="{{working_dir}}/reports/action-executor-report-$timestamp.json"
+          
+          echo '{{final_report}}' > "$report_file"
+          
+          # Also create a human-readable summary
+          summary_file="{{working_dir}}/reports/action-executor-summary-$timestamp.md"
+          
+          cat > "$summary_file" << 'SUMMARY_EOF'
+          # Action Executor Report
+          
+          Generated: $(date -Iseconds)
+          
+          ## Execution Mode
+          
+          - Dry Run: {{dry_run}}
+          - Approval Required: {{approval_required}}
+          
+          ## Summary
+          
+          {{plan_summary}}
+          
+          ## Report Location
+          
+          Full JSON report: $report_file
+          
+          SUMMARY_EOF
+          
+          echo "{\"report_file\": \"$report_file\", \"summary_file\": \"$summary_file\"}"
+        output: "report_files"
+        parse_json: true
+        timeout: 60
+
+output:
+  format: "json"
+  schema: |
+    {
+      "execution_mode": "string (dry_run | approved | auto)",
+      "fix_plan": [
+        {
+          "finding_id": "string",
+          "fix_type": "string (doc_update | import_cleanup | dead_code_removal | naming_fix | formatting_fix)",
+          "file": "string",
+          "change_description": "string",
+          "before": "string",
+          "after": "string",
+          "status": "string (planned | approved | executed | failed | skipped)"
+        }
+      ],
+      "execution_summary": {
+        "total_fixes_planned": "integer",
+        "executed": "integer",
+        "failed": "integer",
+        "skipped": "integer"
+      },
+      "verification": {
+        "files_modified": "array of strings",
+        "tests_passed": "boolean or null",
+        "syntax_valid": "boolean",
+        "rollback_available": "boolean",
+        "backup_location": "string or null"
+      },
+      "recommendations": "array of strings",
+      "report_generated_at": "string (ISO timestamp)"
+    }

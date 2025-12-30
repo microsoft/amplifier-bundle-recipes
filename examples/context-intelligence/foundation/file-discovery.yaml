@@ -1,0 +1,195 @@
+name: "file-discovery"
+description: "Discover and classify files in a repository by type for downstream analysis"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["foundation", "discovery", "classification"]
+
+# This is a foundation recipe that other recipes depend on.
+# It discovers all files in a repository and classifies them by type.
+#
+# Usage:
+#   amplifier run "execute recipes/foundation/file-discovery.yaml with repo_path=amplifier-core"
+#
+# Optional filters:
+#   file_patterns: Glob patterns to include (default: all)
+#   exclude_patterns: Glob patterns to exclude (default: common exclusions)
+#
+# Output:
+#   discovered_files: List of file objects with path, type, size, etc.
+#   file_summary: Counts by type for quick reference
+
+context:
+  repo_path: ""                    # Required: path to repository
+  file_patterns: "**/*"            # Optional: glob patterns to include
+  exclude_patterns: |
+    **/.git/**
+    **/__pycache__/**
+    **/*.pyc
+    **/node_modules/**
+    **/.venv/**
+    **/venv/**
+    **/.env
+    **/*.egg-info/**
+
+steps:
+  # Step 1: Discover all files matching patterns
+  - id: "discover-files"
+    agent: "foundation:explorer"
+    prompt: |
+      Discover all files in the repository at: {{repo_path}}
+      
+      TASK:
+      1. Use glob to find all files matching pattern: {{file_patterns}}
+      2. Exclude files matching these patterns:
+         {{exclude_patterns}}
+      3. For each file found, collect:
+         - Relative path from repo root
+         - File extension
+         - Approximate size (use file stats if available)
+      
+      OUTPUT FORMAT (as structured data):
+      Return a JSON array of file objects:
+      ```json
+      {
+        "files": [
+          {
+            "path": "relative/path/to/file.py",
+            "extension": ".py",
+            "size_bytes": 1234
+          }
+        ],
+        "total_count": 123,
+        "discovery_complete": true
+      }
+      ```
+      
+      Be thorough - find ALL files that match the patterns.
+      Do NOT read file contents, just discover paths and metadata.
+    output: "raw_files"
+    timeout: 120
+
+  # Step 2: Classify files by type
+  - id: "classify-files"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Classify the discovered files by their type for code analysis purposes.
+      
+      DISCOVERED FILES:
+      {{raw_files}}
+      
+      TASK:
+      Classify each file into one of these categories:
+      
+      CODE FILES:
+      - python: .py files (not tests)
+      - python_test: .py files that are tests (*_test.py, test_*.py, tests/*.py)
+      - javascript: .js, .jsx, .ts, .tsx files
+      - other_code: Other programming languages
+      
+      DOCUMENTATION FILES:
+      - markdown: .md files
+      - restructured_text: .rst files
+      - plain_text: .txt files (that appear to be docs)
+      
+      CONFIGURATION FILES:
+      - yaml_config: .yaml, .yml files
+      - json_config: .json files (not package.json style)
+      - toml_config: .toml files (pyproject.toml, etc.)
+      - ini_config: .ini, .cfg files
+      - other_config: Other config files
+      
+      BUILD/PROJECT FILES:
+      - build_file: setup.py, pyproject.toml, package.json, Makefile, etc.
+      - ci_config: .github/*, .gitlab-ci.yml, etc.
+      
+      OTHER:
+      - data: .csv, .json (data files), .sql
+      - binary: Images, compiled files, etc.
+      - unknown: Cannot determine type
+      
+      OUTPUT FORMAT:
+      Return structured JSON:
+      ```json
+      {
+        "classified_files": [
+          {
+            "path": "amplifier_core/session.py",
+            "extension": ".py",
+            "type": "python",
+            "size_bytes": 1234,
+            "analysis_applicable": ["tier1", "tier2"],
+            "notes": null
+          }
+        ],
+        "summary": {
+          "python": 45,
+          "python_test": 12,
+          "markdown": 8,
+          "yaml_config": 3,
+          "total": 68
+        },
+        "analysis_candidates": {
+          "tier1_single_file": ["list of paths for single-file analysis"],
+          "tier2_doc_code_pairs": [
+            {"code": "path/to/code.py", "doc": "path/to/README.md"}
+          ]
+        }
+      }
+      ```
+      
+      IMPORTANT:
+      - Be precise about test files vs production code
+      - Identify doc/code pairs that should be analyzed together
+      - Mark which tiers of analysis apply to each file type
+    output: "classified_files"
+    timeout: 180
+
+  # Step 3: Generate summary report
+  - id: "generate-summary"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Generate a discovery summary for the repository.
+      
+      CLASSIFICATION RESULTS:
+      {{classified_files}}
+      
+      TASK:
+      Create a concise summary suitable for:
+      1. Human review (is this the right set of files?)
+      2. Downstream recipes (what analyses should run?)
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "repository": "{{repo_path}}",
+        "discovery_summary": {
+          "total_files": 123,
+          "by_category": {
+            "code": {"count": 45, "types": ["python", "javascript"]},
+            "documentation": {"count": 12, "types": ["markdown"]},
+            "configuration": {"count": 8, "types": ["yaml_config", "toml_config"]},
+            "tests": {"count": 15, "types": ["python_test"]},
+            "other": {"count": 3, "types": ["binary", "unknown"]}
+          },
+          "analysis_recommendations": {
+            "tier1_candidates": 45,
+            "tier2_pairs_identified": 8,
+            "estimated_analysis_time_minutes": 15
+          }
+        },
+        "file_list": {
+          "for_tier1_analysis": ["list of file paths"],
+          "for_tier2_doc_code": [{"code": "...", "doc": "..."}],
+          "excluded_from_analysis": ["list with reasons"]
+        },
+        "warnings": [
+          "Any issues discovered (e.g., very large files, unusual structures)"
+        ]
+      }
+      ```
+      
+      Keep the summary actionable and concise.
+    output: "discovery_report"
+    timeout: 120

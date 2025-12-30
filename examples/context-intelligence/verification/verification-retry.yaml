@@ -1,0 +1,284 @@
+name: "verification-retry"
+description: "Retry analysis for findings that were REJECTED or DISPUTED during verification"
+version: "1.0.0"
+author: "Context Intelligence System"
+tags: ["verification", "retry", "iteration", "quality"]
+
+# This recipe implements iterative improvement for failed verifications.
+#
+# DESIGN PRINCIPLE:
+# When a finding is REJECTED or DISPUTED, this recipe feeds the verifier's
+# feedback back to the analyzer to produce a refined analysis. This creates
+# a learning loop where the analyzer can:
+# - Correct misunderstandings
+# - Provide better evidence
+# - Withdraw findings that don't hold up
+#
+# Usage:
+#   amplifier run "execute recipes/verification/verification-retry.yaml with original_finding=... source_file=... verification_feedback=..."
+#
+# Input: A rejected/disputed finding + verification feedback + source file
+# Output: Retry result (refined | withdrawn | unchanged) with updated finding
+
+context:
+  original_finding: ""              # Required: The finding that was rejected/disputed (JSON)
+  source_file: ""                   # Required: Path to source file
+  verification_feedback: ""         # Required: Feedback from the verifier explaining rejection/dispute
+  original_recipe: ""               # Required: Which Tier 1 recipe produced this (e.g., "comment-code-conflict")
+  max_retries: 2                    # Optional: Maximum retry attempts
+  retry_count: 0                    # Optional: Current retry count (0 = first retry)
+
+recursion:
+  max_depth: 3
+  max_total_steps: 20
+
+steps:
+  # Step 1: Parse and understand the verification feedback
+  - id: "parse-feedback"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Parse the verification feedback to understand exactly what went wrong.
+      
+      ORIGINAL FINDING:
+      {{original_finding}}
+      
+      VERIFICATION FEEDBACK:
+      {{verification_feedback}}
+      
+      ORIGINAL RECIPE: {{original_recipe}}
+      
+      TASK:
+      Analyze the feedback to extract actionable guidance for retry.
+      
+      EXTRACT:
+      1. **Rejection Reason**: Why was the finding rejected/disputed?
+         - Evidence mismatch (quote doesn't match source)
+         - Logic error (analyzer misunderstood the code)
+         - Context missing (analyzer didn't consider X)
+         - False positive (issue doesn't actually exist)
+         - Ambiguity (could be interpreted multiple ways)
+      
+      2. **Specific Corrections**: What specifically needs to change?
+         - Which claims were wrong?
+         - What evidence was missing or incorrect?
+         - What context was overlooked?
+      
+      3. **Retry Guidance**: How should the re-analysis approach this?
+         - What should the analyzer look at more carefully?
+         - What alternative interpretations should be considered?
+         - What additional evidence would strengthen the case?
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "rejection_type": "evidence_mismatch | logic_error | missing_context | false_positive | ambiguity",
+        "rejection_summary": "One sentence summary of why rejected",
+        "specific_issues": [
+          "Issue 1 identified by verifier",
+          "Issue 2 identified by verifier"
+        ],
+        "retry_guidance": {
+          "focus_areas": ["What to look at carefully"],
+          "avoid_mistakes": ["Previous mistakes to avoid"],
+          "additional_evidence_needed": ["What evidence would help"]
+        },
+        "likelihood_of_valid_finding": "high | medium | low",
+        "recommendation": "retry | withdraw | needs_human"
+      }
+      ```
+      
+      Be honest in assessing likelihood. If the verifier made a strong case that
+      this is a false positive, the likelihood should be "low".
+    output: "parsed_feedback"
+    timeout: 60
+
+  # Step 2: Load fresh source context
+  - id: "load-source"
+    agent: "foundation:explorer"
+    prompt: |
+      Read the source file completely: {{source_file}}
+      
+      Return the full file content with line numbers.
+      I need fresh context to re-analyze a finding that was disputed.
+    output: "source_content"
+    timeout: 60
+
+  # Step 3: Re-analyze with feedback guidance
+  - id: "reanalyze"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Re-analyze this finding with guidance from the verification feedback.
+      
+      ## ORIGINAL FINDING
+      {{original_finding}}
+      
+      ## VERIFICATION FEEDBACK ANALYSIS
+      {{parsed_feedback}}
+      
+      ## FRESH SOURCE CODE
+      {{source_content}}
+      
+      ## YOUR TASK
+      You are the SAME analyzer that produced the original finding, but now you have
+      feedback from an independent verifier who challenged your conclusion.
+      
+      Re-examine the finding with fresh eyes:
+      
+      1. **RE-READ THE SOURCE**: Look at the exact lines cited. Does your evidence hold up?
+      
+      2. **CONSIDER THE CHALLENGES**: The verifier raised these concerns. Are they valid?
+         - If YES: Your finding may need to be refined or withdrawn
+         - If NO: Your finding stands, but you need better evidence
+      
+      3. **DECIDE YOUR PATH**:
+         - **REFINE**: The core issue exists, but your original description was imprecise.
+           Provide a corrected finding with better evidence.
+         - **WITHDRAW**: After reconsideration, the issue doesn't actually exist.
+           The verifier was right - this was a false positive.
+         - **UNCHANGED**: Your original finding was correct. The verifier misunderstood.
+           Provide additional evidence to support your position.
+      
+      ## CRITICAL RULES
+      - Be HONEST. If the verifier is right, admit it and withdraw.
+      - Don't double down on wrong findings just to avoid admitting error.
+      - If refining, the new finding must address ALL the verifier's concerns.
+      - If unchanged, you MUST provide compelling new evidence.
+      
+      ## OUTPUT FORMAT
+      ```json
+      {
+        "decision": "refine | withdraw | unchanged",
+        "decision_reasoning": "Why I chose this path (be specific)",
+        "verifier_concerns_addressed": [
+          {
+            "concern": "What the verifier said",
+            "response": "How I addressed it"
+          }
+        ],
+        "updated_finding": {
+          // If REFINE: corrected finding with same schema as original
+          // If WITHDRAW: null
+          // If UNCHANGED: original finding with additional_evidence field added
+          "id": "same as original or null",
+          "file_path": "{{source_file}}",
+          "line_start": null,
+          "line_end": null,
+          "category": "same as original",
+          "severity": "may be adjusted based on re-analysis",
+          "confidence": "may be adjusted based on re-analysis",
+          "title": "refined title if applicable",
+          "description": "refined description addressing verifier concerns",
+          "evidence": "updated evidence with exact quotes",
+          "suggested_fix": "updated fix if applicable",
+          "additional_evidence": "new evidence not in original (if unchanged)",
+          "retry_notes": "what changed from original"
+        },
+        "confidence_delta": "increased | decreased | same",
+        "should_reverify": true
+      }
+      ```
+      
+      Remember: A withdrawn finding is better than a defended false positive.
+    output: "reanalysis_result"
+    timeout: 180
+
+  # Step 4: Determine if re-verification is needed
+  - id: "check-reverify"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Determine if this retry result needs re-verification.
+      
+      RETRY COUNT: {{retry_count}} of {{max_retries}}
+      
+      REANALYSIS RESULT:
+      {{reanalysis_result}}
+      
+      DECISION RULES:
+      1. If decision is "withdraw": No re-verification needed (finding removed)
+      2. If decision is "unchanged" AND retry_count >= max_retries: No more retries
+      3. If decision is "refine" AND retry_count < max_retries: Re-verify the refined finding
+      4. If confidence is now "high": May skip re-verification
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "should_reverify": true/false,
+        "reason": "Why or why not",
+        "retry_exhausted": true/false,
+        "can_retry_again": true/false,
+        "next_retry_count": N
+      }
+      ```
+    output: "reverify_decision"
+    timeout: 60
+
+  # Step 5: Format final retry output
+  - id: "format-result"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Format the final retry result for downstream processing.
+      
+      REANALYSIS RESULT:
+      {{reanalysis_result}}
+      
+      REVERIFY DECISION:
+      {{reverify_decision}}
+      
+      ORIGINAL FINDING:
+      {{original_finding}}
+      
+      SOURCE FILE: {{source_file}}
+      ORIGINAL RECIPE: {{original_recipe}}
+      RETRY COUNT: {{retry_count}}
+      MAX RETRIES: {{max_retries}}
+      
+      OUTPUT FORMAT:
+      ```json
+      {
+        "retry_outcome": "refined | withdrawn | unchanged",
+        "updated_finding": {
+          // The complete updated finding object, or null if withdrawn
+          // Must include all standard finding fields plus:
+          "verification_status": "pending | verified | rejected",
+          "retry_history": {
+            "original_recipe": "{{original_recipe}}",
+            "retry_count": N,
+            "last_retry_outcome": "refined | withdrawn | unchanged",
+            "feedback_addressed": ["list of concerns addressed"]
+          }
+        },
+        "retry_notes": "Summary of what changed or why withdrawn",
+        "should_reverify": true/false,
+        "reverify_reason": "Why re-verification is or isn't needed",
+        "metadata": {
+          "source_file": "{{source_file}}",
+          "original_recipe": "{{original_recipe}}",
+          "retry_count": {{retry_count}},
+          "max_retries": {{max_retries}},
+          "retry_timestamp": "ISO timestamp"
+        }
+      }
+      ```
+      
+      IMPORTANT:
+      - If outcome is "withdrawn", updated_finding should be null
+      - If outcome is "refined", updated_finding must address all verifier concerns
+      - If outcome is "unchanged", include additional_evidence explaining why original stands
+      - The retry_notes should be human-readable for review
+    output: "final_result"
+    timeout: 60
+
+  # Step 6: Optionally trigger re-verification (conditional)
+  - id: "trigger-reverification"
+    type: "recipe"
+    condition: "{{reverify_decision.should_reverify}} == true"
+    recipe: "claim-verification.yaml"
+    context:
+      finding: "{{reanalysis_result.updated_finding}}"
+      source_file: "{{source_file}}"
+      verification_mode: "strict"
+    output: "reverification_result"

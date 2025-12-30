@@ -1,0 +1,31 @@
+name: "test-foreach"
+description: "Test foreach with hardcoded list"
+version: "1.0.0"
+
+context:
+  test_files:
+    - "/home/bkrabach/repos/recipe-dev/amplifier-core/amplifier_core/loader.py"
+    - "/home/bkrabach/repos/recipe-dev/amplifier-core/amplifier_core/session.py"
+
+steps:
+  - id: "analyze-each"
+    foreach: "{{test_files}}"
+    as: "current_file"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Briefly describe what this file does: {{current_file}}
+      One sentence only.
+    output: "description"
+    collect: "all_descriptions"
+    max_iterations: 5
+
+  - id: "summarize"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Here are file descriptions:
+      {{all_descriptions}}
+      
+      Summarize in one paragraph.
+    output: "summary"
