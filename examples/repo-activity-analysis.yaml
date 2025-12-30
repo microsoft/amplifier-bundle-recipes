@@ -129,10 +129,10 @@ steps:
       
       if [ -n "$precomputed_iso" ]; then
         # Use precomputed values - NO LLM CALL NEEDED
-        echo "{\"original\": \"{{date_range}}\", \"since_iso\": \"$precomputed_iso\", \"since_date\": \"$precomputed_date\", \"description\": \"$precomputed_desc\", \"source\": \"precomputed\"}"
+        echo "{\"needs_llm\": \"false\", \"original\": \"{{date_range}}\", \"since_iso\": \"$precomputed_iso\", \"since_date\": \"$precomputed_date\", \"description\": \"$precomputed_desc\", \"source\": \"precomputed\"}"
       else
         # Signal that we need LLM parsing (standalone mode)
-        echo "{\"needs_llm\": true, \"date_range\": \"{{date_range}}\"}"
+        echo "{\"needs_llm\": \"true\", \"date_range\": \"{{date_range}}\"}"
       fi
     output: "date_check"
     parse_json: true
@@ -140,7 +140,7 @@ steps:
 
   # Step 2b: LLM date parsing (only if precomputed not available)
   - id: "parse-date-range-llm"
-    condition: "{{date_check.needs_llm}} == true"
+    condition: "{{date_check.needs_llm}} == 'true'"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
     prompt: |
@@ -171,19 +171,22 @@ steps:
     parse_json: true
     timeout: 60
 
-  # Step 2c: Merge date results
-  - id: "merge-date-result"
+  # Step 2c: Use precomputed date (skips if LLM was needed)
+  - id: "use-precomputed-date"
+    condition: "{{date_check.needs_llm}} == 'false'"
     type: "bash"
     command: |
-      if [ "{{date_check.needs_llm}}" = "true" ]; then
-        cat << 'DATEEOF'
-      {{parsed_date_llm}}
-      DATEEOF
-      else
-        cat << 'DATEEOF'
-      {{date_check}}
-      DATEEOF
-      fi
+      echo '{"original": "{{date_check.original}}", "since_iso": "{{date_check.since_iso}}", "since_date": "{{date_check.since_date}}", "description": "{{date_check.description}}", "source": "precomputed"}'
+    output: "parsed_date"
+    parse_json: true
+    timeout: 10
+
+  # Step 2d: Use LLM-parsed date (only runs if LLM step ran)
+  - id: "use-llm-date"
+    condition: "{{date_check.needs_llm}} == 'true'"
+    type: "bash"
+    command: |
+      echo '{"original": "{{parsed_date_llm.original}}", "since_iso": "{{parsed_date_llm.since_iso}}", "since_date": "{{parsed_date_llm.since_date}}", "description": "{{parsed_date_llm.description}}", "source": "llm_parsed"}'
     output: "parsed_date"
     parse_json: true
     timeout: 10
