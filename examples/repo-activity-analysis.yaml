@@ -147,21 +147,24 @@ steps:
       Parse the natural language date range into ISO 8601 format for GitHub API.
       
       Input: "{{date_range}}"
-      Current date: Run `date +%Y-%m-%d` to get today's date.
       
-      Interpretation:
-      - "since yesterday" -> yesterday at 00:00:00
-      - "last 7 days" -> 7 days ago at 00:00:00
+      IMPORTANT: Use the user's LOCAL time, not UTC.
+      Run `date '+%Y-%m-%d %H:%M %Z'` to get today's date AND timezone.
+      "Yesterday" means yesterday in the user's local timezone.
+      
+      Interpretation (relative to user's local time):
+      - "since yesterday" -> yesterday at 00:00:00 LOCAL time, converted to UTC
+      - "last 7 days" -> 7 days ago at 00:00:00 LOCAL time
       - "last week" -> 7 days ago
-      - "since 2024-12-01" -> 2024-12-01T00:00:00Z
+      - "since 2024-12-01" -> 2024-12-01T00:00:00 in user's timezone
       - "this month" -> first day of current month
       
       Return:
       {
         "original": "{{date_range}}",
-        "since_iso": "YYYY-MM-DDTHH:MM:SSZ",
-        "since_date": "YYYY-MM-DD",
-        "description": "human readable description",
+        "since_iso": "YYYY-MM-DDTHH:MM:SSZ",  // UTC time (Z suffix) after timezone conversion
+        "since_date": "YYYY-MM-DD",            // Local date
+        "description": "human readable description (include timezone)",
         "source": "llm_parsed"
       }
     output: "parsed_date_llm"
