@@ -184,8 +184,12 @@ Example:
                 print(f"[DEBUG] Available capabilities: {caps}", file=sys.stderr)
                 return None
             # Debug: check what type of resolver we have
+            print(f"[DEBUG recipes] coordinator id: {id(self.coordinator)}", file=sys.stderr)
             print(f"[DEBUG recipes] mention_resolver type: {type(mention_resolver).__name__}", file=sys.stderr)
             print(f"[DEBUG recipes] mention_resolver id: {id(mention_resolver)}", file=sys.stderr)
+            # Check all capabilities
+            caps = list(self.coordinator._capabilities.keys()) if hasattr(self.coordinator, '_capabilities') else []
+            print(f"[DEBUG recipes] all capabilities: {caps}", file=sys.stderr)
             if hasattr(mention_resolver, 'foundation_resolver'):
                 print(f"[DEBUG recipes] foundation_resolver: {mention_resolver.foundation_resolver}", file=sys.stderr)
                 print(f"[DEBUG recipes] foundation_resolver is not None: {mention_resolver.foundation_resolver is not None}", file=sys.stderr)
