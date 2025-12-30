@@ -35,6 +35,12 @@ Recipes are declarative YAML workflows that provide:
 | `approvals` | Show pending approval gates |
 | `approve/deny` | Respond to approval gates |
 
+## Quick Gotchas
+
+- **Field access requires parsing**: Use `parse_json: true` on bash/agent steps if you need `{{result.field}}` access
+- **Bash JSON construction**: Use `jq` to build JSON, never shell variable interpolation (breaks on quotes/newlines)
+- **Nested context**: Template variables in nested objects are resolved recursively
+
 ## Getting Help
 
 **Delegate to `recipes:recipe-author`** when users need to:
