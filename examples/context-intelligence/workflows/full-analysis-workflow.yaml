@@ -984,7 +984,7 @@ stages:
   # ==========================================================================
   # STAGE 10: REPORT GENERATION
   # ==========================================================================
-  # Generate comprehensive final report
+  # Generate comprehensive markdown reports and compact final_output
   - name: "report"
     steps:
       - id: "record-report-start"
@@ -995,18 +995,29 @@ stages:
         parse_json: true
         timeout: 10
 
-      - id: "generate-final-report"
+      - id: "create-report-directory"
+        type: "bash"
+        command: |
+          report_dir="{{working_dir}}/reports"
+          mkdir -p "$report_dir"
+          timestamp=$(date +%Y%m%d_%H%M%S)
+          echo "{\"report_dir\": \"$report_dir\", \"timestamp\": \"$timestamp\"}"
+        output: "report_paths"
+        parse_json: true
+        timeout: 10
+
+      # ----------------------------------------------------------------
+      # STEP 1: Generate Full Analysis Report (Markdown)
+      # ----------------------------------------------------------------
+      - id: "generate-full-report-markdown"
         agent: "foundation:zen-architect"
         mode: "ARCHITECT"
         prompt: |
-          Generate the comprehensive final analysis report.
+          Generate a comprehensive markdown analysis report.
           
-          WORKFLOW CONFIGURATION:
-          - Repository: {{repo_path}}
-          - Analysis Depth: {{analysis_depth}}
-          - Skip Tiers: {{skip_tiers}}
-          - Dry Run: {{dry_run}}
-          - Max Files: {{max_files}}
+          REPOSITORY: {{repo_path}}
+          ANALYSIS DEPTH: {{analysis_depth}}
+          DRY RUN: {{dry_run}}
           
           TIMING DATA:
           - Discovery: {{discovery_timing_end}}
@@ -1019,117 +1030,293 @@ stages:
           - Categorization: {{categorization_timing_end}}
           - Execution: {{execution_timing_end}}
           
-          ANALYSIS RESULTS:
-          
-          Discovery:
-          {{discovered_files}}
-          
-          Aggregated Findings:
-          {{aggregated_findings}}
-          
-          Synthesized Results:
-          {{synthesized_findings}}
-          
-          Categorized Findings:
-          {{categorized_findings}}
-          
-          Execution Results (if any):
-          {{execution_results}}
+          ANALYSIS DATA:
+          - Discovery: {{discovered_files}}
+          - Aggregated Findings: {{aggregated_findings}}
+          - Synthesized Results: {{synthesized_findings}}
+          - Categorized Findings: {{categorized_findings}}
+          - Execution Results: {{execution_results}}
           
           TASK:
-          Generate the final comprehensive report in the required output schema format.
+          Generate a complete markdown report following this structure:
           
-          Calculate totals from the timing data for each stage that ran.
-          Determine stages_completed and stages_skipped based on what actually executed.
+          1. **Header** - Repository, date, analysis depth, duration, grade
+          2. **Executive Summary** - 2-3 paragraphs with key findings
+          3. **Health Dashboard** - Table with metrics, ASCII bar chart for file distribution
+          4. **Discovery Summary** - Files found, by type
+          5. **Tier 1 Findings** - Organized by severity, then by file
+             - Use collapsible <details> sections for file-by-file breakdown
+          6. **Tier 2 Findings** (if run) - Doc accuracy, duplicates
+          7. **Tier 3 Findings** (if run) - Architecture assessment
+          8. **Cross-Cutting Patterns** - Patterns across files
+          9. **Root Cause Analysis** - Table format
+          10. **Prioritized Action Plan** - Immediate/Short-term/Backlog
+          11. **Execution Results** (if any) - Table of changes
+          12. **Appendix A: Timing Breakdown** - Table
+          13. **Appendix B: Files Analyzed** - List with grades
           
-          EXECUTIVE SUMMARY REQUIREMENTS:
-          - 2-3 paragraphs summarizing overall repository health
-          - Key findings and risks
-          - Top 3 recommendations
-          - Clear next steps
+          FORMAT REQUIREMENTS:
+          - Use proper markdown headers (## for sections)
+          - Use tables for structured data
+          - Use <details> tags for collapsible sections
+          - Use code blocks for file paths and code snippets
+          - Include cross-references to executive-summary.md and action-items.md
+          - End with generation timestamp and version
           
-          OUTPUT FORMAT:
-          ```json
+          Output ONLY the markdown content, no JSON wrapper.
+        output: "full_report_markdown"
+        timeout: 420
+
+      - id: "save-full-report"
+        type: "bash"
+        command: |
+          report_file="{{report_paths.report_dir}}/full-analysis-report.md"
+          
+          cat > "$report_file" << 'REPORT_EOF'
+          {{full_report_markdown}}
+          REPORT_EOF
+          
+          # Verify file was written
+          if [ -f "$report_file" ]; then
+            size=$(stat -c%s "$report_file" 2>/dev/null || stat -f%z "$report_file" 2>/dev/null || echo "0")
+            echo "{\"path\": \"$report_file\", \"saved\": true, \"size_bytes\": $size}"
+          else
+            echo "{\"path\": \"$report_file\", \"saved\": false, \"error\": \"File not created\"}"
+          fi
+        output: "full_report_file"
+        parse_json: true
+        timeout: 60
+
+      # ----------------------------------------------------------------
+      # STEP 2: Generate Executive Summary (Markdown)
+      # ----------------------------------------------------------------
+      - id: "generate-executive-summary"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Generate a concise executive summary markdown document (1-2 pages max).
+          
+          SOURCE DATA:
+          - Aggregated Findings: {{aggregated_findings}}
+          - Synthesized Results: {{synthesized_findings}}
+          - Categorized Findings: {{categorized_findings}}
+          
+          CONTEXT:
+          - Repository: {{repo_path}}
+          - Full report at: {{full_report_file.path}}
+          - Action items will be at: {{report_paths.report_dir}}/action-items.md
+          
+          STRUCTURE:
+          1. **Header** - Title, repo, date, overall grade (large/prominent)
+          2. **At a Glance** - Key metrics table with emoji indicators
+          3. **Key Findings** - Top 3 risks, strengths observed
+          4. **Recommendations** - Immediate/Short-term/Strategic (1-2 items each)
+          5. **Quick Wins Available** - Count and time estimate
+          6. **Next Steps** - Numbered list with links to other reports
+          7. **Footer** - Links to full report and action items
+          
+          TONE:
+          - Write for non-technical stakeholders
+          - Focus on business impact, not technical details
+          - Use clear, actionable language
+          - Keep it to 1-2 pages when printed
+          
+          Output ONLY the markdown content.
+        output: "executive_summary_markdown"
+        timeout: 180
+
+      - id: "save-executive-summary"
+        type: "bash"
+        command: |
+          report_file="{{report_paths.report_dir}}/executive-summary.md"
+          
+          cat > "$report_file" << 'REPORT_EOF'
+          {{executive_summary_markdown}}
+          REPORT_EOF
+          
+          if [ -f "$report_file" ]; then
+            size=$(stat -c%s "$report_file" 2>/dev/null || stat -f%z "$report_file" 2>/dev/null || echo "0")
+            echo "{\"path\": \"$report_file\", \"saved\": true, \"size_bytes\": $size}"
+          else
+            echo "{\"path\": \"$report_file\", \"saved\": false, \"error\": \"File not created\"}"
+          fi
+        output: "executive_summary_file"
+        parse_json: true
+        timeout: 60
+
+      # ----------------------------------------------------------------
+      # STEP 3: Generate Action Items (Markdown)
+      # ----------------------------------------------------------------
+      - id: "generate-action-items"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Generate an actionable checklist markdown document.
+          
+          SOURCE DATA:
+          - Synthesized Results: {{synthesized_findings}}
+          - Categorized Findings: {{categorized_findings}}
+          - Execution Results: {{execution_results}}
+          
+          CONTEXT:
+          - Repository: {{repo_path}}
+          - Full report at: {{full_report_file.path}}
+          - Dry run mode: {{dry_run}}
+          
+          STRUCTURE:
+          1. **Header** - Title, date, repo, total action count
+          2. **Quick Wins** - Checkbox list, effort/impact for each
+          3. **Critical** - Security/stability issues with assignee suggestions
+          4. **High Priority** - This sprint items
+          5. **Documentation Updates** - Doc-related items
+          6. **Tech Debt** - Backlog items
+          7. **Auto-Fixable Summary** - Table of what can be auto-fixed, instructions to apply
+          8. **Progress Tracking** - Summary table with totals
+          9. **Footer** - Cross-reference to full report
+          
+          FORMAT REQUIREMENTS:
+          - Use markdown checkboxes: `- [ ] Task`
+          - Include effort estimates (5 min, 30 min, 1 hour, etc.)
+          - Include file paths and line numbers where relevant
+          - Group logically for sprint planning
+          - Make it copy-paste ready for issue trackers
+          
+          Output ONLY the markdown content.
+        output: "action_items_markdown"
+        timeout: 180
+
+      - id: "save-action-items"
+        type: "bash"
+        command: |
+          report_file="{{report_paths.report_dir}}/action-items.md"
+          
+          cat > "$report_file" << 'REPORT_EOF'
+          {{action_items_markdown}}
+          REPORT_EOF
+          
+          if [ -f "$report_file" ]; then
+            size=$(stat -c%s "$report_file" 2>/dev/null || stat -f%z "$report_file" 2>/dev/null || echo "0")
+            echo "{\"path\": \"$report_file\", \"saved\": true, \"size_bytes\": $size}"
+          else
+            echo "{\"path\": \"$report_file\", \"saved\": false, \"error\": \"File not created\"}"
+          fi
+        output: "action_items_file"
+        parse_json: true
+        timeout: 60
+
+      # ----------------------------------------------------------------
+      # STEP 4: Save JSON Data (for programmatic access)
+      # ----------------------------------------------------------------
+      - id: "save-json-data"
+        type: "bash"
+        command: |
+          json_file="{{report_paths.report_dir}}/analysis-data.json"
+          
+          cat > "$json_file" << 'JSON_EOF'
           {
-            "workflow_id": "wf-YYYYMMDD-HHMMSS",
             "repo_path": "{{repo_path}}",
             "analysis_depth": "{{analysis_depth}}",
-            "stages_completed": ["discovery", "tier1", ...],
-            "stages_skipped": ["tier3"],
-            "timing": {
-              "total_duration_seconds": N,
-              "by_stage": {
-                "discovery": N,
-                "tier1": N,
-                "compression": N,
-                "tier2": N,
-                "tier3": N,
-                "aggregation": N,
-                "synthesis": N,
-                "categorization": N,
-                "execution": N,
-                "report": N
-              }
+            "timestamp": "{{report_paths.timestamp}}",
+            "aggregated_findings": {{aggregated_findings}},
+            "synthesized_findings": {{synthesized_findings}},
+            "categorized_findings": {{categorized_findings}},
+            "execution_results": {{execution_results}}
+          }
+          JSON_EOF
+          
+          if [ -f "$json_file" ]; then
+            echo "{\"path\": \"$json_file\", \"saved\": true}"
+          else
+            echo "{\"path\": \"$json_file\", \"saved\": false}"
+          fi
+        output: "json_data_file"
+        parse_json: true
+        timeout: 60
+        on_error: "continue"
+
+      # ----------------------------------------------------------------
+      # STEP 5: Construct compact final_output
+      # ----------------------------------------------------------------
+      - id: "construct-final-output"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        prompt: |
+          Construct a compact final_output JSON summary (MUST be under 2KB).
+          
+          SOURCE DATA:
+          - Aggregated Findings: {{aggregated_findings}}
+          - Synthesized Findings: {{synthesized_findings}}
+          - Categorized Findings: {{categorized_findings}}
+          - Execution Results: {{execution_results}}
+          
+          REPORT FILES:
+          - Full Report: {{full_report_file.path}}
+          - Executive Summary: {{executive_summary_file.path}}
+          - Action Items: {{action_items_file.path}}
+          
+          WORKFLOW CONTEXT:
+          - Repository: {{repo_path}}
+          - Analysis Depth: {{analysis_depth}}
+          - Dry Run: {{dry_run}}
+          - Timestamp: {{report_paths.timestamp}}
+          
+          TASK:
+          Generate a compact JSON object with this exact schema:
+          
+          ```json
+          {
+            "status": "completed",
+            "workflow_id": "wf-YYYYMMDD-HHMMSS",
+            
+            "repository": {
+              "path": "actual repo path",
+              "health_grade": "A|B|C|D|F",
+              "health_score": 0-100
             },
-            "results": {
-              "discovery": {
-                "total_files": N,
-                "tier1_candidates": N,
-                "by_type": {...}
-              },
-              "tier1": {
-                "files_analyzed": N,
-                "total_findings": N,
-                "by_severity": {...}
-              },
-              "tier2": {
-                "pairs_analyzed": N,
-                "findings": N
-              },
-              "tier3": {
-                "findings": N,
-                "architectural_assessment": "..."
-              },
-              "synthesis": {
-                "root_causes": N,
-                "action_themes": N,
-                "actions_planned": N
-              },
-              "execution": {
-                "attempted": N,
-                "successful": N,
-                "failed": N
-              }
-            },
-            "final_report": {
-              "repo_health": "A|B|C|D|F",
+            
+            "summary": {
+              "files_analyzed": N,
               "total_findings": N,
-              "actionable": N,
-              "auto_fixed": N,
-              "remaining": N,
-              "executive_summary": "Comprehensive 2-3 paragraph summary..."
+              "by_severity": {
+                "critical": N,
+                "high": N,
+                "medium": N,
+                "low": N
+              },
+              "auto_fixable": N,
+              "quick_wins": N
+            },
+            
+            "reports": {
+              "full_report": "path/to/full-analysis-report.md",
+              "executive_summary": "path/to/executive-summary.md",
+              "action_items": "path/to/action-items.md"
+            },
+            
+            "top_3_actions": [
+              "Brief description of top action 1",
+              "Brief description of top action 2",
+              "Brief description of top action 3"
+            ],
+            
+            "execution": {
+              "dry_run": true|false,
+              "fixes_applied": N,
+              "fixes_available": N
             }
           }
           ```
-        output: "final_report"
-        timeout: 300
-
-      - id: "save-report"
-        type: "bash"
-        command: |
-          mkdir -p {{working_dir}}/reports
-          timestamp=$(date +%Y%m%d_%H%M%S)
-          report_file="{{working_dir}}/reports/full-analysis-report-$timestamp.json"
           
-          # Use heredoc to safely write JSON with special characters
-          cat > "$report_file" << 'REPORT_EOF'
-          {{final_report}}
-          REPORT_EOF
+          REQUIREMENTS:
+          - Extract actual values from the source data
+          - top_3_actions should be the highest priority, most impactful items
+          - Keep descriptions concise (under 80 chars each)
+          - Use actual file paths from report files
           
-          echo "{\"report_file\": \"$report_file\", \"timestamp\": \"$timestamp\", \"saved\": true}"
-        output: "saved_report"
+          Output ONLY valid JSON, no markdown wrapper.
+        output: "final_output"
         parse_json: true
-        timeout: 60
+        timeout: 120
 
       - id: "record-report-end"
         type: "bash"
@@ -1147,66 +1334,52 @@ stages:
         parse_json: true
         timeout: 10
 
+# ==========================================================================
+# OUTPUT SPECIFICATION
+# ==========================================================================
+# The recipe returns a compact final_output (~2KB) with references to full reports.
+# Complete data is saved to markdown files for human consumption and JSON for
+# programmatic access.
+#
+# Files generated:
+#   - full-analysis-report.md  : Complete comprehensive report (~20-50 pages)
+#   - executive-summary.md     : Stakeholder-friendly overview (1-2 pages)
+#   - action-items.md          : Developer checklist (2-5 pages)
+#   - analysis-data.json       : Structured data for programmatic access
+#
 output:
   format: "json"
+  key: "final_output"
   schema: |
     {
-      "workflow_id": "string - unique workflow identifier",
-      "repo_path": "string - repository path analyzed",
-      "analysis_depth": "string - quick | standard | deep",
-      "stages_completed": "array of string - stages that ran successfully",
-      "stages_skipped": "array of string - stages that were skipped",
-      "timing": {
-        "total_duration_seconds": "integer - total workflow time",
-        "by_stage": {
-          "discovery": "integer - seconds for discovery stage",
-          "tier1": "integer - seconds for tier1 analysis",
-          "compression": "integer - seconds for compression",
-          "tier2": "integer or null - seconds for tier2 (if run)",
-          "tier3": "integer or null - seconds for tier3 (if run)",
-          "aggregation": "integer - seconds for aggregation",
-          "synthesis": "integer - seconds for synthesis",
-          "categorization": "integer - seconds for categorization",
-          "execution": "integer or null - seconds for execution (if run)",
-          "report": "integer - seconds for report generation"
-        }
+      "status": "string - 'completed' | 'failed' | 'partial'",
+      "workflow_id": "string - unique workflow identifier (wf-YYYYMMDD-HHMMSS)",
+      "repository": {
+        "path": "string - repository path analyzed",
+        "health_grade": "string - A|B|C|D|F",
+        "health_score": "integer - 0-100"
       },
-      "results": {
-        "discovery": {
-          "total_files": "integer - total files discovered",
-          "tier1_candidates": "integer - files eligible for tier1 analysis",
-          "by_type": "object - file counts by type (python, javascript, etc.)"
-        },
-        "tier1": {
-          "files_analyzed": "integer - number of files analyzed",
-          "total_findings": "integer - total findings from tier1",
-          "by_severity": "object - counts by severity level"
-        },
-        "tier2": {
-          "pairs_analyzed": "integer - doc/code pairs analyzed",
-          "findings": "integer - tier2 findings count"
-        },
-        "tier3": {
-          "findings": "integer - tier3 findings count",
-          "architectural_assessment": "string - brief architecture summary"
-        },
-        "synthesis": {
-          "root_causes": "integer - root causes identified",
-          "action_themes": "integer - action themes created",
-          "actions_planned": "integer - total actions in plan"
-        },
-        "execution": {
-          "attempted": "integer - fixes attempted",
-          "successful": "integer - fixes that succeeded",
-          "failed": "integer - fixes that failed"
-        }
-      },
-      "final_report": {
-        "repo_health": "string - A|B|C|D|F grade",
+      "summary": {
+        "files_analyzed": "integer - number of files analyzed",
         "total_findings": "integer - total unique findings",
-        "actionable": "integer - findings that can be acted upon",
-        "auto_fixed": "integer - findings that were auto-fixed (if execution ran)",
-        "remaining": "integer - findings still needing attention",
-        "executive_summary": "string - comprehensive 2-3 paragraph summary with key findings and recommendations"
+        "by_severity": {
+          "critical": "integer",
+          "high": "integer",
+          "medium": "integer",
+          "low": "integer"
+        },
+        "auto_fixable": "integer - findings that can be auto-fixed",
+        "quick_wins": "integer - high-impact low-effort items"
+      },
+      "reports": {
+        "full_report": "string - path to full-analysis-report.md",
+        "executive_summary": "string - path to executive-summary.md",
+        "action_items": "string - path to action-items.md"
+      },
+      "top_3_actions": "array of string - top 3 prioritized actions (max 80 chars each)",
+      "execution": {
+        "dry_run": "boolean - whether dry_run mode was enabled",
+        "fixes_applied": "integer - number of auto-fixes applied",
+        "fixes_available": "integer - number of auto-fixes available"
       }
     }

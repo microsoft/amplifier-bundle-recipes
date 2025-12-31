@@ -140,3 +140,53 @@ steps:
       ```
     output: "verification_priorities"
     timeout: 60
+
+  # Step 7: Construct compact final_output for collection
+  # This step creates a small summary that will be collected by the parent workflow's
+  # foreach loop, preventing context explosion when analyzing many files.
+  - id: "construct-final-output"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Create a compact summary (MUST be under 1.5KB) of this file's Tier 1 analysis.
+      
+      FILE: {{file_path}}
+      
+      AGGREGATED FINDINGS:
+      {{aggregated_findings}}
+      
+      TASK:
+      Extract ONLY the essential information needed by the parent workflow.
+      The full findings are available in aggregated_findings if needed for detailed work.
+      
+      OUTPUT FORMAT (valid JSON only, no markdown):
+      {
+        "file_path": "{{file_path}}",
+        "health_grade": "A|B|C|D|F",
+        "finding_counts": {
+          "total": N,
+          "critical": N,
+          "high": N,
+          "medium": N,
+          "low": N
+        },
+        "top_issues": [
+          {
+            "id": "finding-id",
+            "severity": "high|medium|low",
+            "category": "comment_code_conflict|dead_code|internal_inconsistency|naming_mismatch",
+            "summary": "Brief description under 100 chars"
+          }
+        ],
+        "actionable_count": N,
+        "quick_assessment": "One sentence overall assessment"
+      }
+      
+      REQUIREMENTS:
+      - top_issues: Include MAX 3 highest severity findings
+      - Keep summaries concise (under 100 chars each)
+      - health_grade: A (0-1 issues), B (2-4), C (5-8), D (9-15), F (16+)
+      - Output ONLY valid JSON
+    output: "final_output"
+    parse_json: true
+    timeout: 60
