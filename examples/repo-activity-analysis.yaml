@@ -1,6 +1,6 @@
 name: "repo-activity-analysis"
 description: "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday."
-version: "1.2.0"
+version: "1.3.0"
 author: "Amplifier Recipes"
 tags: ["github", "analysis", "commits", "prs", "git", "activity"]
 
@@ -8,6 +8,10 @@ tags: ["github", "analysis", "commits", "prs", "git", "activity"]
 #
 # Analyzes a single GitHub repository for commits and PRs in a date range.
 # Defaults to the current working directory's repo and "since yesterday".
+#
+# v1.3.0: Reliability improvements
+#         - Add explicit write-files step (LLM file writes are non-deterministic)
+#         - Synthesize step now returns content only, bash step writes files
 #
 # v1.2.0: Added _precomputed values pattern for orchestration optimization
 #         - Skips date parsing LLM call when parent provides parsed values
@@ -509,12 +513,76 @@ steps:
         ]
       }
       
-      Write to: {{working_dir}}/analyses/{{repo_info.repo_name}}-analysis.json
-      
-      Also generate a brief markdown summary and write to:
-      {{working_dir}}/analyses/{{repo_info.repo_name}}-summary.md
-      
-      Return the summary object.
+      Return the summary object as JSON.
+      DO NOT write files - the next step handles file writing.
     output: "repo_summary"
     parse_json: true
     timeout: 300
+
+  # ==========================================================================
+  # Step 9: Write analysis files (GUARANTEED file write)
+  # ==========================================================================
+  # BASH STEP - Explicit file write since LLM file writes are non-deterministic
+  # Why bash: Guarantees files are written, verifies success
+  - id: "write-analysis-files"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      
+      mkdir -p {{working_dir}}/analyses
+      
+      # Write JSON analysis file
+      printf '%s\n' '{{repo_summary}}' > {{working_dir}}/analyses/{{repo_info.repo_name}}-analysis.json.tmp
+      mv {{working_dir}}/analyses/{{repo_info.repo_name}}-analysis.json.tmp {{working_dir}}/analyses/{{repo_info.repo_name}}-analysis.json
+      
+      # Generate and write markdown summary from the JSON
+      # Use jq to extract key information and format as markdown
+      cat > {{working_dir}}/analyses/{{repo_info.repo_name}}-summary.md << 'SUMMARY_EOF'
+# {{repo_info.repo_name}} Repository Analysis
+
+**Repository**: [{{repo_info.owner}}/{{repo_info.repo_name}}]({{repo_info.repo_url}})  
+**Analysis Date**: $(date -u +%Y-%m-%d)  
+**Period**: {{parsed_date.description}}
+
+## Activity Summary
+
+| Metric | Count |
+|--------|-------|
+| Commits | {{commit_analysis.total_analyzed}} |
+| PRs Total | {{prs_data.count}} |
+| PRs Merged | {{prs_data.merged}} |
+
+## Impact Assessment: $(echo '{{repo_summary}}' | jq -r '.impact_assessment.overall // "unknown"' | tr '[:lower:]' '[:upper:]')
+
+$(echo '{{repo_summary}}' | jq -r 'if .impact_assessment.by_level then "| Level | Count |\n|-------|-------|\n" + (.impact_assessment.by_level | to_entries | map("| \(.key | ascii_capitalize) | \(.value) |") | join("\n")) else "" end')
+
+## Key Changes
+
+$(echo '{{repo_summary}}' | jq -r 'if .key_changes and (.key_changes | length) > 0 then .key_changes | to_entries | map("\(.key + 1). **\(.value.description)** (\(.value.impact))") | join("\n\n") else "No significant changes in this period." end')
+
+## Themes
+
+$(echo '{{repo_summary}}' | jq -r 'if .themes and (.themes | length) > 0 then .themes | map("- " + .) | join("\n") else "- No major themes identified" end')
+
+## Risks
+
+$(echo '{{repo_summary}}' | jq -r 'if .risks and (.risks | length) > 0 then .risks | map("- " + .) | join("\n") else "- No significant risks identified" end')
+
+## Notable Items
+
+$(echo '{{repo_summary}}' | jq -r 'if .notable_items and (.notable_items | length) > 0 then .notable_items | map("- " + .) | join("\n") else "- No notable items" end')
+SUMMARY_EOF
+
+      # Verify files were written
+      json_size=$(wc -c < "{{working_dir}}/analyses/{{repo_info.repo_name}}-analysis.json" | tr -d ' ')
+      md_size=$(wc -c < "{{working_dir}}/analyses/{{repo_info.repo_name}}-summary.md" | tr -d ' ')
+      
+      echo "Files written:"
+      echo "  - {{repo_info.repo_name}}-analysis.json ($json_size bytes)"
+      echo "  - {{repo_info.repo_name}}-summary.md ($md_size bytes)"
+      
+      echo "{\"json_written\": true, \"md_written\": true, \"json_size\": $json_size, \"md_size\": $md_size}"
+    output: "files_written"
+    parse_json: true
+    timeout: 60
+    on_error: "continue"

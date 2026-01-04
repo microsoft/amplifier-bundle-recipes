@@ -1243,9 +1243,12 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 env[key] = self.substitute_variables(str(value), context)
 
         # Execute command with timeout
+        # Use /bin/bash explicitly since recipe bash steps may use bash-specific
+        # features like pipefail, &> redirects, brace expansion, arrays, etc.
+        # The default shell (/bin/sh) is often dash on Ubuntu which lacks these.
         try:
-            process = await asyncio.create_subprocess_shell(
-                command,
+            process = await asyncio.create_subprocess_exec(
+                "/bin/bash", "-c", command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
