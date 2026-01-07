@@ -238,11 +238,18 @@ Operations:
 - approve: Approve a stage to continue execution
 - deny: Deny a stage to stop execution
 
+Path formats:
+- Bundle path (recommended): @bundle-name:path/to/recipe.yaml (e.g., @recipes:examples/code-review.yaml)
+- Local path: ./path/to/recipe.yaml or /absolute/path/recipe.yaml (e.g., ./my-recipe.yaml)
+
+IMPORTANT: Bundle paths MUST start with @ to be resolved correctly.
+
 Example:
-  Execute recipe: {{"operation": "execute", "recipe_path": "examples/code-review.yaml", "context": {{"file_path": "src/auth.py"}}}}
+  Execute bundle recipe: {{"operation": "execute", "recipe_path": "@recipes:examples/code-review.yaml", "context": {{"file_path": "src/auth.py"}}}}
+  Execute local recipe: {{"operation": "execute", "recipe_path": "./my-recipe.yaml", "context": {{}}}}
   Resume session: {{"operation": "resume", "session_id": "recipe_20251118_143022_a3f2"}}
   List sessions: {{"operation": "list"}}
-  Validate recipe: {{"operation": "validate", "recipe_path": "my-recipe.yaml"}}
+  Validate recipe: {{"operation": "validate", "recipe_path": "@recipes:examples/code-review.yaml"}}
   List approvals: {{"operation": "approvals"}}
   Approve stage: {{"operation": "approve", "session_id": "...", "stage_name": "planning"}}
   Deny stage: {{"operation": "deny", "session_id": "...", "stage_name": "planning", "reason": "needs revision"}}"""
