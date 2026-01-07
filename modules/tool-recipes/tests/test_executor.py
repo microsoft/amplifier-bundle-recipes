@@ -128,18 +128,20 @@ Line 3: c"""
         assert result == expected
 
     def test_substitute_list_value_converts_to_string(self, executor: RecipeExecutor):
-        """List values should be converted to string representation."""
+        """List values should be converted to JSON string representation."""
         template = "Items: {{items}}"
         context = {"items": ["a", "b", "c"]}
         result = executor.substitute_variables(template, context)
-        assert result == "Items: ['a', 'b', 'c']"
+        # Implementation uses json.dumps for valid JSON output (double quotes)
+        assert result == 'Items: ["a", "b", "c"]'
 
     def test_substitute_dict_value_converts_to_string(self, executor: RecipeExecutor):
-        """Dict values should be converted to string representation."""
+        """Dict values should be converted to JSON string representation."""
         template = "Data: {{data}}"
         context = {"data": {"key": "value"}}
         result = executor.substitute_variables(template, context)
-        assert result == "Data: {'key': 'value'}"
+        # Implementation uses json.dumps for valid JSON output (double quotes)
+        assert result == 'Data: {"key": "value"}'
 
     def test_error_message_includes_available_variables(self, executor: RecipeExecutor):
         """Error message should list available variables."""
