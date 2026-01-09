@@ -237,6 +237,7 @@ Operations:
 - approvals: List pending approvals across sessions
 - approve: Approve a stage to continue execution
 - deny: Deny a stage to stop execution
+- cancel: Cancel a running recipe session (graceful or immediate)
 
 Example:
   Execute recipe: {{"operation": "execute", "recipe_path": "examples/code-review.yaml", "context": {{"file_path": "src/auth.py"}}}}
@@ -245,7 +246,8 @@ Example:
   Validate recipe: {{"operation": "validate", "recipe_path": "my-recipe.yaml"}}
   List approvals: {{"operation": "approvals"}}
   Approve stage: {{"operation": "approve", "session_id": "...", "stage_name": "planning"}}
-  Deny stage: {{"operation": "deny", "session_id": "...", "stage_name": "planning", "reason": "needs revision"}}"""
+  Deny stage: {{"operation": "deny", "session_id": "...", "stage_name": "planning", "reason": "needs revision"}}
+  Cancel recipe: {{"operation": "cancel", "session_id": "...", "immediate": false}}"""
 
     @property
     def input_schema(self) -> dict:
@@ -254,7 +256,7 @@ Example:
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["execute", "resume", "list", "validate", "approvals", "approve", "deny"],
+                    "enum": ["execute", "resume", "list", "validate", "approvals", "approve", "deny", "cancel"],
                     "description": "Operation to perform",
                 },
                 "recipe_path": {
@@ -267,7 +269,7 @@ Example:
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "Session ID (required for 'resume', 'approve', 'deny' operations)",
+                    "description": "Session ID (required for 'resume', 'approve', 'deny', 'cancel' operations)",
                 },
                 "stage_name": {
                     "type": "string",
@@ -276,6 +278,10 @@ Example:
                 "reason": {
                     "type": "string",
                     "description": "Reason for denial (optional for 'deny' operation)",
+                },
+                "immediate": {
+                    "type": "boolean",
+                    "description": "If true, request immediate cancellation (don't wait for current step). For 'cancel' operation.",
                 },
             },
             "required": ["operation"],
@@ -308,6 +314,8 @@ Example:
                 return await self._approve_stage(input)
             if operation == "deny":
                 return await self._deny_stage(input)
+            if operation == "cancel":
+                return await self._cancel_recipe(input)
             return ToolResult(
                 success=False,
                 error={"message": f"Unknown operation: {operation}"},
@@ -700,3 +708,72 @@ Example:
                 success=False,
                 error={"message": f"Failed to deny stage: {str(e)}"},
             )
+
+    async def _cancel_recipe(self, input: dict[str, Any]) -> ToolResult:
+        """Cancel a running recipe session.
+
+        First cancellation request triggers graceful cancellation (complete current step).
+        Second request (or immediate=True) triggers immediate cancellation.
+        Cancelled sessions can be resumed later.
+        """
+        session_id = input.get("session_id")
+        immediate = input.get("immediate", False)
+
+        if not session_id:
+            return ToolResult(
+                success=False,
+                error={"message": "session_id is required for cancel operation"},
+            )
+
+        project_path = Path.cwd()
+
+        # Verify session exists
+        if not self.session_manager.session_exists(session_id, project_path):
+            return ToolResult(
+                success=False,
+                error={"message": f"Session not found: {session_id}"},
+            )
+
+        # Check current cancellation status
+        from .session import CancellationStatus
+
+        current_status = self.session_manager.get_cancellation_status(session_id, project_path)
+
+        if current_status == CancellationStatus.CANCELLED:
+            return ToolResult(
+                success=False,
+                error={
+                    "message": f"Session already cancelled: {session_id}. Use 'resume' to restart.",
+                },
+            )
+
+        # Request cancellation
+        success, message = self.session_manager.request_cancellation(
+            session_id, project_path, immediate=immediate
+        )
+
+        if not success:
+            return ToolResult(
+                success=False,
+                error={"message": message},
+            )
+
+        # Determine the cancellation level
+        new_status = self.session_manager.get_cancellation_status(session_id, project_path)
+        level = "immediate" if new_status == CancellationStatus.IMMEDIATE else "graceful"
+
+        return ToolResult(
+            success=True,
+            output={
+                "status": "cancellation_requested",
+                "session_id": session_id,
+                "level": level,
+                "message": message,
+                "next_steps": (
+                    "Recipe will stop immediately." if level == "immediate"
+                    else "Recipe will stop after current step completes. "
+                         "Send another cancel request (or use immediate=true) for immediate cancellation."
+                ),
+                "resume_info": "Use 'resume' operation to restart the recipe from where it stopped.",
+            },
+        )

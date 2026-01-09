@@ -52,6 +52,30 @@ class ApprovalGatePausedError(Exception):
         super().__init__(f"Execution paused at stage '{stage_name}' awaiting approval")
 
 
+class CancellationRequestedError(Exception):
+    """Raised when cancellation is requested and execution should stop.
+
+    This is similar to ApprovalGatePausedError - it signals that execution
+    has been interrupted, but in this case due to a cancellation request.
+    The recipe can be resumed later from the last checkpoint.
+    """
+
+    def __init__(
+        self,
+        session_id: str,
+        is_immediate: bool,
+        current_step: str | None = None,
+        message: str | None = None,
+    ):
+        self.session_id = session_id
+        self.is_immediate = is_immediate
+        self.current_step = current_step
+        level = "immediate" if is_immediate else "graceful"
+        step_info = f" at step '{current_step}'" if current_step else ""
+        self.message = message or f"Recipe {session_id} cancellation ({level}){step_info}"
+        super().__init__(self.message)
+
+
 @dataclass
 class RecursionState:
     """Track recursion across nested recipe executions."""
@@ -222,6 +246,70 @@ class RecipeExecutor:
         if display_system is not None:
             display_system.show_message(message=message, level=level, source="recipe")
 
+    def _check_cancellation(
+        self,
+        session_id: str,
+        project_path: Path,
+        current_step: str | None = None,
+        allow_graceful_completion: bool = False,
+    ) -> None:
+        """Check if cancellation requested and raise if so.
+
+        This method should be called at loop boundaries (before each step,
+        before each loop iteration, etc.) to enable responsive cancellation.
+
+        Args:
+            session_id: Current session identifier
+            project_path: Project path for session lookup
+            current_step: Current step ID for error context
+            allow_graceful_completion: If True, only raise on IMMEDIATE cancellation.
+                                       Use this when a step is in progress and should
+                                       be allowed to complete for graceful cancellation.
+
+        Raises:
+            CancellationRequestedError: If cancellation has been requested
+        """
+        if not self.session_manager.is_cancellation_requested(session_id, project_path):
+            return
+
+        is_immediate = self.session_manager.is_immediate_cancellation(session_id, project_path)
+
+        # Graceful cancellation allows current step to complete
+        if allow_graceful_completion and not is_immediate:
+            return
+
+        raise CancellationRequestedError(
+            session_id=session_id,
+            is_immediate=is_immediate,
+            current_step=current_step,
+        )
+
+    def _check_coordinator_cancellation(
+        self,
+        session_id: str,
+        project_path: Path,
+    ) -> None:
+        """Check if coordinator has cancellation requested (e.g., from SIGINT).
+
+        This integrates with amplifier-core's CancellationToken, allowing
+        cancellation signals from the CLI (Ctrl+C) to propagate to recipes.
+
+        Args:
+            session_id: Current session identifier
+            project_path: Project path for session lookup
+        """
+        # Check if coordinator has a cancellation token
+        cancellation = getattr(self.coordinator, "cancellation", None)
+        if cancellation is None:
+            return
+
+        if not cancellation.is_cancelled:
+            return
+
+        # Propagate coordinator cancellation to session state
+        is_immediate = cancellation.is_immediate
+        self.session_manager.request_cancellation(session_id, project_path, immediate=is_immediate)
+
     async def execute_recipe(
         self,
         recipe: Recipe,
@@ -232,6 +320,7 @@ class RecipeExecutor:
         recursion_state: RecursionState | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
+        parent_session_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute recipe with checkpointing and resumption.
@@ -245,6 +334,7 @@ class RecipeExecutor:
             recursion_state: Optional recursion tracking state (for nested recipes)
             rate_limiter: Optional rate limiter (inherited from parent recipe)
             orchestrator_config: Optional orchestrator config (inherited from parent recipe)
+            parent_session_id: Parent session ID for cancellation checks in sub-recipes
 
         Returns:
             Final context dict with all step outputs
@@ -328,6 +418,10 @@ class RecipeExecutor:
             completed_steps = []
             session_started = datetime.datetime.now().isoformat()
 
+        # Effective session ID for cancellation checks
+        # For sub-recipes (session_id=None), use parent_session_id to inherit cancellation state
+        cancellation_session_id = session_id or parent_session_id
+
         # Show recipe start progress
         total_steps = len(recipe.steps)
         self._show_progress(f"📋 Starting recipe: {recipe.name} ({total_steps} steps)")
@@ -352,6 +446,12 @@ class RecipeExecutor:
             # Execute remaining steps
             for i in range(current_step_index, len(recipe.steps)):
                 step = recipe.steps[i]
+
+                # Check for cancellation before starting each step
+                # Use cancellation_session_id to support both root recipes and sub-recipes
+                if cancellation_session_id:
+                    self._check_coordinator_cancellation(cancellation_session_id, project_path)
+                    self._check_cancellation(cancellation_session_id, project_path, current_step=step.id)
 
                 # Add step metadata to context
                 context["step"] = {"id": step.id, "index": i}
@@ -378,7 +478,10 @@ class RecipeExecutor:
                 # Handle foreach loops
                 if step.foreach:
                     try:
-                        await self._execute_loop(step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config)
+                        await self._execute_loop(
+                            step, context, project_path, recursion_state, recipe_path,
+                            rate_limiter, orchestrator_config, session_id=cancellation_session_id
+                        )
                         # Update completed steps and session state after loop completes
                         completed_steps.append(step.id)
                         state = {
@@ -400,7 +503,8 @@ class RecipeExecutor:
                 try:
                     if step.type == "recipe":
                         result = await self._execute_recipe_step(
-                            step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config
+                            step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config,
+                            parent_session_id=cancellation_session_id
                         )
                     elif step.type == "bash":
                         # Bash steps don't count against agent recursion limits
@@ -412,7 +516,10 @@ class RecipeExecutor:
                     else:
                         # Agent step - track for recursion limits
                         recursion_state.increment_steps()
-                        result = await self.execute_step_with_retry(step, context, rate_limiter, orchestrator_config)
+                        result = await self.execute_step_with_retry(
+                            step, context, rate_limiter, orchestrator_config,
+                            session_id=cancellation_session_id, project_path=project_path
+                        )
 
                     # Process result: unwrap spawn() output and optionally parse JSON
                     result = self._process_step_result(result, step)
@@ -441,6 +548,20 @@ class RecipeExecutor:
                 except SkipRemainingError:
                     # Skip remaining steps
                     break
+                except CancellationRequestedError:
+                    # Cancellation requested - save state and re-raise
+                    raise
+
+        except CancellationRequestedError as e:
+            # Mark session as cancelled and save state for later resumption
+            self.session_manager.mark_cancelled(
+                session_id, project_path,
+                cancelled_at_step=e.current_step,
+            )
+            if state is not None:
+                self.session_manager.save_state(session_id, project_path, state)
+            self._show_progress(f"⚠️ Recipe cancelled at step: {e.current_step or 'unknown'}", level="warning")
+            raise
 
         except Exception:
             # Save state even on error for resumption
@@ -531,6 +652,10 @@ class RecipeExecutor:
             for stage_idx in range(current_stage_index, len(recipe.stages)):
                 stage = recipe.stages[stage_idx]
 
+                # Check for cancellation before starting each stage
+                self._check_coordinator_cancellation(session_id, project_path)
+                self._check_cancellation(session_id, project_path, current_step=f"stage:{stage.name}")
+
                 # Show stage progress
                 self._show_progress(f"📦 Stage {stage_idx + 1}/{total_stages}: {stage.name}")
 
@@ -546,6 +671,10 @@ class RecipeExecutor:
                 # Execute steps within this stage
                 for step_idx in range(start_step, len(stage.steps)):
                     step = stage.steps[step_idx]
+
+                    # Check for cancellation before starting each step
+                    self._check_coordinator_cancellation(session_id, project_path)
+                    self._check_cancellation(session_id, project_path, current_step=step.id)
 
                     # Add step metadata to context
                     context["step"] = {"id": step.id, "index": step_idx, "stage": stage.name}
@@ -566,7 +695,10 @@ class RecipeExecutor:
                     # Handle foreach loops
                     if step.foreach:
                         try:
-                            await self._execute_loop(step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config)
+                            await self._execute_loop(
+                                step, context, project_path, recursion_state, recipe_path,
+                                rate_limiter, orchestrator_config, session_id=session_id
+                            )
                             completed_steps.append(step.id)
                             self._save_staged_state(
                                 session_id,
@@ -586,7 +718,8 @@ class RecipeExecutor:
                     try:
                         if step.type == "recipe":
                             result = await self._execute_recipe_step(
-                                step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config
+                                step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config,
+                                parent_session_id=session_id
                             )
                         elif step.type == "bash":
                             # Bash steps don't count against agent recursion limits
@@ -598,7 +731,10 @@ class RecipeExecutor:
                         else:
                             # Agent step - track for recursion limits
                             recursion_state.increment_steps()
-                            result = await self.execute_step_with_retry(step, context, rate_limiter, orchestrator_config)
+                            result = await self.execute_step_with_retry(
+                                step, context, rate_limiter, orchestrator_config,
+                                session_id=session_id, project_path=project_path
+                            )
 
                         # Process result: unwrap spawn() output and optionally parse JSON
                         result = self._process_step_result(result, step)
@@ -620,6 +756,9 @@ class RecipeExecutor:
 
                     except SkipRemainingError:
                         break
+                    except CancellationRequestedError:
+                        # Cancellation requested - re-raise to outer handler
+                        raise
 
                 # Stage completed - check for approval gate
                 completed_stages.append(stage.name)
@@ -655,6 +794,24 @@ class RecipeExecutor:
 
         except ApprovalGatePausedError:
             # Re-raise approval pause (not an error)
+            raise
+        except CancellationRequestedError as e:
+            # Mark session as cancelled and save state for later resumption
+            self.session_manager.mark_cancelled(
+                session_id, project_path,
+                cancelled_at_step=e.current_step,
+            )
+            self._save_staged_state(
+                session_id,
+                project_path,
+                recipe,
+                context,
+                current_stage_index,
+                current_step_in_stage,
+                completed_stages,
+                completed_steps,
+            )
+            self._show_progress(f"⚠️ Recipe cancelled at step: {e.current_step or 'unknown'}", level="warning")
             raise
         except Exception:
             # Save state for resumption on error
@@ -711,6 +868,8 @@ class RecipeExecutor:
         context: dict[str, Any],
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
+        project_path: Path | None = None,
     ) -> Any:
         """
         Execute step with retry logic.
@@ -720,6 +879,8 @@ class RecipeExecutor:
             context: Current context variables
             rate_limiter: Optional rate limiter for pacing
             orchestrator_config: Optional orchestrator config for spawned sessions
+            session_id: Session identifier for cancellation checks
+            project_path: Project path for cancellation checks
 
         Returns:
             Step result
@@ -727,6 +888,7 @@ class RecipeExecutor:
         Raises:
             Exception if all retries fail and on_error='fail'
             SkipRemainingError if on_error='skip_remaining'
+            CancellationRequestedError if cancellation requested
         """
         retry_config = step.retry or {}
         max_attempts = retry_config.get("max_attempts", 1)
@@ -737,6 +899,10 @@ class RecipeExecutor:
         last_error = None
 
         for attempt in range(max_attempts):
+            # Check for cancellation before each attempt
+            if session_id and project_path:
+                self._check_coordinator_cancellation(session_id, project_path)
+                self._check_cancellation(session_id, project_path, current_step=step.id)
             try:
                 # Acquire rate limiter slot if configured
                 if rate_limiter:
@@ -977,6 +1143,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         recipe_path: Path | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
     ) -> None:
         """
         Execute a step with foreach iteration.
@@ -993,10 +1160,12 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             project_path: Current project directory
             recursion_state: Recursion tracking state
             orchestrator_config: Optional orchestrator config for spawned sessions
+            session_id: Session identifier for cancellation checks
 
         Raises:
             ValueError: If foreach variable invalid or iteration fails
             SkipRemainingError: If on_error='skip_remaining' and iteration fails
+            CancellationRequestedError: If cancellation requested
         """
         # Resolve foreach variable (step.foreach is guaranteed non-None by caller)
         assert step.foreach is not None
@@ -1027,12 +1196,12 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         if step.parallel:
             # Parallel execution: run all iterations concurrently
             results = await self._execute_loop_parallel(
-                step, context, items, loop_var, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config
+                step, context, items, loop_var, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config, session_id
             )
         else:
             # Sequential execution: run iterations one at a time
             results = await self._execute_loop_sequential(
-                step, context, items, loop_var, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config
+                step, context, items, loop_var, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config, session_id
             )
 
         # Store results
@@ -1052,18 +1221,27 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         recipe_path: Path | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
     ) -> list[Any]:
         """Execute loop iterations sequentially."""
         results = []
 
         for idx, item in enumerate(items):
+            # Check for cancellation before each iteration
+            if session_id and project_path:
+                self._check_coordinator_cancellation(session_id, project_path)
+                self._check_cancellation(session_id, project_path, current_step=f"{step.id}[{idx}]")
+
             # Set loop variable in context
             context[loop_var] = item
 
             try:
                 # Execute based on step type (agent, recipe, or bash)
                 if step.type == "recipe":
-                    result = await self._execute_recipe_step(step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config)
+                    result = await self._execute_recipe_step(
+                        step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config,
+                        parent_session_id=session_id
+                    )
                 elif step.type == "bash":
                     # Bash steps don't count against agent recursion limits
                     bash_result = await self._execute_bash_step(step, context, project_path)
@@ -1074,13 +1252,19 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 else:
                     # Agent step - track for recursion limits
                     recursion_state.increment_steps()
-                    result = await self.execute_step_with_retry(step, context, rate_limiter, orchestrator_config)
+                    result = await self.execute_step_with_retry(
+                        step, context, rate_limiter, orchestrator_config,
+                        session_id=session_id, project_path=project_path
+                    )
                 
                 # Process result: unwrap spawn() output and optionally parse JSON
                 result = self._process_step_result(result, step)
                 results.append(result)
             except SkipRemainingError:
                 # Propagate skip_remaining
+                raise
+            except CancellationRequestedError:
+                # Propagate cancellation
                 raise
             except Exception as e:
                 # Fail fast - no partial completion in MVP
@@ -1103,6 +1287,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         recipe_path: Path | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
     ) -> list[Any]:
         """
         Execute loop iterations in parallel using asyncio.gather.
@@ -1117,6 +1302,11 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
         Rate limiting is applied via the rate_limiter if configured.
         """
+        # Check for cancellation before starting parallel execution
+        if session_id and project_path:
+            self._check_coordinator_cancellation(session_id, project_path)
+            self._check_cancellation(session_id, project_path, current_step=f"{step.id}[parallel]")
+
         # For agent steps, pre-check total steps limit (all will run in parallel)
         if step.type == "agent":
             if recursion_state.total_steps + len(items) > recursion_state.max_total_steps:
@@ -1149,7 +1339,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 # Execute based on step type (agent, recipe, or bash)
                 if step.type == "recipe":
                     result = await self._execute_recipe_step(
-                        step, iter_context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config
+                        step, iter_context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config,
+                        parent_session_id=session_id
                     )
                 elif step.type == "bash":
                     # Bash steps don't count against agent recursion limits
@@ -1160,11 +1351,16 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     result = bash_result.stdout
                 else:
                     # Agent step - rate limiting handled inside execute_step_with_retry
-                    result = await self.execute_step_with_retry(step, iter_context, rate_limiter, orchestrator_config)
+                    result = await self.execute_step_with_retry(
+                        step, iter_context, rate_limiter, orchestrator_config,
+                        session_id=session_id, project_path=project_path
+                    )
                 
                 # Process result: unwrap spawn() output and optionally parse JSON
                 return self._process_step_result(result, step)
             except SkipRemainingError:
+                raise
+            except CancellationRequestedError:
                 raise
             except Exception as e:
                 raise ValueError(f"Step '{step.id}' iteration {idx} failed: {e}") from e
@@ -1194,6 +1390,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         parent_recipe_path: Path | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
+        parent_session_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute a recipe composition step by loading and running a sub-recipe.
@@ -1206,6 +1403,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             parent_recipe_path: Path to parent recipe file (for relative resolution)
             rate_limiter: Optional rate limiter (inherited from parent recipe)
             orchestrator_config: Optional orchestrator config (inherited from parent recipe)
+            parent_session_id: Parent's session ID for cancellation checks
 
         Returns:
             Sub-recipe's final context dict
@@ -1253,6 +1451,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
         # Execute sub-recipe recursively
         # Note: rate_limiter and orchestrator_config are inherited from parent (sub-recipes cannot override)
+        # parent_session_id is passed so sub-recipes can check for cancellation
         result = await self.execute_recipe(
             recipe=sub_recipe,
             context_vars=sub_context,
@@ -1262,6 +1461,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             recursion_state=child_state,
             rate_limiter=rate_limiter,  # Inherit parent's rate limiter
             orchestrator_config=orchestrator_config,  # Inherit parent's orchestrator config
+            parent_session_id=parent_session_id,  # For cancellation checks
         )
 
         # Propagate total steps back to parent state

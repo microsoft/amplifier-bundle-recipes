@@ -21,6 +21,21 @@ class ApprovalStatus(str, Enum):
     TIMEOUT = "timeout"  # Timed out waiting for approval
 
 
+class CancellationStatus(str, Enum):
+    """Cancellation status for a recipe session.
+
+    State machine:
+        NONE -> REQUESTED (first cancel request, graceful)
+        REQUESTED -> IMMEDIATE (second cancel request, stop now)
+        REQUESTED/IMMEDIATE -> CANCELLED (execution stopped)
+    """
+
+    NONE = "none"  # Running normally
+    REQUESTED = "requested"  # Graceful cancellation requested (complete current step)
+    IMMEDIATE = "immediate"  # Immediate cancellation requested (stop ASAP)
+    CANCELLED = "cancelled"  # Execution stopped due to cancellation
+
+
 def generate_session_id() -> str:
     """Generate unique session ID following W3C Trace Context pattern.
 
@@ -427,3 +442,136 @@ class SessionManager:
             return ApprovalStatus.TIMEOUT
 
         return None
+
+    # === Cancellation Methods ===
+
+    def get_cancellation_status(self, session_id: str, project_path: Path) -> CancellationStatus:
+        """Get current cancellation status for a session.
+
+        Args:
+            session_id: Session identifier
+            project_path: Project directory
+
+        Returns:
+            CancellationStatus for the session (NONE if session doesn't exist)
+        """
+        if not self.session_exists(session_id, project_path):
+            return CancellationStatus.NONE
+
+        try:
+            state = self.load_state(session_id, project_path)
+            status_str = state.get("cancellation_status", CancellationStatus.NONE.value)
+            return CancellationStatus(status_str)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return CancellationStatus.NONE
+
+    def is_cancellation_requested(self, session_id: str, project_path: Path) -> bool:
+        """Check if cancellation has been requested (graceful or immediate).
+
+        Args:
+            session_id: Session identifier
+            project_path: Project directory
+
+        Returns:
+            True if cancellation requested (REQUESTED or IMMEDIATE status)
+        """
+        status = self.get_cancellation_status(session_id, project_path)
+        return status in (CancellationStatus.REQUESTED, CancellationStatus.IMMEDIATE)
+
+    def is_immediate_cancellation(self, session_id: str, project_path: Path) -> bool:
+        """Check if immediate cancellation has been requested.
+
+        Args:
+            session_id: Session identifier
+            project_path: Project directory
+
+        Returns:
+            True if immediate cancellation requested
+        """
+        return self.get_cancellation_status(session_id, project_path) == CancellationStatus.IMMEDIATE
+
+    def request_cancellation(
+        self,
+        session_id: str,
+        project_path: Path,
+        immediate: bool = False,
+    ) -> tuple[bool, str]:
+        """Request cancellation of a running recipe session.
+
+        First request triggers graceful cancellation (complete current step).
+        Second request (or immediate=True) triggers immediate cancellation.
+
+        Args:
+            session_id: Session identifier
+            project_path: Project directory
+            immediate: If True, request immediate cancellation
+
+        Returns:
+            Tuple of (success, message) - success is True if request was processed
+        """
+        state = self.load_state(session_id, project_path)
+        current_status = CancellationStatus(state.get("cancellation_status", CancellationStatus.NONE.value))
+
+        if current_status == CancellationStatus.CANCELLED:
+            return False, "Session already cancelled"
+
+        now = datetime.datetime.now().isoformat()
+
+        if immediate or current_status == CancellationStatus.REQUESTED:
+            # Escalate to immediate
+            state["cancellation_status"] = CancellationStatus.IMMEDIATE.value
+            state["cancellation_requested_at"] = state.get("cancellation_requested_at", now)
+            state["cancellation_escalated_at"] = now
+            self.save_state(session_id, project_path, state)
+
+            if current_status == CancellationStatus.REQUESTED:
+                return True, "Escalated to immediate cancellation"
+            return True, "Immediate cancellation requested"
+
+        # First request - graceful
+        state["cancellation_status"] = CancellationStatus.REQUESTED.value
+        state["cancellation_requested_at"] = now
+        self.save_state(session_id, project_path, state)
+        return True, "Graceful cancellation requested (will complete current step)"
+
+    def mark_cancelled(
+        self,
+        session_id: str,
+        project_path: Path,
+        cancelled_at_step: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Mark a session as cancelled (execution stopped).
+
+        Args:
+            session_id: Session identifier
+            project_path: Project directory
+            cancelled_at_step: Step ID where execution stopped
+            error: Optional error message
+        """
+        state = self.load_state(session_id, project_path)
+
+        was_immediate = state.get("cancellation_status") == CancellationStatus.IMMEDIATE.value
+        state["cancellation_status"] = CancellationStatus.CANCELLED.value
+        state["cancelled_at"] = datetime.datetime.now().isoformat()
+        state["cancelled_at_step"] = cancelled_at_step
+        state["cancellation_was_immediate"] = was_immediate
+        if error:
+            state["cancellation_error"] = error
+
+        self.save_state(session_id, project_path, state)
+
+    def clear_cancellation(self, session_id: str, project_path: Path) -> None:
+        """Clear cancellation status (for resuming a cancelled session).
+
+        Args:
+            session_id: Session identifier
+            project_path: Project directory
+        """
+        state = self.load_state(session_id, project_path)
+
+        # Only clear if actually cancelled (not if in progress)
+        if state.get("cancellation_status") == CancellationStatus.CANCELLED.value:
+            state["cancellation_status"] = CancellationStatus.NONE.value
+            # Keep history fields for debugging
+            self.save_state(session_id, project_path, state)
