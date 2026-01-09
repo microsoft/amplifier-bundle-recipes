@@ -33,6 +33,9 @@ def mock_session_manager():
         "completed_steps": [],
         "started": "2025-01-01T00:00:00",
     }
+    # Mock cancellation methods to return no cancellation by default
+    manager.is_cancellation_requested.return_value = False
+    manager.is_immediate_cancellation.return_value = False
     return manager
 
 
