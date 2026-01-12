@@ -6,586 +6,590 @@ This catalog describes all example recipes included in the collection. Each exam
 
 ## Quick Reference
 
-| Recipe | Domain | Steps | Duration | Agents Used |
-|--------|--------|-------|----------|-------------|
-| [code-review](#code-review) | Code Quality | 4 | ~5-10 min | zen-architect (3 modes) |
-| [dependency-upgrade](#dependency-upgrade) | DevOps | 4 | ~10-15 min | zen-architect, integration-specialist |
-| [test-generation](#test-generation) | Testing | 3 | ~5-10 min | zen-architect, test-coverage |
-| [documentation-evolution](#documentation-evolution) | Documentation | 4 | ~10-20 min | zen-architect (multiple modes) |
-| [security-audit](#security-audit) | Security | 4 | ~10-15 min | security-guardian, zen-architect |
-| [bug-investigation](#bug-investigation) | Debugging | 3 | ~5-10 min | bug-hunter, zen-architect |
-| [refactoring-planning](#refactoring-planning) | Architecture | 4 | ~10-15 min | zen-architect (multiple modes) |
-| [research-synthesis](#research-synthesis) | Research | 4 | ~15-25 min | zen-architect (multiple modes) |
-| [comprehensive-review](#comprehensive-review) | Code Quality | 3 | ~20-30 min | zen-architect, security-guardian |
+| Recipe | Domain | Steps | Key Pattern | Agents Used |
+|--------|--------|-------|-------------|-------------|
+| [simple-analysis](#simple-analysis) | Tutorial | 3 | Sequential basics | zen-architect |
+| [bash-step-example](#bash-step-example) | Tutorial | 7 | Bash steps | (none - bash only) |
+| [conditional-workflow](#conditional-workflow) | Tutorial | 4 | Conditional routing | zen-architect |
+| [code-review](#code-review) | Code Quality | 4 | Multi-mode agents | zen-architect |
+| [comprehensive-review](#comprehensive-review) | Code Quality | 3 | Recipe composition | zen-architect, security-guardian |
+| [security-audit](#security-audit) | Security | 4 | Domain specialist | security-guardian, zen-architect |
+| [test-generation](#test-generation) | Testing | 3 | Artifact generation | zen-architect, test-coverage |
+| [dependency-upgrade](#dependency-upgrade) | DevOps | 4 | Planning workflow | zen-architect, integration-specialist |
+| [dependency-upgrade-staged](#dependency-upgrade-staged) | DevOps | 5 stages | Approval gates | zen-architect, integration-specialist |
+| [multi-file-analysis](#multi-file-analysis) | Analysis | 2 | Parallel foreach | zen-architect |
+| [parallel-analysis](#parallel-analysis) | Analysis | 2 | Multi-perspective | zen-architect |
+| [repo-activity-analysis](#repo-activity-analysis) | GitHub | 6 | Bash + agent hybrid | zen-architect |
+| [multi-repo-activity-report](#multi-repo-activity-report) | GitHub | 3 | Recipe invocation | zen-architect |
+| [feature-announcement](#feature-announcement) | Communication | 3 | Human-first output | zen-architect |
+| [context-intelligence](#context-intelligence) | Advanced | varies | Tiered complexity | various |
 
 ---
 
-## Comprehensive Review
+## Tutorial Examples
 
-**File:** `examples/comprehensive-review.yaml`
+### Simple Analysis
 
-### Description
+**File:** `examples/simple-analysis-recipe.yaml`
 
-Demonstrates recipe composition - combining code review and security audit by invoking them as sub-recipes with isolated context and recursion protection.
+Basic analysis workflow demonstrating core recipe concepts: context variables, sequential steps, and output accumulation.
 
-### Use Cases
+**Use Cases:**
+- Learning recipe basics
+- Template for new recipes
+- Simple file analysis
 
-- Combined code quality and security analysis
-- Modular workflow design using existing recipes
-- Unified reports from multiple analysis types
-- DRY principle (reuse existing recipes instead of duplicating steps)
-
-### Workflow
-
+**Workflow:**
 ```
-1. Code Review (sub-recipe)
-   → Runs code-review-recipe.yaml with file_path
-   → Returns full code review results
-
-2. Security Audit (sub-recipe)
-   → Runs security-audit-recipe.yaml with file_path and severity
-   → Returns security findings
-
-3. Synthesize Comprehensive Report
-   → Combines results from both sub-recipes
-   → Creates prioritized action plan
+1. Extract Summary → 3-sentence summary
+2. Identify Key Points → 3-5 key points
+3. Generate Report → Markdown report
 ```
 
-### Key Recipe Structure
-
-```yaml
-name: "comprehensive-review"
-description: "Combined code quality and security analysis using recipe composition"
-version: "1.0.0"
-
-context:
-  file_path: ""
-  security_severity: "medium"
-
-recursion:
-  max_depth: 3
-  max_total_steps: 50
-
-steps:
-  - id: "code-review"
-    type: "recipe"
-    recipe: "code-review-recipe.yaml"
-    context:
-      file_path: "{{file_path}}"
-    output: "code_review_results"
-
-  - id: "security-audit"
-    type: "recipe"
-    recipe: "security-audit-recipe.yaml"
-    context:
-      file_path: "{{file_path}}"
-      severity_threshold: "{{security_severity}}"
-    output: "security_results"
-
-  - id: "synthesize-comprehensive"
-    agent: "foundation:zen-architect"
-    mode: "ARCHITECT"
-    prompt: |
-      Create comprehensive review combining:
-      Code Review: {{code_review_results}}
-      Security: {{security_results}}
-    output: "comprehensive_report"
-```
-
-### Required Context
-
-```yaml
-file_path: "path/to/code.py"  # Required
-security_severity: "medium"   # Optional, defaults to "medium"
-```
-
-### Example Usage
-
+**Example Usage:**
 ```bash
-amplifier run "execute comprehensive-review.yaml with file_path=src/auth.py"
+amplifier recipes execute simple-analysis-recipe.yaml --context '{"file_path": "README.md"}'
 ```
 
-### What You'll Get
-
-- Complete code review (structure, issues, improvements)
-- Security audit results (vulnerabilities, configuration, dependencies)
-- Unified prioritized action plan (critical → low priority)
-- Conflict resolution between quality and security recommendations
-
-### Key Learnings
-
-- **Recipe composition**: Reuse existing recipes as workflow components
-- **Context isolation**: Sub-recipes receive ONLY explicitly passed context
-- **Recursion protection**: Built-in limits prevent runaway nesting
-- **Output chaining**: Sub-recipe results available to subsequent steps
-- **DRY principle**: No duplication of steps from other recipes
+**Key Learnings:**
+- Context variables with `{{variable}}` syntax
+- Sequential step execution
+- Output chaining between steps
 
 ---
 
-## Code Review
+### Bash Step Example
+
+**File:** `examples/bash-step-example.yaml`
+
+Demonstrates bash step capabilities for direct shell execution without LLM overhead.
+
+**Use Cases:**
+- System commands in workflows
+- Environment variable handling
+- Exit code-based conditionals
+- Working directory control
+
+**Workflow:**
+```
+1. Simple Echo → Basic command
+2. Environment Variables → Variable passing
+3. Multi-line Command → System info
+4. Check Command → Exit code capture
+5. Report Success → Conditional step
+6. List Tmp → Working directory
+7. Summary → Results compilation
+```
+
+**Example Usage:**
+```bash
+amplifier recipes execute bash-step-example.yaml --context '{"project_name": "MyProject"}'
+```
+
+**Key Learnings:**
+- `type: "bash"` for shell commands (no LLM cost)
+- Environment variables via `env:` section
+- Exit code capture with `output_exit_code`
+- Conditional steps based on exit codes
+- Working directory control with `cwd:`
+
+---
+
+### Conditional Workflow
+
+**File:** `examples/conditional-workflow.yaml`
+
+Demonstrates conditional step execution based on classification results.
+
+**Use Cases:**
+- Dynamic workflow routing
+- Complexity-based processing
+- Skip unnecessary steps
+
+**Workflow:**
+```
+1. Classify → Determine simple vs complex
+2a. Simple Process → (if simple) Direct processing
+2b. Complex Analyze → (if complex) Detailed analysis
+2c. Complex Synthesize → (if complex) Synthesis
+3. Report → Final summary
+```
+
+**Example Usage:**
+```bash
+amplifier recipes execute conditional-workflow.yaml --context '{"input_data": "complex dataset with multiple dimensions"}'
+```
+
+**Key Learnings:**
+- `condition:` field for conditional execution
+- Classification-based routing
+- Multiple paths through workflow
+
+---
+
+## Code Quality Examples
+
+### Code Review
 
 **File:** `examples/code-review-recipe.yaml`
 
-### Description
+Multi-stage code review workflow with conditional execution based on issue severity.
 
-Multi-stage code review workflow that analyzes code for quality, maintainability, and philosophy alignment, then provides actionable improvement suggestions.
-
-### Use Cases
-
+**Use Cases:**
 - Pre-merge code review
 - Architecture assessment
 - Technical debt identification
-- Onboarding code walkthroughs
 
-### Workflow
-
+**Workflow:**
 ```
-1. Analyze (ANALYZE mode)
-   → Extract code structure, patterns, complexity
-
-2. Identify Issues (ANALYZE mode)
-   → Find specific problems and anti-patterns
-
-3. Suggest Improvements (ARCHITECT mode)
-   → Design concrete solutions
-
-4. Validate Suggestions (REVIEW mode)
-   → Assess feasibility and priority
+1. Analyze Structure → Extract patterns, complexity
+2. Identify Issues → Find problems, assess severity
+3. Suggest Improvements → (if issues found) Design solutions
+4. Validate Suggestions → (if critical/high) Deep validation
 ```
 
-### Required Context
-
-```yaml
-file_path: "path/to/code.py"  # Required
-```
-
-### Example Usage
-
+**Example Usage:**
 ```bash
-amplifier run "execute examples/code-review-recipe.yaml with file_path=src/auth.py"
+amplifier recipes execute code-review-recipe.yaml --context '{"file_path": "src/auth.py"}'
 ```
 
-### What You'll Get
-
-- Code structure analysis
-- Identified issues with severity ratings
-- Concrete improvement suggestions
-- Prioritized action items
-
-### Key Learnings
-
-- **Multi-mode agent usage**: Shows zen-architect in ANALYZE, ARCHITECT, REVIEW modes
-- **Context accumulation**: Each step builds on previous results
-- **Progressive refinement**: Analysis → Issues → Solutions → Validation
+**Key Learnings:**
+- Multi-mode agent usage (ANALYZE, ARCHITECT, REVIEW)
+- Severity-based conditional execution
+- Progressive refinement pattern
 
 ---
 
-## Dependency Upgrade
+### Comprehensive Review
 
-**File:** `examples/dependency-upgrade-recipe.yaml`
+**File:** `examples/comprehensive-review.yaml`
 
-### Description
+Combines code review and security audit using recipe composition.
 
-Systematic dependency upgrade workflow with audit, planning, validation, and application phases.
+**Use Cases:**
+- Combined quality and security analysis
+- Modular workflow design
+- DRY principle (reuse existing recipes)
 
-### Use Cases
-
-- Monthly dependency updates
-- Security vulnerability remediation
-- Major version upgrades
-- Dependency conflict resolution
-
-### Workflow
-
+**Workflow:**
 ```
-1. Audit Current Dependencies
-   → List current versions, check for updates
-
-2. Plan Upgrade Strategy
-   → Determine upgrade order, identify risks
-
-3. Validate Compatibility
-   → Check breaking changes, test compatibility
-
-4. Generate Upgrade Commands
-   → Create specific upgrade commands and scripts
+1. Code Review (sub-recipe) → Invoke code-review-recipe.yaml
+2. Security Audit (sub-recipe) → Invoke security-audit-recipe.yaml
+3. Synthesize → Unified prioritized action plan
 ```
 
-### Required Context
-
-```yaml
-project_path: "path/to/project"  # Required
-package_manager: "pip"           # Optional, default: "pip"
-```
-
-### Example Usage
-
+**Example Usage:**
 ```bash
-amplifier run "execute examples/dependency-upgrade-recipe.yaml with project_path=. package_manager=pip"
+amplifier recipes execute comprehensive-review.yaml --context '{"file_path": "src/api.py"}'
 ```
 
-### What You'll Get
-
-- Current dependency audit
-- Upgrade plan with risk assessment
-- Compatibility analysis
-- Ready-to-run upgrade commands
-
-### Key Learnings
-
-- **Domain-specific agents**: integration-specialist for dependency work
-- **Risk assessment**: Planning step evaluates upgrade risks
-- **Actionable output**: Final step produces executable commands
+**Key Learnings:**
+- Recipe composition with `type: "recipe"`
+- Context isolation for sub-recipes
+- Recursion protection with `max_depth`
 
 ---
 
-## Test Generation
+## Security Examples
 
-**File:** `examples/test-generation-recipe.yaml`
-
-### Description
-
-Analyze code and generate comprehensive test suite with unit, integration, and edge case tests.
-
-### Use Cases
-
-- Adding tests to legacy code
-- Improving test coverage
-- TDD verification (generate tests from implementation)
-- Test maintenance
-
-### Workflow
-
-```
-1. Analyze Code Structure
-   → Understand functions, classes, dependencies
-
-2. Design Test Strategy
-   → Determine test types, coverage goals
-
-3. Generate Test Code
-   → Create actual test implementations
-```
-
-### Required Context
-
-```yaml
-file_path: "path/to/code.py"    # Required
-test_framework: "pytest"        # Optional, default: "pytest"
-coverage_target: 80             # Optional, default: 80
-```
-
-### Example Usage
-
-```bash
-amplifier run "execute examples/test-generation-recipe.yaml with file_path=src/utils.py test_framework=pytest"
-```
-
-### What You'll Get
-
-- Code analysis with test opportunities
-- Test strategy document
-- Complete test file ready to use
-
-### Key Learnings
-
-- **Specialized agents**: test-coverage agent for test design
-- **Configurable output**: Framework and coverage target configurable
-- **Complete artifacts**: Generates ready-to-use test code
-
----
-
-## Documentation Evolution
-
-**File:** `examples/documentation-evolution-recipe.yaml`
-
-### Description
-
-Tutorial improvement workflow that simulates learner experience, identifies issues, and generates improvements.
-
-### Use Cases
-
-- Improving tutorials and guides
-- Documentation testing
-- Learning experience optimization
-- Accessibility improvements
-
-### Workflow
-
-```
-1. Analyze Content
-   → Extract structure, identify teaching approach
-
-2. Simulate Learner
-   → Experience content as beginner
-
-3. Diagnose Issues
-   → Identify confusion points, gaps
-
-4. Generate Improvements
-   → Create enhanced version addressing issues
-```
-
-### Required Context
-
-```yaml
-document_path: "path/to/tutorial.md"  # Required
-target_audience: "beginners"          # Optional, default: "beginners"
-```
-
-### Example Usage
-
-```bash
-amplifier run "execute examples/documentation-evolution-recipe.yaml with document_path=docs/tutorial.md"
-```
-
-### What You'll Get
-
-- Content analysis
-- Learner simulation report
-- Issue diagnosis with severity
-- Improved documentation version
-
-### Key Learnings
-
-- **Perspective shifting**: Agent simulates different viewpoint (learner)
-- **Multi-stage refinement**: Analysis → Simulation → Diagnosis → Improvement
-- **Empathy-driven**: Focuses on learner experience, not just technical accuracy
-
----
-
-## Security Audit
+### Security Audit
 
 **File:** `examples/security-audit-recipe.yaml`
 
-### Description
-
 Comprehensive security analysis covering vulnerabilities, configurations, and best practices.
 
-### Use Cases
-
+**Use Cases:**
 - Pre-production security review
-- Security compliance checks
 - Vulnerability assessment
-- Penetration test preparation
+- Compliance checks
 
-### Workflow
-
+**Workflow:**
 ```
-1. Vulnerability Scan
-   → Static analysis for common vulnerabilities
-
-2. Configuration Review
-   → Check security configurations and settings
-
-3. Dependency Audit
-   → Identify vulnerable dependencies
-
-4. Synthesize Findings
-   → Prioritize and create action plan
+1. Vulnerability Scan → Static analysis
+2. Configuration Review → Security settings
+3. Dependency Audit → Vulnerable dependencies
+4. Synthesize Findings → Prioritized remediation
 ```
 
-### Required Context
-
-```yaml
-file_path: "path/to/code.py"         # Required
-severity_threshold: "high"           # Optional, default: "high"
-include_dependencies: true           # Optional, default: true
-```
-
-### Example Usage
-
+**Example Usage:**
 ```bash
-amplifier run "execute examples/security-audit-recipe.yaml with file_path=src/api.py severity_threshold=medium"
+amplifier recipes execute security-audit-recipe.yaml --context '{"file_path": "src/api.py", "severity_threshold": "medium"}'
 ```
 
-### What You'll Get
-
-- Vulnerability scan results
-- Configuration issues
-- Dependency security report
-- Prioritized remediation plan
-
-### Key Learnings
-
-- **Specialized agent**: security-guardian for security analysis
-- **Multi-perspective**: Different security aspects in separate steps
-- **Actionable output**: Prioritized remediation plan
+**Key Learnings:**
+- Domain specialist agent (security-guardian)
+- Multi-perspective security analysis
+- Actionable remediation output
 
 ---
 
-## Bug Investigation
+## Testing Examples
 
-**File:** `examples/bug-investigation-recipe.yaml`
+### Test Generation
 
-### Description
+**File:** `examples/test-generation-recipe.yaml`
 
-Systematic bug investigation workflow for root cause analysis and solution design.
+Analyze code and generate comprehensive test suite.
 
-### Use Cases
+**Use Cases:**
+- Adding tests to legacy code
+- Improving test coverage
+- TDD verification
 
-- Production bug triage
-- Complex bug debugging
-- Root cause analysis
-- Fix validation
-
-### Workflow
-
+**Workflow:**
 ```
-1. Reproduce Bug
-   → Understand symptoms, create reproduction steps
-
-2. Investigate Root Cause
-   → Analyze code, identify actual cause
-
-3. Design Solution
-   → Create fix with minimal impact
+1. Analyze Code Structure → Understand code
+2. Design Test Strategy → Determine test approach
+3. Generate Test Code → Create actual tests
 ```
 
-### Required Context
-
-```yaml
-bug_description: "Description of bug"  # Required
-file_path: "path/to/buggy/code.py"    # Optional
-error_message: "Error text"           # Optional
-```
-
-### Example Usage
-
+**Example Usage:**
 ```bash
-amplifier run "execute examples/bug-investigation-recipe.yaml with bug_description='Login fails with NullPointerException' file_path=src/auth.py"
+amplifier recipes execute test-generation-recipe.yaml --context '{"file_path": "src/utils.py", "test_framework": "pytest"}'
 ```
 
-### What You'll Get
-
-- Bug reproduction steps
-- Root cause analysis
-- Solution design with rationale
-- Validation strategy
-
-### Key Learnings
-
-- **Specialized agent**: bug-hunter for systematic debugging
-- **Evidence-based**: Focuses on reproduction and verification
-- **Solution design**: Not just "fix it" but designed solution
+**Key Learnings:**
+- Specialized agent (test-coverage)
+- Artifact generation (ready-to-use test code)
+- Configurable output (framework, coverage target)
 
 ---
 
-## Refactoring Planning
+## DevOps Examples
 
-**File:** `examples/refactoring-planning-recipe.yaml`
+### Dependency Upgrade
 
-### Description
+**File:** `examples/dependency-upgrade-recipe.yaml`
 
-Architecture assessment and refactoring plan creation for code improvements.
+Systematic dependency upgrade workflow (flat, non-staged).
 
-### Use Cases
+**Use Cases:**
+- Monthly dependency updates
+- Security vulnerability remediation
+- Quick upgrade planning
 
-- Technical debt reduction
-- Architecture evolution
-- Code modernization
-- Performance optimization
-
-### Workflow
-
+**Workflow:**
 ```
-1. Assess Current Architecture
-   → Understand structure, patterns, issues
-
-2. Identify Refactoring Opportunities
-   → Find improvement areas
-
-3. Design Refactoring Plan
-   → Create step-by-step plan
-
-4. Validate Plan
-   → Assess risks and feasibility
+1. Audit Current Dependencies → List versions, check updates
+2. Plan Upgrade Strategy → Determine order, identify risks
+3. Validate Compatibility → Check breaking changes
+4. Generate Upgrade Commands → Ready-to-run commands
 ```
 
-### Required Context
-
-```yaml
-file_path: "path/to/code.py"    # Required
-focus_area: "structure"         # Optional: "structure", "performance", "maintainability"
-```
-
-### Example Usage
-
+**Example Usage:**
 ```bash
-amplifier run "execute examples/refactoring-planning-recipe.yaml with file_path=src/legacy.py focus_area=structure"
+amplifier recipes execute dependency-upgrade-recipe.yaml --context '{"project_path": ".", "package_manager": "pip"}'
 ```
 
-### What You'll Get
-
-- Architecture assessment
-- Refactoring opportunities
-- Detailed refactoring plan
-- Risk assessment
-
-### Key Learnings
-
-- **Multi-mode usage**: zen-architect in different modes for different phases
-- **Strategic planning**: Focus on plan, not immediate execution
-- **Risk awareness**: Validates plan for feasibility
+**Key Learnings:**
+- Domain-specific agent (integration-specialist)
+- Risk assessment in planning
+- Actionable output (executable commands)
 
 ---
 
-## Research Synthesis
+### Dependency Upgrade Staged
 
-**File:** `examples/research-synthesis-recipe.yaml`
+**File:** `examples/dependency-upgrade-staged-recipe.yaml`
 
-### Description
+Dependency upgrade with approval gates between phases.
 
-Multi-document analysis and synthesis workflow for research and knowledge extraction.
+**Use Cases:**
+- High-stakes production upgrades
+- Phased rollout (security → minor → major)
+- Human-in-loop verification
 
-### Use Cases
-
-- Literature review
-- Competitive analysis
-- Knowledge base creation
-- Research paper writing
-
-### Workflow
-
+**Workflow (Staged):**
 ```
-1. Extract Key Concepts
-   → Identify main ideas from each document
+Stage 1: Assessment (no approval)
+  → Audit dependencies, plan strategy
 
-2. Compare Perspectives
-   → Find agreements, contradictions, gaps
+Stage 2: Validation (approval required)
+  → Check compatibility
 
-3. Synthesize Findings
-   → Create coherent narrative
+Stage 3: Phase 1 - Critical (approval required)
+  → Security fixes only
 
-4. Generate Summary
-   → Executive summary with citations
+Stage 4: Phase 2 - Minor (approval required)
+  → Minor version updates
+
+Stage 5: Phase 3 - Major (approval required)
+  → Major version updates (highest risk)
 ```
 
-### Required Context
-
-```yaml
-document_paths: ["doc1.md", "doc2.md", ...]  # Required: list of documents
-research_question: "What to investigate?"     # Optional
-```
-
-### Example Usage
-
+**Example Usage:**
 ```bash
-amplifier run "execute examples/research-synthesis-recipe.yaml with document_paths=['paper1.pdf','paper2.pdf','paper3.pdf'] research_question='What are best practices for API design?'"
+amplifier recipes execute dependency-upgrade-staged-recipe.yaml --context '{"project_path": ".", "package_manager": "uv"}'
+
+# Check pending approvals
+amplifier recipes approvals
+
+# Approve a stage
+amplifier recipes approve <session_id> --stage validation
 ```
 
-### What You'll Get
+**Key Learnings:**
+- `stages:` for approval gates
+- Human-in-loop checkpoints
+- Risk-ordered execution phases
+- Compare with flat version for when to use each
 
-- Concept extraction from each document
-- Comparative analysis
-- Synthesized findings
-- Executive summary with citations
+---
 
-### Key Learnings
+## Analysis Examples
 
-- **Multi-document processing**: Handles multiple inputs
-- **Comparative analysis**: Identifies patterns across sources
-- **Knowledge synthesis**: Creates new understanding from sources
+### Multi-File Analysis
+
+**File:** `examples/multi-file-analysis.yaml`
+
+Analyze multiple files in parallel with per-file insights and consolidated summary.
+
+**Use Cases:**
+- Bulk file analysis
+- Codebase surveys
+- Parallel processing patterns
+
+**Workflow:**
+```
+1. Analyze Each File (parallel foreach)
+   → All files analyzed concurrently
+   → Results collected into array
+
+2. Create Summary
+   → Synthesize all analyses
+   → Executive summary with priorities
+```
+
+**Example Usage:**
+```bash
+amplifier recipes execute multi-file-analysis.yaml --context '{"files": ["src/auth.py", "src/models.py", "src/utils.py"]}'
+```
+
+**Key Learnings:**
+- `foreach:` with `parallel: true` for concurrent execution
+- `collect:` to gather results into array
+- `on_error: "continue"` for fault tolerance
+- 3x+ speedup vs sequential
+
+---
+
+### Parallel Analysis
+
+**File:** `examples/parallel-analysis-recipe.yaml`
+
+Analyze code from multiple perspectives simultaneously.
+
+**Use Cases:**
+- Multi-perspective code review
+- Trade-off analysis
+- Comprehensive assessment
+
+**Workflow:**
+```
+1. Multi-Perspective Analysis (parallel foreach)
+   → Security, performance, maintainability, testability
+   → All run concurrently
+
+2. Synthesize Perspectives
+   → Cross-cutting concerns
+   → Prioritized recommendations
+```
+
+**Example Usage:**
+```bash
+amplifier recipes execute parallel-analysis-recipe.yaml --context '{"file_path": "src/core.py"}'
+```
+
+**Key Learnings:**
+- Same file, multiple perspectives
+- Parallel foreach over perspectives list
+- Synthesis of competing concerns
+
+---
+
+## GitHub Examples
+
+### Repo Activity Analysis
+
+**File:** `examples/repo-activity-analysis.yaml`
+
+Analyze a GitHub repository for commits and PRs in a date range.
+
+**Use Cases:**
+- Daily/weekly activity reports
+- Contribution tracking
+- Release notes preparation
+
+**Workflow:**
+```
+1. Parse Date Range → Convert natural language to dates
+2. Detect/Parse Repo → Get owner/name from URL or cwd
+3. Fetch Commits (bash) → gh CLI for commit data
+4. Fetch PRs (bash) → gh CLI for PR data
+5. Synthesize Report → Human-readable summary
+6. Write Files (bash) → Save report to disk
+```
+
+**Example Usage:**
+```bash
+# Current repo, since yesterday (defaults)
+amplifier recipes execute repo-activity-analysis.yaml
+
+# Specific repo and date range
+amplifier recipes execute repo-activity-analysis.yaml --context '{
+  "repo_url": "https://github.com/microsoft/amplifier-core",
+  "date_range": "last 7 days"
+}'
+```
+
+**Key Learnings:**
+- Hybrid bash + agent steps
+- `type: "bash"` for deterministic commands (no LLM cost)
+- Natural language date parsing
+- `_precomputed` pattern for orchestration optimization
+
+---
+
+### Multi-Repo Activity Report
+
+**File:** `examples/multi-repo-activity-report.yaml`
+
+Generate activity reports across multiple GitHub repositories.
+
+**Use Cases:**
+- Ecosystem-wide activity tracking
+- Multi-repo release coordination
+- Team contribution reports
+
+**Workflow:**
+```
+1. Load Repos → From JSON list or manifest file
+2. Analyze Each Repo (foreach)
+   → Invokes repo-activity-analysis.yaml for each
+   → Parallel execution option
+
+3. Synthesize Cross-Repo Report
+   → Combined activity summary
+   → Cross-repo patterns
+```
+
+**Example Usage:**
+```bash
+# With repo list
+amplifier recipes execute multi-repo-activity-report.yaml --context '{
+  "repos": [
+    {"owner": "microsoft", "name": "amplifier-core", "url": "https://github.com/microsoft/amplifier-core"},
+    {"owner": "microsoft", "name": "amplifier-foundation", "url": "https://github.com/microsoft/amplifier-foundation"}
+  ]
+}'
+
+# With manifest file
+amplifier recipes execute multi-repo-activity-report.yaml --context '{
+  "repos_manifest": "./repos.json"
+}'
+```
+
+**Key Learnings:**
+- Recipe invocation within foreach
+- Manifest file support
+- Cross-repo synthesis
+
+---
+
+## Communication Examples
+
+### Feature Announcement
+
+**File:** `examples/feature-announcement.yaml`
+
+Generate human-friendly feature announcements from Amplifier session work.
+
+**Original Author:** Salil Das (https://github.com/sadlilas)
+
+**Use Cases:**
+- Communicate technical changes to mixed audiences
+- Generate plain-text announcements for Teams/Slack
+- Consistent announcement format
+
+**Workflow:**
+```
+1. Analyze Changes
+   → Session analysis, git history, or user description
+   → Structured change summary
+
+2. Generate Announcement
+   → Human-first, plain text
+   → Hook + bullets + try it + links format
+
+3. Save Announcement
+   → Write to file for easy copy-paste
+```
+
+**Input Modes:**
+- Current session (default)
+- Specific session ID
+- Git repository history
+
+**Example Usage:**
+```bash
+# Analyze current session
+amplifier recipes execute feature-announcement.yaml
+
+# Analyze git history
+amplifier recipes execute feature-announcement.yaml --context '{
+  "repo_path": ".",
+  "git_range": "HEAD~5..HEAD"
+}'
+
+# With user description
+amplifier recipes execute feature-announcement.yaml --context '{
+  "user_description": "Added new caching layer for API responses"
+}'
+```
+
+**Key Learnings:**
+- Human-first output (plain text, no markdown)
+- Multiple input mode detection
+- Structured format for scanning (hook, bullets, action, links)
+
+---
+
+## Advanced Examples
+
+### Context Intelligence
+
+**Directory:** `examples/context-intelligence/`
+
+A collection of advanced recipes for context-aware AI workflows, organized in tiers of complexity.
+
+**Structure:**
+```
+context-intelligence/
+├── tier1/          # Foundation patterns
+├── tier2/          # Intermediate patterns
+├── tier3/          # Advanced patterns
+├── compression/    # Context compression techniques
+├── synthesis/      # Information synthesis
+├── verification/   # Output verification
+├── orchestrators/  # Custom orchestration
+├── workflows/      # Complete workflow examples
+├── foundation/     # Core utilities
+├── shared/         # Shared resources
+└── test/           # Test recipes
+```
+
+See `examples/context-intelligence/README.md` for detailed documentation.
+
+---
+
+## Test Recipes
+
+These recipes are primarily for testing recipe engine functionality:
+
+| Recipe | Purpose |
+|--------|---------|
+| `test-parse-json.yaml` | Verify `parse_json` functionality |
+| `ultra-minimal-test.yaml` | Minimal recipe for quick testing |
 
 ---
 
@@ -597,50 +601,54 @@ amplifier run "execute examples/research-synthesis-recipe.yaml with document_pat
 # Copy example to your recipes directory
 cp examples/code-review-recipe.yaml my-recipes/custom-review.yaml
 
-# Edit as needed
-# Run your custom version
-amplifier run "execute my-recipes/custom-review.yaml with file_path=src/mycode.py"
+# Edit as needed, then run
+amplifier recipes execute my-recipes/custom-review.yaml --context '{"file_path": "src/mycode.py"}'
 ```
 
-### Study Pattern
+### Study Patterns
 
 Each example demonstrates specific patterns:
 
-- **code-review**: Multi-mode agent usage
-- **dependency-upgrade**: Domain-specific agents
-- **test-generation**: Artifact generation
-- **documentation-evolution**: Perspective shifting
-- **security-audit**: Multi-perspective analysis
-- **bug-investigation**: Systematic debugging
-- **refactoring-planning**: Strategic planning
-- **research-synthesis**: Multi-document processing
+| Pattern | Examples |
+|---------|----------|
+| Sequential steps | simple-analysis |
+| Bash steps | bash-step-example, repo-activity-analysis |
+| Conditional execution | conditional-workflow, code-review |
+| Parallel foreach | multi-file-analysis, parallel-analysis |
+| Approval gates (staged) | dependency-upgrade-staged |
+| Recipe composition | comprehensive-review, multi-repo-activity-report |
+| Multi-mode agents | code-review |
+| Domain specialists | security-audit, test-generation |
 
-### Mix and Match
+---
 
-Combine steps from different examples:
+## Example Categories
 
-```yaml
-name: "custom-workflow"
-steps:
-  # From code-review: analysis
-  - id: "analyze"
-    agent: "foundation:zen-architect"
-    mode: "ANALYZE"
-    prompt: "Analyze {{file_path}}"
-    output: "analysis"
+### By Domain
 
-  # From security-audit: security check
-  - id: "security-check"
-    agent: "foundation:security-guardian"
-    prompt: "Security audit: {{file_path}}"
-    output: "security_findings"
+| Domain | Examples |
+|--------|----------|
+| **Tutorial** | simple-analysis, bash-step-example, conditional-workflow |
+| **Code Quality** | code-review, comprehensive-review |
+| **Security** | security-audit |
+| **Testing** | test-generation |
+| **DevOps** | dependency-upgrade, dependency-upgrade-staged |
+| **Analysis** | multi-file-analysis, parallel-analysis |
+| **GitHub** | repo-activity-analysis, multi-repo-activity-report |
+| **Communication** | feature-announcement |
+| **Advanced** | context-intelligence |
 
-  # From code-review: synthesize
-  - id: "synthesize"
-    agent: "foundation:zen-architect"
-    mode: "ARCHITECT"
-    prompt: "Synthesize: {{analysis}} and {{security_findings}}"
-```
+### By Pattern
+
+| Pattern | Examples |
+|---------|----------|
+| **Sequential** | simple-analysis, code-review |
+| **Conditional** | conditional-workflow, code-review |
+| **Parallel** | multi-file-analysis, parallel-analysis |
+| **Staged (Approval Gates)** | dependency-upgrade-staged |
+| **Recipe Composition** | comprehensive-review, multi-repo-activity-report |
+| **Bash Hybrid** | bash-step-example, repo-activity-analysis |
+| **Artifact Generation** | test-generation, feature-announcement |
 
 ---
 
@@ -660,56 +668,6 @@ See [Contributing Guidelines](../CONTRIBUTING.md) for details.
 
 ---
 
-## Example Categories
-
-### By Domain
-
-**Code Quality:**
-- code-review
-- refactoring-planning
-
-**Security:**
-- security-audit
-
-**Testing:**
-- test-generation
-
-**DevOps:**
-- dependency-upgrade
-
-**Documentation:**
-- documentation-evolution
-
-**Debugging:**
-- bug-investigation
-
-**Research:**
-- research-synthesis
-
-### By Pattern
-
-**Sequential Analysis:**
-- code-review
-- security-audit
-- research-synthesis
-
-**Multi-Perspective:**
-- security-audit (vulnerability, config, dependencies)
-- research-synthesis (multiple documents)
-
-**Planning/Execution:**
-- dependency-upgrade (plan → execute)
-- refactoring-planning (assess → plan → validate)
-
-**Artifact Generation:**
-- test-generation (generates test code)
-- documentation-evolution (generates improved docs)
-
-**Recipe Composition:**
-- comprehensive-review (combines code review + security audit via sub-recipes)
-
----
-
 ## Next Steps
 
 1. **Browse examples** in `examples/` directory
@@ -720,4 +678,4 @@ See [Contributing Guidelines](../CONTRIBUTING.md) for details.
 
 ---
 
-**Questions about examples?** Ask in [GitHub Discussions](https://github.com/microsoft/amplifier-collection-recipes/discussions)!
+**Questions about examples?** Ask in [GitHub Discussions](https://github.com/microsoft/amplifier-bundle-recipes/discussions)!
