@@ -1,0 +1,311 @@
+# Feature Announcement Recipe
+# ============================
+#
+# Original author: Salil Das (https://github.com/sadlilas)
+# Source: https://github.com/sadlilas/amplifier-bundle-feature-announcements
+#
+# Generates human-friendly feature announcements from Amplifier work.
+#
+# PHILOSOPHY
+# ----------
+# This recipe exists because communicating changes is as important as making them.
+# The output must be human-first, not AI-first. That means:
+#
+# 1. STRUCTURE FOR SCANNING
+#    - Hook first (one line - the problem solved or benefit gained)
+#    - Bullets for details (max 3 - what actually changed)
+#    - Action item (how to try it)
+#    - Links for depth (PR, commit, docs)
+#
+# 2. TECHNICAL CHANGES ARE THE NORM
+#    Most changes in Amplifier are technical. The announcement should:
+#    - Lead with the developer/user BENEFIT, not the implementation
+#    - Include technical details in the bullets (file names, flags, functions)
+#    - Always link to the PR/commit for those who want full context
+#
+# 3. PLAIN TEXT OUTPUT
+#    The output must paste cleanly from a raw file into Teams/Slack.
+#    No markdown formatting (no **, no #, no `). Just plain text.
+#
+# 4. CONCISE BUT COMPLETE
+#    - Hook: 1 line
+#    - What changed: 2-3 bullets
+#    - Try it: 1 line
+#    - More info: 2-3 links
+#    Total: ~75-100 words max
+#
+# HANDLING DIFFERENT CHANGE TYPES
+# -------------------------------
+# 
+# NON-TECHNICAL (rare - UI changes, new capabilities):
+#   Hook: Focus on what users can now DO
+#   Bullets: Describe the capability, not implementation
+#   Example: "You can now export reports as PDF"
+#
+# TECHNICAL (common - bug fixes, refactors, new flags):
+#   Hook: Focus on the problem SOLVED or improvement gained
+#   Bullets: Include specific technical details (flags, files, behaviors)
+#   Example: "Session resume no longer fails when bundle config changes"
+#
+# SUPER-TECHNICAL (infrastructure, internals):
+#   Hook: Still lead with the benefit (faster, more reliable, etc.)
+#   Bullets: Be specific about what changed technically
+#   More info: Critical - link to PR/commit for full context
+#   Example: "Event loop now uses async generators - 3x faster session startup"
+#
+# INPUT MODES
+# -----------
+#   - Current session: Run with no inputs to analyze current session
+#   - Specific session: Provide session_id to analyze a different session
+#   - Git history: Provide repo_path to analyze recent commits
+#
+# USAGE
+# -----
+#   From inside a session: "run the feature-announcement recipe"
+#   From CLI: amplifier recipes execute feature-announcement.yaml
+#   With context: --context '{"user_description": "Added new caching layer"}'
+
+name: "feature-announcement"
+description: "Generate human-friendly feature announcements from Amplifier session work"
+version: "2.0.0"
+author: "Salil Das (https://github.com/sadlilas)"
+tags: ["announcement", "documentation", "communication"]
+
+context:
+  # Input mode selection (use ONE of these, or none for current session)
+  session_id: ""      # Specific session ID to analyze
+  repo_path: ""       # Repository path for git-based analysis
+  
+  # Additional context from the builder
+  user_description: ""  # Your own description of what was built and why
+  
+  # Git options (only used when repo_path is provided)
+  git_range: "HEAD~10..HEAD"  # Commit range to analyze
+  
+  # Links (optional - will be included in "More info" section)
+  pr_link: ""         # Link to the PR
+  commit_link: ""     # Link to the commit
+  docs_link: ""       # Link to relevant documentation
+  repo_link: ""       # Link to the repository
+  
+  # Output configuration
+  output_file: "announcement.md"
+
+steps:
+  # Step 1: Analyze the changes based on input mode
+  - id: "analyze-changes"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      You are analyzing Amplifier development work to prepare for a feature announcement.
+      
+      ## Your Task
+      
+      Analyze the changes and produce a structured summary that captures:
+      1. What problem was solved or what capability was added (for the hook)
+      2. The specific technical changes (files, flags, functions, behaviors)
+      3. How someone would verify or use this change
+      4. Any relevant links (PR, commit, docs)
+      
+      ## Input Mode Detection
+      
+      {% if repo_path %}
+      **MODE: Git History Analysis**
+      
+      Analyze the git repository at: {{repo_path}}
+      Commit range: {{git_range}}
+      
+      Run these commands to understand what changed:
+      ```bash
+      cd "{{repo_path}}"
+      git log {{git_range}} --pretty=format:"%h %s%n%b" 
+      git diff {{git_range}} --stat
+      git diff {{git_range}} --name-only
+      ```
+      
+      For key files, examine the actual changes to understand what was built.
+      Extract PR links and commit hashes from the git log.
+      
+      {% elif session_id %}
+      **MODE: Specific Session Analysis**
+      
+      Analyze session: {{session_id}}
+      
+      Review the session's work to understand:
+      - What tasks were requested and completed
+      - What files were created or modified
+      - The conversation context explaining the work
+      - Any design decisions or trade-offs discussed
+      
+      {% else %}
+      **MODE: Current Session Analysis**
+      
+      Analyze the current session context to understand:
+      - What work has been done in this session
+      - What files were created or modified
+      - The goals and requirements discussed
+      - Key decisions and implementation details
+      
+      Review the session history and any files that were touched.
+      {% endif %}
+      
+      {% if user_description %}
+      ## User-Provided Context
+      
+      The person who did this work provided additional context:
+      
+      {{user_description}}
+      
+      This context often contains important motivation, stakeholder info,
+      or emphasis that should be prominently featured in the announcement.
+      {% endif %}
+      
+      ## Output Format
+      
+      Provide your analysis in this structure:
+      
+      ```
+      CHANGE TYPE: [New Feature | Enhancement | Bug Fix | Refactor | Infrastructure | Documentation]
+      
+      PROBLEM SOLVED / BENEFIT: [One sentence - what can users/developers do now, or what problem is fixed]
+      
+      TECHNICAL CHANGES:
+      - [Specific change 1 - include file names, flags, functions as relevant]
+      - [Specific change 2]
+      - [Specific change 3 - if applicable]
+      
+      HOW TO TRY IT: [One sentence - command, action, or verification step]
+      
+      LINKS:
+      - PR: [link if available]
+      - Commit: [hash or link if available]
+      - Repo: [link if available]
+      - Docs: [link if available]
+      ```
+    output: "change_analysis"
+    timeout: 600
+
+  # Step 2: Generate the polished announcement
+  - id: "generate-announcement"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      You are writing a feature announcement for the Amplifier team.
+      
+      ## Context
+      
+      Amplifier is an AI-powered development tool. Announcements go to a mixed audience:
+      leadership, executives, developers, PMs, and designers. The format must work for all.
+      
+      Most changes are TECHNICAL. That's okay - lead with the benefit, include technical
+      details in the bullets, and link to the PR/commit for those who want more.
+      
+      ## Analysis of Changes
+      
+      {{change_analysis}}
+      
+      {% if user_description %}
+      ## Additional Context from the Builder
+      
+      {{user_description}}
+      {% endif %}
+      
+      ## ANNOUNCEMENT PHILOSOPHY (READ CAREFULLY)
+      
+      Be HUMAN-FIRST, not AI-first. Write like a developer telling a colleague what shipped.
+      
+      For TECHNICAL changes (most common):
+      - Hook: The problem solved or developer benefit (not "we added X")
+      - Bullets: Specific technical details - flags, files, behaviors
+      - Links: Critical for technical audience to dig deeper
+      
+      For NON-TECHNICAL changes:
+      - Hook: What users can now do
+      - Bullets: Capabilities, not implementation
+      
+      ## OUTPUT FORMAT (PLAIN TEXT ONLY)
+      
+      CRITICAL: Output must be PLAIN TEXT. No markdown formatting.
+      - Do NOT use ** for bold
+      - Do NOT use # for headers
+      - Do NOT use ` for code
+      - Do NOT use - for bullets (use • or plain dashes with spaces)
+      
+      EXACT STRUCTURE TO FOLLOW:
+      
+      [One line: hook - the problem solved or benefit, phrased conversationally]
+      
+      What changed:
+      • [Technical detail 1]
+      • [Technical detail 2]
+      • [Technical detail 3 - optional]
+      
+      Try it: [One line - how to use or verify]
+      
+      More info:
+      • [Link 1 - PR, repo, or docs]
+      • [Link 2 - if available]
+      • [Link 3 - if available]
+      
+      ---
+      
+      EXAMPLE FOR A TECHNICAL CHANGE:
+      
+      Session resume no longer fails silently when the bundle config has changed
+      
+      What changed:
+      • Added config hash validation on resume to detect bundle drift
+      • New --force-bundle flag lets you override with a different bundle
+      • Clearer error message explains what mismatched and suggests next steps
+      
+      Try it: amplifier resume --force-bundle foundation
+      
+      More info:
+      • PR: github.com/microsoft/amplifier/pull/142
+      • Commit: a3f2d1c
+      • Docs: See AGENTS.md for flag documentation
+      
+      ---
+      
+      EXAMPLE FOR A NON-TECHNICAL CHANGE:
+      
+      Tired of rewriting the same feature announcement for different audiences?
+      
+      What changed:
+      • New recipe analyzes your session or git history and writes an announcement
+      • Works for execs, PMs, and devs - layered so each reads what they need
+      • Plain text output pastes cleanly into Teams
+      
+      Try it: From any session, say "run the feature-announcement recipe"
+      
+      More info:
+      • Repo: github.com/user/amplifier-bundle-feature-announcements
+      • Recipe: examples/feature-announcement.yaml
+      
+      ---
+      
+      Now generate the announcement. Plain text only. Be concise and human.
+    output: "announcement_content"
+    timeout: 600
+
+  # Step 3: Save the announcement to a file
+  - id: "save-announcement"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Save the following announcement to the file: {{output_file}}
+      
+      {{announcement_content}}
+      
+      Write this content to the file exactly as provided (plain text, no modifications).
+      
+      Then confirm:
+      1. The full path where the file was saved
+      2. That it's ready to copy-paste to Teams
+    output: "save_result"
+    timeout: 120
+
+# Expected outputs:
+#   - change_analysis: Structured analysis of what changed
+#   - announcement_content: The plain text announcement
+#   - save_result: Confirmation of file save
