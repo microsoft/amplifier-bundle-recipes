@@ -10,24 +10,23 @@ tags: ["github", "multi-repo", "activity", "reports", "analysis"]
 # a comprehensive report. Provide repos either as a JSON list or a path to
 # a manifest file.
 #
-# Usage (with repo list):
-#   amplifier recipes execute multi-repo-activity-report.yaml --context '{
-#     "repos": [
-#       {"owner": "microsoft", "name": "amplifier-core", "url": "https://github.com/microsoft/amplifier-core"},
-#       {"owner": "microsoft", "name": "amplifier-foundation", "url": "https://github.com/microsoft/amplifier-foundation"}
-#     ]
-#   }'
+# Usage (in a session - recommended):
+#   "run multi-repo-activity-report for amplifier-core and amplifier-foundation"
 #
-# Usage (with manifest file):
-#   amplifier recipes execute multi-repo-activity-report.yaml --context '{
-#     "repos_manifest": "./repos-to-analyze.json"
-#   }'
+# Usage (CLI - with repo list):
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=multi-repo-activity-report.yaml \
+#     context='{"repos": [{"owner": "microsoft", "name": "amplifier-core", "url": "https://github.com/microsoft/amplifier-core"}]}'
 #
-# Usage (custom date range):
-#   amplifier recipes execute multi-repo-activity-report.yaml --context '{
-#     "repos": [...],
-#     "date_range": "last 7 days"
-#   }'
+# Usage (CLI - with manifest file):
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=multi-repo-activity-report.yaml \
+#     context='{"repos_manifest": "./repos-to-analyze.json"}'
+#
+# Usage (CLI - custom date range):
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=multi-repo-activity-report.yaml \
+#     context='{"repos": [...], "date_range": "last 7 days"}'
 #
 # Manifest file format (JSON array):
 #   [

@@ -61,9 +61,15 @@
 #
 # USAGE
 # -----
-#   From inside a session: "run the feature-announcement recipe"
-#   From CLI: amplifier recipes execute feature-announcement.yaml
-#   With context: --context '{"user_description": "Added new caching layer"}'
+#   In a session (recommended): "run the feature-announcement recipe"
+#   
+#   From CLI:
+#     amplifier tool invoke recipes operation=execute recipe_path=feature-announcement.yaml
+#   
+#   With context:
+#     amplifier tool invoke recipes operation=execute \
+#       recipe_path=feature-announcement.yaml \
+#       context='{"user_description": "Added new caching layer"}'
 
 name: "feature-announcement"
 description: "Generate human-friendly feature announcements from Amplifier session work"

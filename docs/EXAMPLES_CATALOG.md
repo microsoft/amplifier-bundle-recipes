@@ -4,6 +4,19 @@
 
 This catalog describes all example recipes included in the collection. Each example demonstrates different patterns and use cases.
 
+## How to Run Recipes
+
+**In a session (recommended):** Just ask naturally - "run the code-review recipe on src/auth.py"
+
+**From CLI:** Use `amplifier tool invoke recipes`:
+```bash
+amplifier tool invoke recipes operation=execute recipe_path=<recipe.yaml> context='{"key": "value"}'
+```
+
+> **Note**: There is no `amplifier recipes` CLI command. Recipes are invoked via the `recipes` tool.
+
+---
+
 ## Quick Reference
 
 | Recipe | Domain | Steps | Key Pattern | Agents Used |
@@ -47,8 +60,12 @@ Basic analysis workflow demonstrating core recipe concepts: context variables, s
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute simple-analysis-recipe.yaml --context '{"file_path": "README.md"}'
+```
+In session: "run simple-analysis on README.md"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=simple-analysis-recipe.yaml \
+       context='{"file_path": "README.md"}'
 ```
 
 **Key Learnings:**
@@ -82,8 +99,12 @@ Demonstrates bash step capabilities for direct shell execution without LLM overh
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute bash-step-example.yaml --context '{"project_name": "MyProject"}'
+```
+In session: "run bash-step-example with project_name MyProject"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=bash-step-example.yaml \
+       context='{"project_name": "MyProject"}'
 ```
 
 **Key Learnings:**
@@ -116,8 +137,12 @@ Demonstrates conditional step execution based on classification results.
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute conditional-workflow.yaml --context '{"input_data": "complex dataset with multiple dimensions"}'
+```
+In session: "run conditional-workflow on this complex dataset"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=conditional-workflow.yaml \
+       context='{"input_data": "complex dataset with multiple dimensions"}'
 ```
 
 **Key Learnings:**
@@ -149,8 +174,12 @@ Multi-stage code review workflow with conditional execution based on issue sever
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute code-review-recipe.yaml --context '{"file_path": "src/auth.py"}'
+```
+In session: "run code-review on src/auth.py"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=code-review-recipe.yaml \
+       context='{"file_path": "src/auth.py"}'
 ```
 
 **Key Learnings:**
@@ -179,8 +208,12 @@ Combines code review and security audit using recipe composition.
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute comprehensive-review.yaml --context '{"file_path": "src/api.py"}'
+```
+In session: "run comprehensive-review on src/api.py"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=comprehensive-review.yaml \
+       context='{"file_path": "src/api.py"}'
 ```
 
 **Key Learnings:**
@@ -212,8 +245,12 @@ Comprehensive security analysis covering vulnerabilities, configurations, and be
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute security-audit-recipe.yaml --context '{"file_path": "src/api.py", "severity_threshold": "medium"}'
+```
+In session: "run security-audit on src/api.py"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=security-audit-recipe.yaml \
+       context='{"file_path": "src/api.py", "severity_threshold": "medium"}'
 ```
 
 **Key Learnings:**
@@ -244,8 +281,12 @@ Analyze code and generate comprehensive test suite.
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute test-generation-recipe.yaml --context '{"file_path": "src/utils.py", "test_framework": "pytest"}'
+```
+In session: "generate tests for src/utils.py using pytest"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=test-generation-recipe.yaml \
+       context='{"file_path": "src/utils.py", "test_framework": "pytest"}'
 ```
 
 **Key Learnings:**
@@ -277,8 +318,12 @@ Systematic dependency upgrade workflow (flat, non-staged).
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute dependency-upgrade-recipe.yaml --context '{"project_path": ".", "package_manager": "pip"}'
+```
+In session: "run dependency-upgrade for this project using pip"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=dependency-upgrade-recipe.yaml \
+       context='{"project_path": ".", "package_manager": "pip"}'
 ```
 
 **Key Learnings:**
@@ -318,14 +363,21 @@ Stage 5: Phase 3 - Major (approval required)
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute dependency-upgrade-staged-recipe.yaml --context '{"project_path": ".", "package_manager": "uv"}'
+```
+In session: "run dependency-upgrade-staged for this project"
+
+CLI:
+# Start the recipe
+amplifier tool invoke recipes operation=execute \
+  recipe_path=dependency-upgrade-staged-recipe.yaml \
+  context='{"project_path": ".", "package_manager": "uv"}'
 
 # Check pending approvals
-amplifier recipes approvals
+amplifier tool invoke recipes operation=approvals
 
 # Approve a stage
-amplifier recipes approve <session_id> --stage validation
+amplifier tool invoke recipes operation=approve \
+  session_id=<session_id> stage_name=validation
 ```
 
 **Key Learnings:**
@@ -361,8 +413,12 @@ Analyze multiple files in parallel with per-file insights and consolidated summa
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute multi-file-analysis.yaml --context '{"files": ["src/auth.py", "src/models.py", "src/utils.py"]}'
+```
+In session: "analyze src/auth.py, src/models.py, and src/utils.py together"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=multi-file-analysis.yaml \
+       context='{"files": ["src/auth.py", "src/models.py", "src/utils.py"]}'
 ```
 
 **Key Learnings:**
@@ -396,8 +452,12 @@ Analyze code from multiple perspectives simultaneously.
 ```
 
 **Example Usage:**
-```bash
-amplifier recipes execute parallel-analysis-recipe.yaml --context '{"file_path": "src/core.py"}'
+```
+In session: "analyze src/core.py from multiple perspectives"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=parallel-analysis-recipe.yaml \
+       context='{"file_path": "src/core.py"}'
 ```
 
 **Key Learnings:**
@@ -431,15 +491,17 @@ Analyze a GitHub repository for commits and PRs in a date range.
 ```
 
 **Example Usage:**
-```bash
-# Current repo, since yesterday (defaults)
-amplifier recipes execute repo-activity-analysis.yaml
+```
+In session: "analyze this repo's activity for the last week"
 
-# Specific repo and date range
-amplifier recipes execute repo-activity-analysis.yaml --context '{
-  "repo_url": "https://github.com/microsoft/amplifier-core",
-  "date_range": "last 7 days"
-}'
+CLI (defaults - current repo since yesterday):
+amplifier tool invoke recipes operation=execute \
+  recipe_path=repo-activity-analysis.yaml
+
+CLI (specific repo and date range):
+amplifier tool invoke recipes operation=execute \
+  recipe_path=repo-activity-analysis.yaml \
+  context='{"repo_url": "https://github.com/microsoft/amplifier-core", "date_range": "last 7 days"}'
 ```
 
 **Key Learnings:**
@@ -474,19 +536,18 @@ Generate activity reports across multiple GitHub repositories.
 ```
 
 **Example Usage:**
-```bash
-# With repo list
-amplifier recipes execute multi-repo-activity-report.yaml --context '{
-  "repos": [
-    {"owner": "microsoft", "name": "amplifier-core", "url": "https://github.com/microsoft/amplifier-core"},
-    {"owner": "microsoft", "name": "amplifier-foundation", "url": "https://github.com/microsoft/amplifier-foundation"}
-  ]
-}'
+```
+In session: "generate activity report for amplifier-core and amplifier-foundation"
 
-# With manifest file
-amplifier recipes execute multi-repo-activity-report.yaml --context '{
-  "repos_manifest": "./repos.json"
-}'
+CLI (with repo list):
+amplifier tool invoke recipes operation=execute \
+  recipe_path=multi-repo-activity-report.yaml \
+  context='{"repos": [{"owner": "microsoft", "name": "amplifier-core", "url": "https://github.com/microsoft/amplifier-core"}]}'
+
+CLI (with manifest file):
+amplifier tool invoke recipes operation=execute \
+  recipe_path=multi-repo-activity-report.yaml \
+  context='{"repos_manifest": "./repos.json"}'
 ```
 
 **Key Learnings:**
@@ -531,20 +592,22 @@ Generate human-friendly feature announcements from Amplifier session work.
 - Git repository history
 
 **Example Usage:**
-```bash
-# Analyze current session
-amplifier recipes execute feature-announcement.yaml
+```
+In session: "run the feature-announcement recipe"
 
-# Analyze git history
-amplifier recipes execute feature-announcement.yaml --context '{
-  "repo_path": ".",
-  "git_range": "HEAD~5..HEAD"
-}'
+CLI (analyze current session):
+amplifier tool invoke recipes operation=execute \
+  recipe_path=feature-announcement.yaml
 
-# With user description
-amplifier recipes execute feature-announcement.yaml --context '{
-  "user_description": "Added new caching layer for API responses"
-}'
+CLI (with git history):
+amplifier tool invoke recipes operation=execute \
+  recipe_path=feature-announcement.yaml \
+  context='{"repo_path": ".", "git_range": "HEAD~5..HEAD"}'
+
+CLI (with user description):
+amplifier tool invoke recipes operation=execute \
+  recipe_path=feature-announcement.yaml \
+  context='{"user_description": "Added new caching layer for API responses"}'
 ```
 
 **Key Learnings:**
@@ -601,8 +664,8 @@ These recipes are primarily for testing recipe engine functionality:
 # Copy example to your recipes directory
 cp examples/code-review-recipe.yaml my-recipes/custom-review.yaml
 
-# Edit as needed, then run
-amplifier recipes execute my-recipes/custom-review.yaml --context '{"file_path": "src/mycode.py"}'
+# Edit as needed, then run in a session:
+# "run my-recipes/custom-review.yaml on src/mycode.py"
 ```
 
 ### Study Patterns

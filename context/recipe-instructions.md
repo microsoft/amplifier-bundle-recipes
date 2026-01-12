@@ -2,6 +2,46 @@
 
 You have access to the **recipes** tool for multi-step AI agent orchestration.
 
+## How to Run Recipes
+
+### Conversational (Recommended)
+
+Within an Amplifier session, just ask naturally:
+
+```
+"Run the feature-announcement recipe"
+"Execute the code-review recipe on src/auth.py"
+"Run repo-activity-analysis for the last week"
+```
+
+Amplifier will invoke the recipes tool with the appropriate parameters.
+
+### CLI (Direct Tool Invocation)
+
+From the command line, use `amplifier tool invoke`:
+
+```bash
+# Basic execution
+amplifier tool invoke recipes operation=execute recipe_path=recipes:examples/code-review-recipe.yaml
+
+# With context variables
+amplifier tool invoke recipes \
+  operation=execute \
+  recipe_path=recipes:examples/feature-announcement.yaml \
+  context='{"user_description": "Added new caching layer"}'
+
+# List active recipe sessions
+amplifier tool invoke recipes operation=list
+
+# Resume an interrupted recipe
+amplifier tool invoke recipes operation=resume session_id=<session_id>
+
+# Validate a recipe without running it
+amplifier tool invoke recipes operation=validate recipe_path=my-recipe.yaml
+```
+
+**Note**: There is no `amplifier recipes` CLI command. Recipes are invoked via the `recipes` tool, either conversationally or through `amplifier tool invoke`.
+
 ## What Recipes Solve
 
 Recipes are declarative YAML workflows that provide:
