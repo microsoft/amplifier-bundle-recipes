@@ -30,6 +30,11 @@ amplifier-core = { path = "../../../amplifier-core", editable = true }
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.1",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_module_tool_recipes"]
 

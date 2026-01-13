@@ -12,6 +12,7 @@ from typing import Any
 
 from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
+from .model_resolver import resolve_model_pattern
 from .models import BackoffConfig
 from .models import OrchestratorConfig
 from .models import RateLimitingConfig
@@ -72,7 +73,9 @@ class CancellationRequestedError(Exception):
         self.current_step = current_step
         level = "immediate" if is_immediate else "graceful"
         step_info = f" at step '{current_step}'" if current_step else ""
-        self.message = message or f"Recipe {session_id} cancellation ({level}){step_info}"
+        self.message = (
+            message or f"Recipe {session_id} cancellation ({level}){step_info}"
+        )
         super().__init__(self.message)
 
 
@@ -97,14 +100,18 @@ class RecursionState:
     def check_total_steps(self) -> None:
         """Raise if total steps limit exceeded."""
         if self.total_steps >= self.max_total_steps:
-            raise ValueError(f"Total steps {self.total_steps} exceeds limit {self.max_total_steps}")
+            raise ValueError(
+                f"Total steps {self.total_steps} exceeds limit {self.max_total_steps}"
+            )
 
     def increment_steps(self) -> None:
         """Increment total steps counter and check limit."""
         self.total_steps += 1
         self.check_total_steps()
 
-    def enter_recipe(self, recipe_name: str, override_config: RecursionConfig | None = None) -> "RecursionState":
+    def enter_recipe(
+        self, recipe_name: str, override_config: RecursionConfig | None = None
+    ) -> "RecursionState":
         """
         Create child state for sub-recipe.
 
@@ -114,7 +121,9 @@ class RecursionState:
         """
         # Use override config if provided, otherwise inherit current limits
         max_depth = override_config.max_depth if override_config else self.max_depth
-        max_total_steps = override_config.max_total_steps if override_config else self.max_total_steps
+        max_total_steps = (
+            override_config.max_total_steps if override_config else self.max_total_steps
+        )
 
         return RecursionState(
             current_depth=self.current_depth + 1,
@@ -272,7 +281,9 @@ class RecipeExecutor:
         if not self.session_manager.is_cancellation_requested(session_id, project_path):
             return
 
-        is_immediate = self.session_manager.is_immediate_cancellation(session_id, project_path)
+        is_immediate = self.session_manager.is_immediate_cancellation(
+            session_id, project_path
+        )
 
         # Graceful cancellation allows current step to complete
         if allow_graceful_completion and not is_immediate:
@@ -308,7 +319,9 @@ class RecipeExecutor:
 
         # Propagate coordinator cancellation to session state
         is_immediate = cancellation.is_immediate
-        self.session_manager.request_cancellation(session_id, project_path, immediate=is_immediate)
+        self.session_manager.request_cancellation(
+            session_id, project_path, immediate=is_immediate
+        )
 
     async def execute_recipe(
         self,
@@ -376,7 +389,9 @@ class RecipeExecutor:
                 context = state["context"]
                 session_started = state["started"]
             else:
-                session_id = self.session_manager.create_session(recipe, project_path, recipe_path)
+                session_id = self.session_manager.create_session(
+                    recipe, project_path, recipe_path
+                )
                 context = {**recipe.context, **context_vars}
                 session_started = datetime.datetime.now().isoformat()
 
@@ -412,7 +427,9 @@ class RecipeExecutor:
             completed_steps = state.get("completed_steps", [])
             session_started = state["started"]
         else:
-            session_id = self.session_manager.create_session(recipe, project_path, recipe_path)
+            session_id = self.session_manager.create_session(
+                recipe, project_path, recipe_path
+            )
             current_step_index = 0
             context = {**recipe.context, **context_vars}
             completed_steps = []
@@ -450,8 +467,12 @@ class RecipeExecutor:
                 # Check for cancellation before starting each step
                 # Use cancellation_session_id to support both root recipes and sub-recipes
                 if cancellation_session_id:
-                    self._check_coordinator_cancellation(cancellation_session_id, project_path)
-                    self._check_cancellation(cancellation_session_id, project_path, current_step=step.id)
+                    self._check_coordinator_cancellation(
+                        cancellation_session_id, project_path
+                    )
+                    self._check_cancellation(
+                        cancellation_session_id, project_path, current_step=step.id
+                    )
 
                 # Add step metadata to context
                 context["step"] = {"id": step.id, "index": i}
@@ -459,14 +480,18 @@ class RecipeExecutor:
                 # Show step progress
                 step_num = i + 1
                 step_type = step.type or "agent"
-                self._show_progress(f"  [{step_num}/{total_steps}] {step.id} ({step_type})")
+                self._show_progress(
+                    f"  [{step_num}/{total_steps}] {step.id} ({step_type})"
+                )
 
                 # Check condition if present
                 if step.condition:
                     try:
                         condition_result = evaluate_condition(step.condition, context)
                     except ExpressionError as e:
-                        raise ValueError(f"Step '{step.id}': condition error: {e}") from e
+                        raise ValueError(
+                            f"Step '{step.id}': condition error: {e}"
+                        ) from e
 
                     if not condition_result:
                         # Skip this step - record in state but don't execute
@@ -479,8 +504,14 @@ class RecipeExecutor:
                 if step.foreach:
                     try:
                         await self._execute_loop(
-                            step, context, project_path, recursion_state, recipe_path,
-                            rate_limiter, orchestrator_config, session_id=cancellation_session_id
+                            step,
+                            context,
+                            project_path,
+                            recursion_state,
+                            recipe_path,
+                            rate_limiter,
+                            orchestrator_config,
+                            session_id=cancellation_session_id,
                         )
                         # Update completed steps and session state after loop completes
                         completed_steps.append(step.id)
@@ -503,12 +534,20 @@ class RecipeExecutor:
                 try:
                     if step.type == "recipe":
                         result = await self._execute_recipe_step(
-                            step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config,
-                            parent_session_id=cancellation_session_id
+                            step,
+                            context,
+                            project_path,
+                            recursion_state,
+                            recipe_path,
+                            rate_limiter,
+                            orchestrator_config,
+                            parent_session_id=cancellation_session_id,
                         )
                     elif step.type == "bash":
                         # Bash steps don't count against agent recursion limits
-                        bash_result = await self._execute_bash_step(step, context, project_path)
+                        bash_result = await self._execute_bash_step(
+                            step, context, project_path
+                        )
                         # Store exit code if requested
                         if step.output_exit_code:
                             context[step.output_exit_code] = str(bash_result.exit_code)
@@ -517,8 +556,12 @@ class RecipeExecutor:
                         # Agent step - track for recursion limits
                         recursion_state.increment_steps()
                         result = await self.execute_step_with_retry(
-                            step, context, rate_limiter, orchestrator_config,
-                            session_id=cancellation_session_id, project_path=project_path
+                            step,
+                            context,
+                            rate_limiter,
+                            orchestrator_config,
+                            session_id=cancellation_session_id,
+                            project_path=project_path,
                         )
 
                     # Process result: unwrap spawn() output and optionally parse JSON
@@ -555,12 +598,16 @@ class RecipeExecutor:
         except CancellationRequestedError as e:
             # Mark session as cancelled and save state for later resumption
             self.session_manager.mark_cancelled(
-                session_id, project_path,
+                session_id,
+                project_path,
                 cancelled_at_step=e.current_step,
             )
             if state is not None:
                 self.session_manager.save_state(session_id, project_path, state)
-            self._show_progress(f"⚠️ Recipe cancelled at step: {e.current_step or 'unknown'}", level="warning")
+            self._show_progress(
+                f"⚠️ Recipe cancelled at step: {e.current_step or 'unknown'}",
+                level="warning",
+            )
             raise
 
         except Exception:
@@ -616,18 +663,28 @@ class RecipeExecutor:
             completed_steps = state.get("completed_steps", [])
 
             # Check if we're resuming from a pending approval
-            pending = self.session_manager.get_pending_approval(session_id, project_path)
+            pending = self.session_manager.get_pending_approval(
+                session_id, project_path
+            )
             if pending:
                 stage_name = pending["stage_name"]
-                approval_status = self.session_manager.get_stage_approval_status(session_id, project_path, stage_name)
+                approval_status = self.session_manager.get_stage_approval_status(
+                    session_id, project_path, stage_name
+                )
 
                 # Check for timeout
-                timeout_result = self.session_manager.check_approval_timeout(session_id, project_path)
+                timeout_result = self.session_manager.check_approval_timeout(
+                    session_id, project_path
+                )
                 if timeout_result == ApprovalStatus.TIMEOUT:
-                    raise ValueError(f"Approval for stage '{stage_name}' timed out and was denied")
+                    raise ValueError(
+                        f"Approval for stage '{stage_name}' timed out and was denied"
+                    )
                 if timeout_result == ApprovalStatus.APPROVED:
                     # Auto-approved on timeout, clear and continue
-                    self.session_manager.clear_pending_approval(session_id, project_path)
+                    self.session_manager.clear_pending_approval(
+                        session_id, project_path
+                    )
                 elif approval_status == ApprovalStatus.PENDING:
                     # Still pending - raise to indicate waiting
                     raise ApprovalGatePausedError(
@@ -639,7 +696,9 @@ class RecipeExecutor:
                     raise ValueError(f"Execution denied at stage '{stage_name}'")
                 elif approval_status == ApprovalStatus.APPROVED:
                     # Approved, clear pending and continue
-                    self.session_manager.clear_pending_approval(session_id, project_path)
+                    self.session_manager.clear_pending_approval(
+                        session_id, project_path
+                    )
         else:
             current_stage_index = 0
             current_step_in_stage = 0
@@ -654,10 +713,14 @@ class RecipeExecutor:
 
                 # Check for cancellation before starting each stage
                 self._check_coordinator_cancellation(session_id, project_path)
-                self._check_cancellation(session_id, project_path, current_step=f"stage:{stage.name}")
+                self._check_cancellation(
+                    session_id, project_path, current_step=f"stage:{stage.name}"
+                )
 
                 # Show stage progress
-                self._show_progress(f"📦 Stage {stage_idx + 1}/{total_stages}: {stage.name}")
+                self._show_progress(
+                    f"📦 Stage {stage_idx + 1}/{total_stages}: {stage.name}"
+                )
 
                 # Add stage metadata to context
                 context["stage"] = {
@@ -666,7 +729,9 @@ class RecipeExecutor:
                 }
 
                 # Determine starting step within this stage
-                start_step = current_step_in_stage if stage_idx == current_stage_index else 0
+                start_step = (
+                    current_step_in_stage if stage_idx == current_stage_index else 0
+                )
 
                 # Execute steps within this stage
                 for step_idx in range(start_step, len(stage.steps)):
@@ -674,17 +739,27 @@ class RecipeExecutor:
 
                     # Check for cancellation before starting each step
                     self._check_coordinator_cancellation(session_id, project_path)
-                    self._check_cancellation(session_id, project_path, current_step=step.id)
+                    self._check_cancellation(
+                        session_id, project_path, current_step=step.id
+                    )
 
                     # Add step metadata to context
-                    context["step"] = {"id": step.id, "index": step_idx, "stage": stage.name}
+                    context["step"] = {
+                        "id": step.id,
+                        "index": step_idx,
+                        "stage": stage.name,
+                    }
 
                     # Check condition if present
                     if step.condition:
                         try:
-                            condition_result = evaluate_condition(step.condition, context)
+                            condition_result = evaluate_condition(
+                                step.condition, context
+                            )
                         except ExpressionError as e:
-                            raise ValueError(f"Step '{step.id}': condition error: {e}") from e
+                            raise ValueError(
+                                f"Step '{step.id}': condition error: {e}"
+                            ) from e
 
                         if not condition_result:
                             skipped_steps = context.get("_skipped_steps", [])
@@ -696,8 +771,14 @@ class RecipeExecutor:
                     if step.foreach:
                         try:
                             await self._execute_loop(
-                                step, context, project_path, recursion_state, recipe_path,
-                                rate_limiter, orchestrator_config, session_id=session_id
+                                step,
+                                context,
+                                project_path,
+                                recursion_state,
+                                recipe_path,
+                                rate_limiter,
+                                orchestrator_config,
+                                session_id=session_id,
                             )
                             completed_steps.append(step.id)
                             self._save_staged_state(
@@ -718,22 +799,36 @@ class RecipeExecutor:
                     try:
                         if step.type == "recipe":
                             result = await self._execute_recipe_step(
-                                step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config,
-                                parent_session_id=session_id
+                                step,
+                                context,
+                                project_path,
+                                recursion_state,
+                                recipe_path,
+                                rate_limiter,
+                                orchestrator_config,
+                                parent_session_id=session_id,
                             )
                         elif step.type == "bash":
                             # Bash steps don't count against agent recursion limits
-                            bash_result = await self._execute_bash_step(step, context, project_path)
+                            bash_result = await self._execute_bash_step(
+                                step, context, project_path
+                            )
                             # Store exit code if requested
                             if step.output_exit_code:
-                                context[step.output_exit_code] = str(bash_result.exit_code)
+                                context[step.output_exit_code] = str(
+                                    bash_result.exit_code
+                                )
                             result = bash_result.stdout
                         else:
                             # Agent step - track for recursion limits
                             recursion_state.increment_steps()
                             result = await self.execute_step_with_retry(
-                                step, context, rate_limiter, orchestrator_config,
-                                session_id=session_id, project_path=project_path
+                                step,
+                                context,
+                                rate_limiter,
+                                orchestrator_config,
+                                session_id=session_id,
+                                project_path=project_path,
                             )
 
                         # Process result: unwrap spawn() output and optionally parse JSON
@@ -767,7 +862,14 @@ class RecipeExecutor:
                     # Save state with next stage as target FIRST
                     # (set_pending_approval will load, add approval fields, and save)
                     self._save_staged_state(
-                        session_id, project_path, recipe, context, stage_idx + 1, 0, completed_stages, completed_steps
+                        session_id,
+                        project_path,
+                        recipe,
+                        context,
+                        stage_idx + 1,
+                        0,
+                        completed_stages,
+                        completed_steps,
                     )
 
                     # Set pending approval AFTER saving state (this loads, modifies, saves)
@@ -775,7 +877,8 @@ class RecipeExecutor:
                         session_id=session_id,
                         project_path=project_path,
                         stage_name=stage.name,
-                        prompt=stage.approval.prompt or f"Approve completion of stage '{stage.name}'?",
+                        prompt=stage.approval.prompt
+                        or f"Approve completion of stage '{stage.name}'?",
                         timeout=stage.approval.timeout,
                         default=stage.approval.default,
                     )
@@ -784,12 +887,20 @@ class RecipeExecutor:
                     raise ApprovalGatePausedError(
                         session_id=session_id,
                         stage_name=stage.name,
-                        approval_prompt=stage.approval.prompt or f"Approve completion of stage '{stage.name}'?",
+                        approval_prompt=stage.approval.prompt
+                        or f"Approve completion of stage '{stage.name}'?",
                     )
 
                 # No approval needed - save progress and continue
                 self._save_staged_state(
-                    session_id, project_path, recipe, context, stage_idx + 1, 0, completed_stages, completed_steps
+                    session_id,
+                    project_path,
+                    recipe,
+                    context,
+                    stage_idx + 1,
+                    0,
+                    completed_stages,
+                    completed_steps,
                 )
 
         except ApprovalGatePausedError:
@@ -798,7 +909,8 @@ class RecipeExecutor:
         except CancellationRequestedError as e:
             # Mark session as cancelled and save state for later resumption
             self.session_manager.mark_cancelled(
-                session_id, project_path,
+                session_id,
+                project_path,
                 cancelled_at_step=e.current_step,
             )
             self._save_staged_state(
@@ -811,7 +923,10 @@ class RecipeExecutor:
                 completed_stages,
                 completed_steps,
             )
-            self._show_progress(f"⚠️ Recipe cancelled at step: {e.current_step or 'unknown'}", level="warning")
+            self._show_progress(
+                f"⚠️ Recipe cancelled at step: {e.current_step or 'unknown'}",
+                level="warning",
+            )
             raise
         except Exception:
             # Save state for resumption on error
@@ -954,46 +1069,44 @@ class RecipeExecutor:
     def _extract_json_aggressively(self, output: str) -> Any:
         """
         Aggressively extract JSON from output using multiple strategies.
-        
+
         Only called when parse_json: true is set on the step.
-        
+
         Strategies (in order):
         1. Entire string is valid JSON
         2. Extract from markdown code block (```json ... ```)
         3. Find JSON object/array embedded in text
-        
+
         Args:
             output: String output from agent
-            
+
         Returns:
             Parsed JSON object/array, or original string if no JSON found
         """
         output_stripped = output.strip()
-        
+
         if not output_stripped:
             return output
-        
+
         # Strategy 1: Entire string is valid JSON
         try:
             return json.loads(output_stripped)
         except (json.JSONDecodeError, ValueError):
             pass
-        
+
         # Strategy 2: Extract from markdown code block
         json_match = re.search(
-            r'```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```',
-            output_stripped,
-            re.DOTALL
+            r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", output_stripped, re.DOTALL
         )
         if json_match:
             try:
                 return json.loads(json_match.group(1))
             except (json.JSONDecodeError, ValueError):
                 pass
-        
+
         # Strategy 3: Find JSON embedded in text
         decoder = json.JSONDecoder()
-        for start_char in ['{', '[']:
+        for start_char in ["{", "["]:
             idx = output_stripped.find(start_char)
             while idx != -1:
                 try:
@@ -1002,23 +1115,23 @@ class RecipeExecutor:
                 except (json.JSONDecodeError, ValueError):
                     pass
                 idx = output_stripped.find(start_char, idx + 1)
-        
+
         # All strategies failed - return as-is
         return output
 
     def _process_step_result(self, result: Any, step: Step) -> Any:
         """
         Process step result: unwrap spawn() output and optionally parse JSON.
-        
+
         By default, preserves output as-is (prose, markdown, formatting).
         Only parses JSON if:
         - The ENTIRE output is clean JSON (no markdown, no prose), OR
         - The step has parse_json: true set (aggressive extraction)
-        
+
         Args:
             result: Raw result from step execution
             step: Step configuration (to check parse_json flag)
-        
+
         Returns:
             Processed result (unwrapped and/or parsed)
         """
@@ -1027,12 +1140,12 @@ class RecipeExecutor:
             output = result["output"]
         else:
             output = result
-        
+
         # Step 2: Parse JSON if requested
         if isinstance(output, str) and step.parse_json:
             # Opt-in aggressive JSON extraction
             return self._extract_json_aggressively(output)
-        
+
         # Step 3: Conservative default - only parse clean JSON
         if isinstance(output, str):
             output_stripped = output.strip()
@@ -1046,7 +1159,7 @@ class RecipeExecutor:
                         extracted = self._extract_json_aggressively(output)
                         if extracted != output:  # Successfully extracted JSON
                             return extracted
-        
+
         return output
 
     async def execute_step(
@@ -1077,7 +1190,9 @@ class RecipeExecutor:
 
         # Agent steps must have prompt and agent (validated by models)
         if not step.prompt or not step.agent:
-            raise ValueError(f"Step '{step.id}' is an agent step but missing prompt or agent")
+            raise ValueError(
+                f"Step '{step.id}' is an agent step but missing prompt or agent"
+            )
 
         # Substitute variables in prompt
         instruction = self.substitute_variables(step.prompt, context)
@@ -1122,6 +1237,19 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Build orchestrator config dict for spawn if present
         orchestrator_dict = orchestrator_config.config if orchestrator_config else None
 
+        # Resolve provider and model for this step
+        step_provider = step.provider
+        step_model = step.model
+
+        # Resolve model pattern if specified
+        if step_model:
+            model_resolution = await resolve_model_pattern(
+                model_hint=step_model,
+                provider_name=step_provider,
+                coordinator=self.coordinator,
+            )
+            step_model = model_resolution.resolved_model
+
         # Spawn sub-session with agent via capability
         result = await spawn_fn(
             agent_name=step.agent,
@@ -1130,6 +1258,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             agent_configs=agents,
             sub_session_id=None,  # Let spawner generate ID
             orchestrator_config=orchestrator_dict,
+            # Provider/model override
+            provider_override=step_provider,
+            model_override=step_model,
         )
 
         return result
@@ -1172,7 +1303,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         items = self._resolve_foreach_variable(step.foreach, context)
 
         if not isinstance(items, list):
-            raise ValueError(f"Step '{step.id}': foreach variable must be a list, got {type(items).__name__}")
+            raise ValueError(
+                f"Step '{step.id}': foreach variable must be a list, got {type(items).__name__}"
+            )
 
         if not items:
             # Empty list - skip step execution but still set output variables
@@ -1180,15 +1313,17 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             skipped_steps = context.get("_skipped_steps", [])
             skipped_steps.append(step.id)
             context["_skipped_steps"] = skipped_steps
-            
+
             # Set collect variable to empty array so downstream steps can check length
             if step.collect:
                 context[step.collect] = []
-            
+
             return
 
         if len(items) > step.max_iterations:
-            raise ValueError(f"Step '{step.id}': foreach exceeds max_iterations ({len(items)} > {step.max_iterations})")
+            raise ValueError(
+                f"Step '{step.id}': foreach exceeds max_iterations ({len(items)} > {step.max_iterations})"
+            )
 
         # Get loop variable name
         loop_var = step.as_var or "item"
@@ -1196,12 +1331,30 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         if step.parallel:
             # Parallel execution: run all iterations concurrently
             results = await self._execute_loop_parallel(
-                step, context, items, loop_var, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config, session_id
+                step,
+                context,
+                items,
+                loop_var,
+                project_path,
+                recursion_state,
+                recipe_path,
+                rate_limiter,
+                orchestrator_config,
+                session_id,
             )
         else:
             # Sequential execution: run iterations one at a time
             results = await self._execute_loop_sequential(
-                step, context, items, loop_var, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config, session_id
+                step,
+                context,
+                items,
+                loop_var,
+                project_path,
+                recursion_state,
+                recipe_path,
+                rate_limiter,
+                orchestrator_config,
+                session_id,
             )
 
         # Store results
@@ -1230,7 +1383,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             # Check for cancellation before each iteration
             if session_id and project_path:
                 self._check_coordinator_cancellation(session_id, project_path)
-                self._check_cancellation(session_id, project_path, current_step=f"{step.id}[{idx}]")
+                self._check_cancellation(
+                    session_id, project_path, current_step=f"{step.id}[{idx}]"
+                )
 
             # Set loop variable in context
             context[loop_var] = item
@@ -1239,12 +1394,20 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 # Execute based on step type (agent, recipe, or bash)
                 if step.type == "recipe":
                     result = await self._execute_recipe_step(
-                        step, context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config,
-                        parent_session_id=session_id
+                        step,
+                        context,
+                        project_path,
+                        recursion_state,
+                        recipe_path,
+                        rate_limiter,
+                        orchestrator_config,
+                        parent_session_id=session_id,
                     )
                 elif step.type == "bash":
                     # Bash steps don't count against agent recursion limits
-                    bash_result = await self._execute_bash_step(step, context, project_path)
+                    bash_result = await self._execute_bash_step(
+                        step, context, project_path
+                    )
                     # Store exit code if requested
                     if step.output_exit_code:
                         context[step.output_exit_code] = str(bash_result.exit_code)
@@ -1253,10 +1416,14 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     # Agent step - track for recursion limits
                     recursion_state.increment_steps()
                     result = await self.execute_step_with_retry(
-                        step, context, rate_limiter, orchestrator_config,
-                        session_id=session_id, project_path=project_path
+                        step,
+                        context,
+                        rate_limiter,
+                        orchestrator_config,
+                        session_id=session_id,
+                        project_path=project_path,
                     )
-                
+
                 # Process result: unwrap spawn() output and optionally parse JSON
                 result = self._process_step_result(result, step)
                 results.append(result)
@@ -1305,11 +1472,16 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Check for cancellation before starting parallel execution
         if session_id and project_path:
             self._check_coordinator_cancellation(session_id, project_path)
-            self._check_cancellation(session_id, project_path, current_step=f"{step.id}[parallel]")
+            self._check_cancellation(
+                session_id, project_path, current_step=f"{step.id}[parallel]"
+            )
 
         # For agent steps, pre-check total steps limit (all will run in parallel)
         if step.type == "agent":
-            if recursion_state.total_steps + len(items) > recursion_state.max_total_steps:
+            if (
+                recursion_state.total_steps + len(items)
+                > recursion_state.max_total_steps
+            ):
                 raise ValueError(
                     f"Parallel loop would exceed max_total_steps "
                     f"({recursion_state.total_steps} + {len(items)} > {recursion_state.max_total_steps})"
@@ -1339,12 +1511,20 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 # Execute based on step type (agent, recipe, or bash)
                 if step.type == "recipe":
                     result = await self._execute_recipe_step(
-                        step, iter_context, project_path, recursion_state, recipe_path, rate_limiter, orchestrator_config,
-                        parent_session_id=session_id
+                        step,
+                        iter_context,
+                        project_path,
+                        recursion_state,
+                        recipe_path,
+                        rate_limiter,
+                        orchestrator_config,
+                        parent_session_id=session_id,
                     )
                 elif step.type == "bash":
                     # Bash steps don't count against agent recursion limits
-                    bash_result = await self._execute_bash_step(step, iter_context, project_path)
+                    bash_result = await self._execute_bash_step(
+                        step, iter_context, project_path
+                    )
                     # Store exit code if requested (in iteration context)
                     if step.output_exit_code:
                         iter_context[step.output_exit_code] = str(bash_result.exit_code)
@@ -1352,10 +1532,14 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 else:
                     # Agent step - rate limiting handled inside execute_step_with_retry
                     result = await self.execute_step_with_retry(
-                        step, iter_context, rate_limiter, orchestrator_config,
-                        session_id=session_id, project_path=project_path
+                        step,
+                        iter_context,
+                        rate_limiter,
+                        orchestrator_config,
+                        session_id=session_id,
+                        project_path=project_path,
                     )
-                
+
                 # Process result: unwrap spawn() output and optionally parse JSON
                 return self._process_step_result(result, step)
             except SkipRemainingError:
@@ -1422,7 +1606,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 )
             sub_recipe_path = mention_resolver.resolve(recipe_path_str)
             if sub_recipe_path is None:
-                raise FileNotFoundError(f"Sub-recipe @mention not found: {recipe_path_str}")
+                raise FileNotFoundError(
+                    f"Sub-recipe @mention not found: {recipe_path_str}"
+                )
         else:
             # Resolve sub-recipe path relative to parent recipe's directory (not project_path)
             # This allows recipes to reference sibling recipes naturally
@@ -1498,7 +1684,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 raise ValueError(f"Undefined variable in foreach: {foreach}")
         return value
 
-    def _substitute_variables_recursive(self, value: Any, context: dict[str, Any]) -> Any:
+    def _substitute_variables_recursive(
+        self, value: Any, context: dict[str, Any]
+    ) -> Any:
         """
         Recursively substitute {{variable}} references in nested structures.
 
@@ -1518,9 +1706,14 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         if isinstance(value, str):
             return self.substitute_variables(value, context)
         elif isinstance(value, dict):
-            return {k: self._substitute_variables_recursive(v, context) for k, v in value.items()}
+            return {
+                k: self._substitute_variables_recursive(v, context)
+                for k, v in value.items()
+            }
         elif isinstance(value, list):
-            return [self._substitute_variables_recursive(item, context) for item in value]
+            return [
+                self._substitute_variables_recursive(item, context) for item in value
+            ]
         else:
             # Numbers, booleans, None, etc. - pass through unchanged
             return value
@@ -1578,7 +1771,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             # Handle direct references
             if var_ref not in context:
                 available = ", ".join(sorted(context.keys()))
-                raise ValueError(f"Undefined variable: {{{{{var_ref}}}}}. Available variables: {available}")
+                raise ValueError(
+                    f"Undefined variable: {{{{{var_ref}}}}}. Available variables: {available}"
+                )
 
             # Use json.dumps for dict/list to produce valid JSON, not Python repr
             value = context[var_ref]
@@ -1641,7 +1836,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # The default shell (/bin/sh) is often dash on Ubuntu which lacks these.
         try:
             process = await asyncio.create_subprocess_exec(
-                "/bin/bash", "-c", command,
+                "/bin/bash",
+                "-c",
+                command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
@@ -1669,7 +1866,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
             # Check for non-zero exit code
             if exit_code != 0:
-                error_msg = f"Step '{step.id}': command failed with exit code {exit_code}"
+                error_msg = (
+                    f"Step '{step.id}': command failed with exit code {exit_code}"
+                )
                 if stderr.strip():
                     error_msg += f"\nstderr: {stderr.strip()}"
 

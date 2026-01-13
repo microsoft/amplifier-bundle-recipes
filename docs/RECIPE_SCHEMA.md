@@ -504,6 +504,8 @@ Each step represents one unit of work in the workflow. Steps can be agent invoca
   agent: string                 # Required for agent steps - Agent name
   mode: string                  # Optional - Agent mode (if agent supports)
   prompt: string                # Required for agent steps - Prompt template
+  provider: string              # Optional - Provider ID for this step (e.g., "anthropic", "openai")
+  model: string                 # Optional - Model name or glob pattern (e.g., "claude-sonnet-4-5-*")
 
   # For recipe steps (type: "recipe"):
   recipe: string                # Required for recipe steps - Path to sub-recipe
@@ -732,6 +734,129 @@ The `foundation:zen-architect` agent supports three modes:
 - Not all agents support modes. If an agent doesn't recognize the MODE prefix, it will simply treat it as part of the instruction text.
 - Modes are defined by each agent. See agent documentation (e.g., `foundation/agents/zen-architect.md`) for supported modes and their meanings.
 - If omitted, the agent uses its default behavior.
+
+#### `provider` (optional, agent steps only)
+
+**Type:** string
+**Purpose:** Specify which LLM provider to use for this step, overriding the session's default.
+
+**How it works:**
+- The specified provider is promoted to priority 0 (highest) for this step's agent session
+- Provider must be configured in the session (via `~/.amplifier/settings.yaml` or bundle config)
+- If provider not found, a warning is logged and the default provider is used
+
+**Examples:**
+```yaml
+# Use Anthropic for this step
+- id: "analyze"
+  agent: "foundation:zen-architect"
+  provider: "anthropic"
+  prompt: "Analyze the architecture"
+
+# Use OpenAI for implementation
+- id: "implement"
+  agent: "foundation:modular-builder"
+  provider: "openai"
+  prompt: "Implement the changes"
+```
+
+**Provider matching:**
+Provider IDs are matched flexibly:
+- `"anthropic"` matches `provider-anthropic`
+- `"openai"` matches `provider-openai`
+- Full module name also works: `"provider-anthropic"`
+
+**Validation:**
+- Only valid for agent steps (`type: "agent"` or default)
+- Ignored if specified on bash or recipe steps (validation error)
+
+#### `model` (optional, agent steps only)
+
+**Type:** string (exact name or glob pattern)
+**Purpose:** Specify which model to use, with optional glob pattern matching for flexibility.
+
+**How it works:**
+1. If not a glob pattern (no `*`, `?`, or `[` characters), used as-is
+2. If a glob pattern, resolves against available models from the provider:
+   - Queries provider for available model list
+   - Filters with `fnmatch` (shell-style wildcards)
+   - Sorts matches descending (latest date/version first)
+   - Returns first match
+
+**Examples:**
+```yaml
+# Exact model name
+- id: "analyze"
+  agent: "foundation:zen-architect"
+  provider: "anthropic"
+  model: "claude-sonnet-4-5-20250514"
+  prompt: "Analyze the code"
+
+# Glob pattern - gets latest claude-sonnet-4-5-*
+- id: "implement"
+  agent: "foundation:modular-builder"
+  provider: "anthropic"
+  model: "claude-sonnet-4-5-*"
+  prompt: "Implement the changes"
+
+# Glob pattern for OpenAI
+- id: "review"
+  agent: "foundation:zen-architect"
+  provider: "openai"
+  model: "gpt-5*"
+  prompt: "Review for quality"
+```
+
+**Glob pattern syntax:**
+| Pattern | Matches |
+|---------|---------|
+| `*` | Any sequence of characters |
+| `?` | Any single character |
+| `[abc]` | Any character in the set |
+| `[!abc]` | Any character NOT in the set |
+
+**Pattern examples:**
+```yaml
+model: "claude-sonnet-*"        # Any claude-sonnet model
+model: "claude-sonnet-4-5-*"    # Any claude-sonnet-4-5 dated version
+model: "gpt-5*"                 # Any gpt-5 variant
+model: "gpt-5.?"                # gpt-5.0, gpt-5.1, gpt-5.2, etc.
+```
+
+**Resolution behavior:**
+- Pattern matches are sorted descending alphabetically
+- This means dated versions (e.g., `20250514`) sort newest-first
+- If no matches found, the pattern string is used as-is (provider will error if invalid)
+- Resolution details are logged at DEBUG level
+
+**Validation:**
+- Only valid for agent steps (`type: "agent"` or default)
+- Ignored if specified on bash or recipe steps (validation error)
+- If `model` specified without `provider`, applies to the default (highest priority) provider
+
+**Combining provider and model:**
+```yaml
+# Use specific provider with pattern-matched model
+- id: "creative-task"
+  agent: "foundation:zen-architect"
+  provider: "anthropic"
+  model: "claude-opus-*"
+  prompt: "Design an innovative architecture"
+
+# Different models for different task types
+steps:
+  - id: "quick-analysis"
+    agent: "foundation:explorer"
+    provider: "anthropic"
+    model: "claude-sonnet-*"  # Fast model for exploration
+    prompt: "Survey the codebase"
+    
+  - id: "deep-reasoning"
+    agent: "foundation:zen-architect"
+    provider: "anthropic"
+    model: "claude-opus-*"    # Powerful model for design
+    prompt: "Design the architecture based on {{analysis}}"
+```
 
 #### `prompt` (required)
 

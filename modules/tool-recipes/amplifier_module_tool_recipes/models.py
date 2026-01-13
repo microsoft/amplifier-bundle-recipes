@@ -22,7 +22,9 @@ class RecursionConfig:
         if not 1 <= self.max_depth <= 20:
             errors.append(f"recursion.max_depth must be 1-20, got {self.max_depth}")
         if not 1 <= self.max_total_steps <= 1000:
-            errors.append(f"recursion.max_total_steps must be 1-1000, got {self.max_total_steps}")
+            errors.append(
+                f"recursion.max_total_steps must be 1-1000, got {self.max_total_steps}"
+            )
         return errors
 
 
@@ -40,7 +42,9 @@ class BackoffConfig:
         """Validate backoff configuration."""
         errors = []
         if self.initial_delay_ms < 100:
-            errors.append(f"backoff.initial_delay_ms must be >= 100, got {self.initial_delay_ms}")
+            errors.append(
+                f"backoff.initial_delay_ms must be >= 100, got {self.initial_delay_ms}"
+            )
         if self.max_delay_ms < self.initial_delay_ms:
             errors.append(
                 f"backoff.max_delay_ms must be >= initial_delay_ms, "
@@ -49,7 +53,9 @@ class BackoffConfig:
         if self.multiplier < 1.0:
             errors.append(f"backoff.multiplier must be >= 1.0, got {self.multiplier}")
         if self.reset_after_success < 1:
-            errors.append(f"backoff.reset_after_success must be >= 1, got {self.reset_after_success}")
+            errors.append(
+                f"backoff.reset_after_success must be >= 1, got {self.reset_after_success}"
+            )
         return errors
 
 
@@ -70,14 +76,18 @@ class RateLimitingConfig:
         errors = []
         if self.max_concurrent_llm is not None:
             if self.max_concurrent_llm < 1:
-                errors.append(f"rate_limiting.max_concurrent_llm must be >= 1, got {self.max_concurrent_llm}")
+                errors.append(
+                    f"rate_limiting.max_concurrent_llm must be >= 1, got {self.max_concurrent_llm}"
+                )
             if self.max_concurrent_llm > 100:
                 errors.append(
                     f"rate_limiting.max_concurrent_llm unusually high ({self.max_concurrent_llm}), "
                     "consider a lower value"
                 )
         if self.min_delay_ms < 0:
-            errors.append(f"rate_limiting.min_delay_ms must be >= 0, got {self.min_delay_ms}")
+            errors.append(
+                f"rate_limiting.min_delay_ms must be >= 0, got {self.min_delay_ms}"
+            )
         if self.min_delay_ms > 60000:
             errors.append(
                 f"rate_limiting.min_delay_ms unusually high ({self.min_delay_ms}ms), "
@@ -102,7 +112,9 @@ class OrchestratorConfig:
         errors = []
         min_delay = self.config.get("min_delay_between_calls_ms", 0)
         if not isinstance(min_delay, int) or min_delay < 0:
-            errors.append(f"orchestrator.config.min_delay_between_calls_ms must be non-negative int, got {min_delay}")
+            errors.append(
+                f"orchestrator.config.min_delay_between_calls_ms must be non-negative int, got {min_delay}"
+            )
         return errors
 
 
@@ -112,7 +124,9 @@ class ApprovalConfig:
 
     required: bool = False  # Whether approval is needed to proceed
     prompt: str = ""  # Message shown to user when requesting approval
-    timeout: int = 0  # Seconds to wait for approval (0 = wait forever, which is the default)
+    timeout: int = (
+        0  # Seconds to wait for approval (0 = wait forever, which is the default)
+    )
     default: Literal["deny", "approve"] = "deny"  # What happens on timeout
 
     def validate(self) -> list[str]:
@@ -121,7 +135,9 @@ class ApprovalConfig:
         if self.timeout < 0:
             errors.append("approval.timeout must be non-negative")
         if self.default not in ("deny", "approve"):
-            errors.append(f"approval.default must be 'deny' or 'approve', got '{self.default}'")
+            errors.append(
+                f"approval.default must be 'deny' or 'approve', got '{self.default}'"
+            )
         if self.required and not self.prompt:
             errors.append("approval.prompt is required when approval.required is true")
         return errors
@@ -143,7 +159,9 @@ class Stage:
             errors.append("Stage missing required field: name")
 
         if not self.name.replace("-", "").replace("_", "").replace(" ", "").isalnum():
-            errors.append(f"Stage name must be alphanumeric with hyphens/underscores/spaces, got '{self.name}'")
+            errors.append(
+                f"Stage name must be alphanumeric with hyphens/underscores/spaces, got '{self.name}'"
+            )
 
         if not self.steps:
             errors.append(f"Stage '{self.name}': must have at least one step")
@@ -158,7 +176,9 @@ class Stage:
         step_ids = [step.id for step in self.steps]
         duplicates = [sid for sid in step_ids if step_ids.count(sid) > 1]
         if duplicates:
-            errors.append(f"Stage '{self.name}': duplicate step IDs: {', '.join(set(duplicates))}")
+            errors.append(
+                f"Stage '{self.name}': duplicate step IDs: {', '.join(set(duplicates))}"
+            )
 
         # Validate approval config if present
         if self.approval:
@@ -189,12 +209,16 @@ class Step:
     # Recipe composition fields (required when type="recipe")
     type: Literal["agent", "recipe", "bash"] = "agent"
     recipe: str | None = None  # Path to sub-recipe file
-    step_context: dict[str, Any] | None = None  # Context to pass to sub-recipe (YAML: "context")
+    step_context: dict[str, Any] | None = (
+        None  # Context to pass to sub-recipe (YAML: "context")
+    )
 
     # Bash step fields (required when type="bash")
     command: str | None = None  # Shell command to execute
     cwd: str | None = None  # Working directory (supports {{variable}} substitution)
-    env: dict[str, str] | None = None  # Environment variables (values support {{variable}})
+    env: dict[str, str] | None = (
+        None  # Environment variables (values support {{variable}})
+    )
     output_exit_code: str | None = None  # Variable name to store exit code
 
     # Common fields
@@ -216,6 +240,10 @@ class Step:
     # Per-step recursion override (for recipe steps only)
     recursion: RecursionConfig | None = None
 
+    # Provider/model selection for agent steps
+    provider: str | None = None  # Provider ID (e.g., "anthropic", "openai")
+    model: str | None = None  # Model name or glob pattern (e.g., "claude-sonnet-*")
+
     def validate(self) -> list[str]:
         """Validate step structure and constraints."""
         errors = []
@@ -233,26 +261,40 @@ class Step:
                 errors.append(f"Step '{self.id}': agent steps require 'prompt' field")
             # Agent steps cannot have recipe-specific fields
             if self.recipe:
-                errors.append(f"Step '{self.id}': agent steps cannot have 'recipe' field")
+                errors.append(
+                    f"Step '{self.id}': agent steps cannot have 'recipe' field"
+                )
             if self.step_context:
-                errors.append(f"Step '{self.id}': agent steps cannot have 'context' field")
+                errors.append(
+                    f"Step '{self.id}': agent steps cannot have 'context' field"
+                )
             # Agent steps cannot have bash-specific fields
             if self.command:
-                errors.append(f"Step '{self.id}': agent steps cannot have 'command' field")
+                errors.append(
+                    f"Step '{self.id}': agent steps cannot have 'command' field"
+                )
         elif self.type == "recipe":
             # Recipe steps require recipe path
             if not self.recipe:
                 errors.append(f"Step '{self.id}': recipe steps require 'recipe' field")
             # Recipe steps cannot have agent-specific fields
             if self.agent:
-                errors.append(f"Step '{self.id}': recipe steps cannot have 'agent' field")
+                errors.append(
+                    f"Step '{self.id}': recipe steps cannot have 'agent' field"
+                )
             if self.prompt:
-                errors.append(f"Step '{self.id}': recipe steps cannot have 'prompt' field")
+                errors.append(
+                    f"Step '{self.id}': recipe steps cannot have 'prompt' field"
+                )
             if self.mode:
-                errors.append(f"Step '{self.id}': recipe steps cannot have 'mode' field")
+                errors.append(
+                    f"Step '{self.id}': recipe steps cannot have 'mode' field"
+                )
             # Recipe steps cannot have bash-specific fields
             if self.command:
-                errors.append(f"Step '{self.id}': recipe steps cannot have 'command' field")
+                errors.append(
+                    f"Step '{self.id}': recipe steps cannot have 'command' field"
+                )
             # Validate recursion config if present
             if self.recursion:
                 errors.extend(self.recursion.validate())
@@ -261,64 +303,96 @@ class Step:
             if not self.command:
                 errors.append(f"Step '{self.id}': bash steps require 'command' field")
             elif not self.command.strip():
-                errors.append(f"Step '{self.id}': bash command cannot be empty or whitespace")
+                errors.append(
+                    f"Step '{self.id}': bash command cannot be empty or whitespace"
+                )
             # Bash steps cannot have agent-specific fields
             if self.agent:
                 errors.append(f"Step '{self.id}': bash steps cannot have 'agent' field")
             if self.prompt:
-                errors.append(f"Step '{self.id}': bash steps cannot have 'prompt' field")
+                errors.append(
+                    f"Step '{self.id}': bash steps cannot have 'prompt' field"
+                )
             if self.mode:
                 errors.append(f"Step '{self.id}': bash steps cannot have 'mode' field")
             if self.agent_config:
-                errors.append(f"Step '{self.id}': bash steps cannot have 'agent_config' field")
+                errors.append(
+                    f"Step '{self.id}': bash steps cannot have 'agent_config' field"
+                )
             # Bash steps cannot have recipe-specific fields
             if self.recipe:
-                errors.append(f"Step '{self.id}': bash steps cannot have 'recipe' field")
+                errors.append(
+                    f"Step '{self.id}': bash steps cannot have 'recipe' field"
+                )
             if self.step_context:
-                errors.append(f"Step '{self.id}': bash steps cannot have 'context' field")
+                errors.append(
+                    f"Step '{self.id}': bash steps cannot have 'context' field"
+                )
             if self.recursion:
-                errors.append(f"Step '{self.id}': bash steps cannot have 'recursion' field")
+                errors.append(
+                    f"Step '{self.id}': bash steps cannot have 'recursion' field"
+                )
             # Validate output_exit_code name
             if self.output_exit_code:
                 if not self.output_exit_code.replace("_", "").isalnum():
-                    errors.append(f"Step '{self.id}': output_exit_code must be alphanumeric with underscores")
+                    errors.append(
+                        f"Step '{self.id}': output_exit_code must be alphanumeric with underscores"
+                    )
                 if self.output_exit_code in ("recipe", "session", "step"):
-                    errors.append(f"Step '{self.id}': output_exit_code '{self.output_exit_code}' is reserved")
+                    errors.append(
+                        f"Step '{self.id}': output_exit_code '{self.output_exit_code}' is reserved"
+                    )
         else:
-            errors.append(f"Step '{self.id}': type must be 'agent', 'recipe', or 'bash', got '{self.type}'")
+            errors.append(
+                f"Step '{self.id}': type must be 'agent', 'recipe', or 'bash', got '{self.type}'"
+            )
 
         # Field constraints (common to both types)
         if self.timeout <= 0:
             errors.append(f"Step '{self.id}': timeout must be positive")
 
         if self.on_error not in ("fail", "continue", "skip_remaining"):
-            errors.append(f"Step '{self.id}': on_error must be 'fail', 'continue', or 'skip_remaining'")
+            errors.append(
+                f"Step '{self.id}': on_error must be 'fail', 'continue', or 'skip_remaining'"
+            )
 
         # Output name validation
         if self.output:
             if not self.output.replace("_", "").isalnum():
-                errors.append(f"Step '{self.id}': output name must be alphanumeric with underscores")
+                errors.append(
+                    f"Step '{self.id}': output name must be alphanumeric with underscores"
+                )
             if self.output in ("recipe", "session", "step"):
-                errors.append(f"Step '{self.id}': output name '{self.output}' is reserved")
+                errors.append(
+                    f"Step '{self.id}': output name '{self.output}' is reserved"
+                )
 
         # Retry validation
         if self.retry:
             max_attempts = self.retry.get("max_attempts", 1)
             if not isinstance(max_attempts, int) or max_attempts <= 0:
-                errors.append(f"Step '{self.id}': retry.max_attempts must be positive integer")
+                errors.append(
+                    f"Step '{self.id}': retry.max_attempts must be positive integer"
+                )
 
             backoff = self.retry.get("backoff", "exponential")
             if backoff not in ("exponential", "linear"):
-                errors.append(f"Step '{self.id}': retry.backoff must be 'exponential' or 'linear'")
+                errors.append(
+                    f"Step '{self.id}': retry.backoff must be 'exponential' or 'linear'"
+                )
 
         # Loop validation
         if self.foreach:
             if "{{" not in self.foreach:
-                errors.append(f"Step '{self.id}': foreach must contain a variable reference (e.g., '{{{{items}}}}')")
+                errors.append(
+                    f"Step '{self.id}': foreach must contain a variable reference (e.g., '{{{{items}}}}')"
+                )
             if self.as_var and not self.as_var.replace("_", "").isalnum():
                 errors.append(f"Step '{self.id}': 'as' must be a valid variable name")
             if self.collect and not self.collect.replace("_", "").isalnum():
-                errors.append(f"Step '{self.id}': 'collect' must be a valid variable name")
+                errors.append(
+                    f"Step '{self.id}': 'collect' must be a valid variable name"
+                )
             if self.max_iterations <= 0:
                 errors.append(f"Step '{self.id}': max_iterations must be positive")
 
@@ -333,6 +407,12 @@ class Step:
                     f"Step '{self.id}': parallel must be true, false, or a positive integer, "
                     f"got {self.parallel}"
                 )
+
+        # Provider/model validation (only valid for agent steps)
+        if self.provider and self.type != "agent":
+            errors.append(f"Step '{self.id}': 'provider' is only valid for agent steps")
+        if self.model and self.type != "agent":
+            errors.append(f"Step '{self.id}': 'model' is only valid for agent steps")
 
         return errors
 
@@ -360,7 +440,9 @@ class Recipe:
     context: dict[str, Any] = field(default_factory=dict)
     recursion: RecursionConfig | None = None  # Recipe-level recursion config
     rate_limiting: RateLimitingConfig | None = None  # Recipe-level rate limiting config
-    orchestrator: OrchestratorConfig | None = None  # Orchestrator config for spawned sessions
+    orchestrator: OrchestratorConfig | None = (
+        None  # Orchestrator config for spawned sessions
+    )
 
     @property
     def is_staged(self) -> bool:
@@ -393,13 +475,17 @@ class Recipe:
             step_data_copy["step_context"] = step_data_copy.pop("context")
 
         # Parse step-level recursion config if present
-        if "recursion" in step_data_copy and isinstance(step_data_copy["recursion"], dict):
+        if "recursion" in step_data_copy and isinstance(
+            step_data_copy["recursion"], dict
+        ):
             step_data_copy["recursion"] = RecursionConfig(**step_data_copy["recursion"])
 
         return Step(**step_data_copy)
 
     @classmethod
-    def _parse_approval_config(cls, approval_data: dict[str, Any] | None) -> ApprovalConfig | None:
+    def _parse_approval_config(
+        cls, approval_data: dict[str, Any] | None
+    ) -> ApprovalConfig | None:
         """Parse approval configuration from YAML data."""
         if approval_data is None:
             return None
@@ -446,7 +532,9 @@ class Recipe:
         has_steps = "steps" in data and data["steps"]
 
         if has_stages and has_steps:
-            raise ValueError("Recipe cannot have both 'stages' and 'steps' - use one or the other")
+            raise ValueError(
+                "Recipe cannot have both 'stages' and 'steps' - use one or the other"
+            )
 
         # Parse stages (Phase 3 mode)
         stages: list[Stage] = []
@@ -481,7 +569,9 @@ class Recipe:
         # Parse orchestrator config if present
         orchestrator_config = None
         if "orchestrator" in data and isinstance(data["orchestrator"], dict):
-            orchestrator_config = OrchestratorConfig(config=data["orchestrator"].get("config", {}))
+            orchestrator_config = OrchestratorConfig(
+                config=data["orchestrator"].get("config", {})
+            )
 
         # Create recipe
         recipe = cls(
@@ -522,7 +612,9 @@ class Recipe:
         if self.version:
             # Check for v prefix (not allowed)
             if self.version.startswith("v"):
-                errors.append("Recipe version must follow semver format without 'v' prefix (use '1.0.0' not 'v1.0.0')")
+                errors.append(
+                    "Recipe version must follow semver format without 'v' prefix (use '1.0.0' not 'v1.0.0')"
+                )
             # Check for pre-release or build metadata (not allowed for simplicity)
             elif "-" in self.version or "+" in self.version:
                 errors.append(
@@ -531,9 +623,13 @@ class Recipe:
             else:
                 parts = self.version.split(".")
                 if len(parts) != 3:
-                    errors.append("Recipe version must follow semver format (MAJOR.MINOR.PATCH)")
+                    errors.append(
+                        "Recipe version must follow semver format (MAJOR.MINOR.PATCH)"
+                    )
                 elif not all(part.isdigit() for part in parts):
-                    errors.append("Recipe version parts must be numeric (e.g., '1.0.0' not '1.a.0')")
+                    errors.append(
+                        "Recipe version parts must be numeric (e.g., '1.0.0' not '1.a.0')"
+                    )
 
         # Must have either steps or stages (but not both - checked during parsing)
         if not self.steps and not self.stages:
@@ -579,7 +675,9 @@ class Recipe:
         for step in self.steps:
             for dep_id in step.depends_on:
                 if dep_id not in step_id_set:
-                    errors.append(f"Step '{step.id}': depends_on references unknown step '{dep_id}'")
+                    errors.append(
+                        f"Step '{step.id}': depends_on references unknown step '{dep_id}'"
+                    )
 
         # Check for circular dependencies (simple check)
         for step in self.steps:
@@ -610,7 +708,9 @@ class Recipe:
 
         step_duplicates = [sid for sid in all_step_ids if all_step_ids.count(sid) > 1]
         if step_duplicates:
-            errors.append(f"Duplicate step IDs across stages: {', '.join(set(step_duplicates))}")
+            errors.append(
+                f"Duplicate step IDs across stages: {', '.join(set(step_duplicates))}"
+            )
 
         # Validate depends_on references across all stages
         step_id_set = set(all_step_ids)
@@ -626,7 +726,9 @@ class Recipe:
         for stage in self.stages:
             for step in stage.steps:
                 if step.id in step.depends_on:
-                    errors.append(f"Stage '{stage.name}', Step '{step.id}': cannot depend on itself")
+                    errors.append(
+                        f"Stage '{stage.name}', Step '{step.id}': cannot depend on itself"
+                    )
 
         return errors
 
