@@ -1,8 +1,8 @@
 name: "code-review-comprehensive"
-description: "Multi-stage code review with conditional execution based on issue severity"
-version: "1.1.0"
+description: "Multi-stage code review with conditional execution and model selection for cost/capability optimization"
+version: "1.2.0"
 author: "Amplifier Recipes Collection"
-tags: ["code-review", "quality", "analysis", "python", "conditional"]
+tags: ["code-review", "quality", "analysis", "python", "conditional", "model-selection"]
 
 # This recipe performs comprehensive code review with smart routing:
 # 1. Analyze code structure and patterns
@@ -17,6 +17,14 @@ tags: ["code-review", "quality", "analysis", "python", "conditional"]
 # - Low/medium issues → suggestions only (no deep validation)
 # - Critical/high issues → full review with validation
 #
+# MODEL SELECTION STRATEGY:
+# This recipe demonstrates cost/capability optimization by matching models to tasks:
+# - claude-haiku: Fast, cheap - for simple classification (assess-severity, quick-approval)
+# - claude-sonnet-*: Balanced - for thorough analysis (analyze-structure, identify-issues)
+# - claude-opus-*: Powerful - for strategic design (suggest-improvements, validate-suggestions)
+#
+# Glob patterns (e.g., claude-sonnet-*) auto-select the latest model version.
+#
 # Typical runtime: 2-10 minutes (depends on code quality)
 # Required agents: zen-architect
 #
@@ -27,9 +35,13 @@ context:
   file_path: ""  # Required: path to Python file to review
 
 steps:
+  # Step 1: Analyze structure
+  # Model: sonnet - thorough analysis needs good reasoning
   - id: "analyze-structure"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
+    provider: "anthropic"
+    model: "claude-sonnet-*"
     prompt: |
       Analyze the code structure in {{file_path}}:
 
@@ -42,9 +54,13 @@ steps:
     output: "structure_analysis"
     timeout: 600
 
+  # Step 2: Identify issues
+  # Model: sonnet - thorough issue detection, balanced capability
   - id: "identify-issues"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
+    provider: "anthropic"
+    model: "claude-sonnet-*"
     prompt: |
       Based on this analysis: {{structure_analysis}}
 
@@ -68,9 +84,13 @@ steps:
     output: "identified_issues"
     timeout: 600
 
+  # Step 3: Classify severity
+  # Model: haiku - simple one-word classification, no reasoning needed
   - id: "assess-severity"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
+    provider: "anthropic"
+    model: "claude-haiku"
     prompt: |
       Based on the identified issues: {{identified_issues}}
 
@@ -86,11 +106,15 @@ steps:
       Consider the highest severity issue found. If no issues were found,
       respond with: none
     output: "severity"
-    timeout: 120
+    timeout: 60
 
+  # Step 4: Design improvements (when issues found)
+  # Model: opus - strategic design decisions need the best reasoning
   - id: "suggest-improvements"
     agent: "foundation:zen-architect"
     mode: "ARCHITECT"
+    provider: "anthropic"
+    model: "claude-opus-*"
     condition: "{{severity}} != 'none'"
     prompt: |
       Given this analysis: {{structure_analysis}}
@@ -114,9 +138,13 @@ steps:
     output: "improvement_suggestions"
     timeout: 600
 
+  # Step 5: Validate critical suggestions
+  # Model: opus - critical/high severity needs careful validation
   - id: "validate-suggestions"
     agent: "foundation:zen-architect"
     mode: "REVIEW"
+    provider: "anthropic"
+    model: "claude-opus-*"
     condition: "{{severity}} == 'critical' or {{severity}} == 'high'"
     prompt: |
       Review these improvement suggestions: {{improvement_suggestions}}
@@ -144,9 +172,13 @@ steps:
     output: "validated_suggestions"
     timeout: 300
 
+  # Step 6: Quick approval (for clean code)
+  # Model: haiku - simple summary, no complex reasoning needed
   - id: "quick-approval"
     agent: "foundation:zen-architect"
     mode: "REVIEW"
+    provider: "anthropic"
+    model: "claude-haiku"
     condition: "{{severity}} == 'none'"
     prompt: |
       Based on this analysis: {{structure_analysis}}
@@ -162,7 +194,21 @@ steps:
 
       Keep the response concise - this is the fast-track approval path.
     output: "approval_summary"
-    timeout: 120
+    timeout: 60
+
+# MODEL SELECTION SUMMARY:
+#
+# Step                  | Model      | Why
+# --------------------- | ---------- | ------------------------------------------------
+# analyze-structure     | sonnet-*   | Thorough analysis, balanced speed/capability
+# identify-issues       | sonnet-*   | Detailed issue detection, good reasoning
+# assess-severity       | haiku      | Simple classification, one-word answer
+# suggest-improvements  | opus-*     | Strategic design needs best reasoning
+# validate-suggestions  | opus-*     | Critical validation needs best reasoning
+# quick-approval        | haiku      | Brief summary, no complex reasoning
+#
+# Cost optimization: haiku steps are ~10x cheaper than opus
+# Capability matching: opus reserved for strategic/critical decisions
 
 # Example output structure depends on severity:
 #
