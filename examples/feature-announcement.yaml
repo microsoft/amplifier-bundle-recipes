@@ -70,10 +70,15 @@
 #     amplifier tool invoke recipes operation=execute \
 #       recipe_path=feature-announcement.yaml \
 #       context='{"user_description": "Added new caching layer"}'
+#
+# VERSION 2.1.0 CHANGES:
+# - Added automatic title generation for Teams/Slack posts
+# - Output format: Title on line 1, separator, body starting line 5
+# - Title format: [TYPE] description (impact) - optimized for 60-80 chars
 
 name: "feature-announcement"
 description: "Generate human-friendly feature announcements from Amplifier session work"
-version: "2.0.0"
+version: "2.1.0"
 author: "Salil Das (https://github.com/sadlilas)"
 tags: ["announcement", "documentation", "communication"]
 
@@ -191,12 +196,53 @@ steps:
     output: "change_analysis"
     timeout: 600
 
-  # Step 2: Generate the polished announcement
+  # Step 2: Generate the polished announcement with title
   - id: "generate-announcement"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
     prompt: |
       You are writing a feature announcement for the Amplifier team.
+      You will generate TWO outputs: a TITLE and a BODY.
+      
+      ## PART 1: TITLE GENERATION
+      
+      Create a scannable title for Teams/Slack posts.
+      
+      **Format:** [TYPE] short description (impact or benefit)
+      
+      **Type Prefix Mapping (from analysis):**
+      The analysis contains a CHANGE TYPE field. Extract it from the analysis below.
+      
+      Default mapping:
+      - "New Feature" → [FEATURE]
+      - "Bug Fix" → [FIX]
+      - "Enhancement" → [ENHANCEMENT]
+      - "Security Fix" or security-related → [SECURITY FIX]
+      - "Refactor" → [ENHANCEMENT] (if user benefit) or [FIX] (if it fixes issue)
+      - "Infrastructure" → [ENHANCEMENT] or [FIX]
+      - "Documentation" → [DOCS]
+      
+      You may override this mapping if the actual impact differs from the category.
+      For example: a refactor that prevents DoS could be [FEATURE] or [SECURITY FIX].
+      
+      **Title Constraints:**
+      - Length: 60-80 characters (absolute max: 100)
+      - Structure: [TYPE] description (benefit/impact)
+      - Tone: Conversational, precise
+      - Focus: What + why it matters
+      
+      **Good Title Examples:**
+      ✅ [FEATURE] Smart git status filtering (prevents 200k token bloat)
+      ✅ [FIX] Session resume with bundle drift (no more silent failures)
+      ✅ [SECURITY FIX] Git status DoS prevention (caps token usage at 1k)
+      ✅ [ENHANCEMENT] Recipe error messages (shows exact step that failed)
+      
+      **Bad Title Examples:**
+      ❌ [FEATURE] We added smart filtering to git status for better token management (too long, says "we added")
+      ❌ Git status filtering feature (no type prefix, no impact)
+      ❌ [FEATURE] New feature for git (too vague)
+      
+      ## PART 2: BODY GENERATION
       
       ## Context
       
@@ -229,16 +275,15 @@ steps:
       - Hook: What users can now do
       - Bullets: Capabilities, not implementation
       
-      ## OUTPUT FORMAT (PLAIN TEXT ONLY)
+      ## OUTPUT FORMAT
       
-      CRITICAL: Output must be PLAIN TEXT. No markdown formatting.
-      - Do NOT use ** for bold
-      - Do NOT use # for headers
-      - Do NOT use ` for code
-      - Do NOT use - for bullets (use • or plain dashes with spaces)
+      You MUST output in this EXACT format:
       
-      EXACT STRUCTURE TO FOLLOW:
+      TITLE: [TYPE] your title here (with impact)
       
+      ---
+      
+      [body content here]
       [One line: hook - the problem solved or benefit, phrased conversationally]
       
       What changed:
@@ -255,7 +300,19 @@ steps:
       
       ---
       
+      CRITICAL: Body content must be PLAIN TEXT. No markdown formatting.
+      - Do NOT use ** for bold
+      - Do NOT use # for headers
+      - Do NOT use ` for code
+      - Use • for bullets
+      
+      ---
+      
       EXAMPLE FOR A TECHNICAL CHANGE:
+      
+      TITLE: [FIX] Session resume with bundle drift (no more silent failures)
+      
+      ---
       
       Session resume no longer fails silently when the bundle config has changed
       
@@ -273,25 +330,8 @@ steps:
       
       ---
       
-      EXAMPLE FOR A NON-TECHNICAL CHANGE:
-      
-      Tired of rewriting the same feature announcement for different audiences?
-      
-      What changed:
-      • New recipe analyzes your session or git history and writes an announcement
-      • Works for execs, PMs, and devs - layered so each reads what they need
-      • Plain text output pastes cleanly into Teams
-      
-      Try it: From any session, say "run the feature-announcement recipe"
-      
-      More info:
-      • Repo: github.com/user/amplifier-bundle-feature-announcements
-      • Recipe: examples/feature-announcement.yaml
-      
-      ---
-      
-      Now generate the announcement. Plain text only. Be concise and human.
-    output: "announcement_content"
+      Now generate the announcement with title. Plain text only. Be concise and human.
+    output: "announcement_with_title"
     timeout: 600
 
   # Step 3: Save the announcement to a file
@@ -299,19 +339,27 @@ steps:
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
     prompt: |
-      Save the following announcement to the file: {{output_file}}
+      Save the following announcement (with title) to the file: {{output_file}}
       
-      {{announcement_content}}
+      {{announcement_with_title}}
+      
+      The content includes:
+      - Line 1: TITLE: [TYPE] ...
+      - Line 2: (blank)
+      - Line 3: --- (separator)
+      - Line 4: (blank)
+      - Line 5+: Body content
       
       Write this content to the file exactly as provided (plain text, no modifications).
       
       Then confirm:
       1. The full path where the file was saved
-      2. That it's ready to copy-paste to Teams
+      2. The title that was generated
+      3. That both title and body are ready to copy-paste to Teams
     output: "save_result"
     timeout: 120
 
 # Expected outputs:
 #   - change_analysis: Structured analysis of what changed
-#   - announcement_content: The plain text announcement
+#   - announcement_with_title: The plain text announcement with title
 #   - save_result: Confirmation of file save
