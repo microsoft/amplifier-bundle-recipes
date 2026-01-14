@@ -32,6 +32,7 @@ amplifier tool invoke recipes operation=execute recipe_path=<recipe.yaml> contex
 | [dependency-upgrade-staged](#dependency-upgrade-staged) | DevOps | 5 stages | Approval gates | zen-architect, integration-specialist |
 | [multi-file-analysis](#multi-file-analysis) | Analysis | 2 | Parallel foreach | zen-architect |
 | [parallel-analysis](#parallel-analysis) | Analysis | 2 | Multi-perspective | zen-architect |
+| [multi-level-python-code-analysis](#multi-level-python-code-analysis) | Analysis | 15 | Multi-level deep dive | explorer, bug-hunter, zen-architect |
 | [repo-activity-analysis](#repo-activity-analysis) | GitHub | 6 | Bash + agent hybrid | zen-architect |
 | [multi-repo-activity-report](#multi-repo-activity-report) | GitHub | 3 | Recipe invocation | zen-architect |
 | [feature-announcement](#feature-announcement) | Communication | 3 | Human-first output | zen-architect |
@@ -466,6 +467,77 @@ CLI: amplifier tool invoke recipes operation=execute \
 - Synthesis of competing concerns
 
 ---
+
+---
+
+### Multi-Level Python Code Analysis
+
+**File:** `examples/multi-level-python-code-analysis.yaml`
+
+Systematic Python codebase analysis at multiple granularities (repo → tree → file) using multiple perspectives (hypothesis-driven, exploratory, architectural).
+
+**Use Cases:**
+- Dead code detection after refactoring
+- Retcon verification (e.g., removing deprecated features)
+- API migration audits
+- Security pattern analysis
+- Technical debt assessment
+
+**Workflow:**
+```
+Phase 0: Repository Context (1 step)
+  → Establish baseline understanding
+
+Phase 1: Repository Level (3 steps)
+  → Hypothesis-driven dead code detection
+  → Exploratory pattern matching
+  → Differential analysis
+
+Phase 2: Directory Tree Level (4 steps)
+  → Identify and prioritize trees
+  → Per-tree hypothesis testing
+  → Per-tree exploratory analysis
+  → Tree-level differential analysis
+
+Phase 3: File Level (4 steps)
+  → Identify high-risk files
+  → Hypothesis-based reachability testing
+  → Detailed file inspection
+  → Action plan generation
+
+Phase 4: Synthesis (3 steps)
+  → Aggregate findings
+  → Generate comprehensive report
+  → Create executable remediation scripts
+```
+
+**Example Usage:**
+```
+In session: "run multi-level-python-code-analysis on amplifier-core to find dead code"
+
+CLI:
+amplifier tool invoke recipes operation=execute \
+  recipe_path=multi-level-python-code-analysis.yaml \
+  context='{"repo_path": "/path/to/repo", "analysis_ask": "Find dead code after API migration", "search_patterns": ["old_api", "deprecated"]}'
+```
+
+**Key Learnings:**
+- Multi-level analysis (repo → tree → file)
+- Multi-perspective validation (3 agents with different approaches)
+- Hypothesis-driven dead code detection
+- Differential analysis (grep vs import tracing)
+- Comprehensive actionable output (scripts, checklists, reports)
+- Python-specific entry point analysis (main.py, __init__.py, pytest)
+
+**Output Artifacts:**
+- `MULTI_LEVEL_CODE_ANALYSIS_REPORT.md` - Comprehensive findings
+- `fix_critical_bugs.sh` - Executable remediation script
+- `delete_dead_code.sh` - Safe deletion script
+- `verify_removal.sh` - Post-deletion verification
+- Various JSON reports for programmatic access
+
+**Note:** This recipe is Python-specific. For other languages, customize the entry point patterns in the recipe prompts.
+
 
 ## GitHub Examples
 

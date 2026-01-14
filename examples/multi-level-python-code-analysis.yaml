@@ -1,0 +1,725 @@
+---
+name: multi-level-python-code-analysis
+version: 1.0.0
+description: |
+  Multi-level, multi-perspective systematic codebase analysis recipe.
+  Analyzes code at multiple granularities (repo → tree → dir → file) using
+  multiple perspectives (hypothesis-driven, exploratory, architectural, differential)
+  to catch both architectural patterns and specific code issues.
+  
+  Uses only foundation agents: bug-hunter (hypothesis testing), explorer (pattern search),
+  and zen-architect (architectural analysis). No LSP dependencies required.
+  
+  Use cases: dead code detection, retcon verification, API migration audits,
+  security pattern analysis, dependency tracking, etc.
+
+context:
+  # Required: Path to repository to analyze
+  repo_path: ""
+  
+  # Required: The analysis question/task
+  analysis_ask: ""
+  
+  # Optional: Specific search patterns/terms (e.g., ["profile", "collection"])
+  search_patterns: []
+  
+  # Optional: File extensions to focus on (e.g., [".py", ".ts"])
+  file_extensions: []
+  
+  # Optional: Directories to exclude
+  exclude_dirs: ["node_modules", ".venv", "__pycache__", ".git", "dist", "build"]
+  
+  # Optional: Enable architectural analysis (adds zen-architect perspective)
+  use_architectural_analysis: true
+
+steps:
+  # ==========================================================================
+  # PHASE 0: Repository Context & Setup
+  # ==========================================================================
+  
+  - id: repo-context
+    agent: foundation:explorer
+    prompt: |
+      ## Task: Establish Repository Context
+      
+      Analyze the repository structure at: {{repo_path}}
+      
+      Provide:
+      1. **Repository Overview**:
+         - Primary language(s)
+         - Project type (library, CLI tool, web app, etc.)
+         - Approximate size (file count, LOC if available)
+      
+      2. **Major Directory Trees**:
+         - List top-level directories with their purposes
+         - Identify entry points (main files, __init__.py, index files)
+      
+      3. **Technology Stack**:
+         - Frameworks/libraries in use
+         - Build/dependency files present
+      
+      4. **Analysis Scope Assessment**:
+         - Given search patterns: {{search_patterns}}
+         - Estimate likely areas where patterns might appear
+         - Flag any special considerations (generated code, vendor dirs, etc.)
+      
+      Output structured findings for downstream analysis.
+    
+  # ==========================================================================
+  # PHASE 1: Whole Repository Level Analysis
+  # ==========================================================================
+  
+  - id: repo-hypothesis-analysis
+    agent: foundation:bug-hunter
+    prompt: |
+      ## Task: Repository-Level Hypothesis-Driven Dead Code Detection
+      
+      **Context**: {{analysis_ask}}
+      
+      **Repository**: {{repo_path}}
+      **Search Patterns**: {{search_patterns}}
+      
+      ### Strategy: Hypothesis-Driven Investigation
+      
+      **Hypothesis**: Code matching search patterns may be dead/orphaned after refactoring.
+      
+      1. **Find Entry Points**:
+         - Identify main entry points (main.py, __main__, CLI entry, API routes, etc.)
+         - List test entry points (test_*.py, *_test.py)
+         - Note: These are the roots of "reachable" code
+      
+      2. **Trace Pattern Usage**:
+         - Use grep to find all pattern occurrences
+         - For each occurrence, read the surrounding code context
+         - Test hypothesis: Can you trace a path from entry point to this code?
+         - Methods: Follow imports backwards, check if in test files, look for decorators/registrations
+      
+      3. **Dead Code Indicators**:
+         - Pattern appears but no imports found anywhere
+         - Function/class defined but never imported
+         - In a module that's not imported by any entry point
+         - Only appears in comments/docs/old migration code
+      
+      4. **Categorize Findings**:
+         - LIKELY_DEAD: Strong evidence of unreachability
+         - POSSIBLY_DEAD: Some evidence but unclear
+         - LIKELY_ACTIVE: Evidence of usage found
+         - UNCLEAR: Needs deeper investigation
+      
+      **Output Format**:
+      ```json
+      {
+        "likely_dead": [...],
+        "possibly_dead": [...],
+        "likely_active": [...],
+        "unclear": [...],
+        "entry_points_found": [...],
+        "hypothesis_confidence": "...",
+        "summary": "..."
+      }
+      ```
+  
+  - id: repo-exploratory-analysis
+    agent: foundation:explorer
+    prompt: |
+      ## Task: Repository-Level Exploratory Analysis
+      
+      **Context**: {{analysis_ask}}
+      
+      **Repository**: {{repo_path}}
+      **Search Patterns**: {{search_patterns}}
+      **Repo Overview**: {{steps.repo-context.result}}
+      
+      ### Strategy: Comprehensive Pattern Matching
+      
+      1. **Text Search**:
+         - Use grep to find all occurrences of search patterns
+         - Search in: code, comments, docstrings, config files, docs
+         - Categorize by context: FUNCTION_NAME, VARIABLE, COMMENT, STRING, IMPORT, CONFIG
+      
+      2. **Structural Analysis**:
+         - Identify files/directories named with search patterns
+         - Find test files referencing patterns
+         - Locate configuration/manifest entries
+      
+      3. **Documentation Scan**:
+         - Search README, CHANGELOG, docs/ for pattern mentions
+         - Find TODO/FIXME comments related to patterns
+      
+      4. **Hidden References**:
+         - String literals that might be dynamic references
+         - Environment variables or config keys
+         - API endpoints or route definitions
+      
+      **Output Format**:
+      ```json
+      {
+        "code_references": [...],
+        "comment_references": [...],
+        "documentation_references": [...],
+        "config_references": [...],
+        "test_references": [...],
+        "hidden_references": [...],
+        "file_names": [...],
+        "summary": "..."
+      }
+      ```
+  
+  - id: repo-differential-analysis
+    agent: foundation:bug-hunter
+    prompt: |
+      ## Task: Repository-Level Differential Analysis
+      
+      **Context**: {{analysis_ask}}
+      
+      **Repository**: {{repo_path}}
+      
+      ### Inputs from Previous Steps:
+      - **Hypothesis Analysis**: {{steps.repo-hypothesis-analysis.result}}
+      - **Exploratory Analysis**: {{steps.repo-exploratory-analysis.result}}
+      
+      ### Strategy: Find Discrepancies & Validate Hypotheses
+      
+      1. **Dead Code Candidates**:
+         - Compare: What explorer found vs. what hypothesis analysis found as likely dead
+         - Cross-validate: References found by grep that hypothesis marked as unreachable
+         - Calculate: total_found - likely_active_count = dead_candidates
+         - Validate by checking if files importing these exist and are used
+      
+      2. **Stale Documentation**:
+         - Documentation mentions that don't correspond to actual code
+         - Comments referencing removed/renamed symbols
+         - README/CHANGELOG entries for removed features
+      
+      3. **Phantom Imports**:
+         - Import statements for modules/functions that don't exist
+         - Try to read imported files to verify they exist
+         - Check for circular dependency patterns
+      
+      4. **Configuration Drift**:
+         - Config entries for non-existent code
+         - Feature flags for removed features
+         - Environment variables no longer used
+      
+      5. **Test Coverage Gaps**:
+         - Tests for non-existent code (waste)
+         - Tests importing modules that don't exist
+         - Code without tests (if relevant to analysis_ask)
+      
+      **Output Format**:
+      ```json
+      {
+        "dead_code_files": [...],
+        "stale_documentation": [...],
+        "phantom_imports": [...],
+        "config_drift": [...],
+        "test_anomalies": [...],
+        "confidence_scores": {...},
+        "summary": "..."
+      }
+      ```
+  
+  # ==========================================================================
+  # PHASE 2: Directory Tree Level Analysis
+  # ==========================================================================
+  
+  - id: identify-trees
+    agent: foundation:explorer
+    prompt: |
+      ## Task: Identify Major Directory Trees for Deep Dive
+      
+      **Repository**: {{repo_path}}
+      **Repo Context**: {{steps.repo-context.result}}
+      **Repo-Level Findings**: 
+      - Hypothesis: {{steps.repo-hypothesis-analysis.result}}
+      - Explorer: {{steps.repo-exploratory-analysis.result}}
+      - Differential: {{steps.repo-differential-analysis.result}}
+      
+      ### Strategy: Prioritize Analysis Targets
+      
+      1. **Identify Major Trees**:
+         - List top-level directories that contain significant code
+         - Exclude: {{exclude_dirs}}
+      
+      2. **Prioritize for Analysis**:
+         - HIGH: Trees with most pattern matches from Phase 1
+         - MEDIUM: Trees mentioned in dead code candidates
+         - LOW: Trees with no initial findings
+      
+      3. **Select Top Trees**:
+         - Choose top 5-8 trees for detailed analysis
+         - Balance between coverage and execution time
+      
+      **Output Format**:
+      ```json
+      {
+        "high_priority_trees": ["path/", "path2/", ...],
+        "medium_priority_trees": [...],
+        "low_priority_trees": [...],
+        "rationale": {...}
+      }
+      ```
+  
+  - id: tree-architectural-analysis
+    agent: foundation:zen-architect
+    condition: "{{use_architectural_analysis}}"
+    prompt: |
+      ## Task: Directory Tree Architectural Analysis
+      
+      **Context**: {{analysis_ask}}
+      
+      **Trees to Analyze**: {{steps.identify-trees.result.high_priority_trees}}
+      
+      **Phase 1 Context**: {{steps.repo-differential-analysis.result}}
+      
+      ### Strategy: Architectural Pattern Analysis per Tree
+      
+      For each high-priority tree:
+      
+      1. **Module Purpose & Boundaries**:
+         - What is this tree's architectural purpose?
+         - Read __init__.py or main files to understand exports
+         - Identify public API vs internal implementation
+      
+      2. **Dependency Analysis**:
+         - What does this tree import from other trees?
+         - Use grep to find import statements
+         - Map cross-tree dependencies related to search patterns
+      
+      3. **Coupling Assessment**:
+         - Is this tree tightly coupled to pattern-related code?
+         - Could this tree be decoupled or removed?
+         - Are there circular dependencies?
+      
+      4. **Architectural Smell Detection**:
+         - Dead directories (no __init__.py, no imports)
+         - Orphaned modules (defined but never imported)
+         - Pattern-related code mixed with unrelated code
+      
+      5. **Removal Impact**:
+         - What would break if this tree were removed?
+         - Search for imports of this tree across codebase
+         - Estimate refactoring complexity
+      
+      **Output per Tree**: Architectural assessment, coupling analysis, removal feasibility
+  
+  - id: tree-exploratory-analysis
+    agent: foundation:explorer
+    prompt: |
+      ## Task: Directory Tree Exploratory Analysis
+      
+      **Context**: {{analysis_ask}}
+      
+      **Trees to Analyze**: 
+      - High Priority: {{steps.identify-trees.result.high_priority_trees}}
+      - Medium Priority: {{steps.identify-trees.result.medium_priority_trees}}
+      
+      **Phase 1 Context**: {{steps.repo-exploratory-analysis.result}}
+      
+      ### Strategy: Detailed Pattern Analysis per Tree
+      
+      For each tree (prioritize high, then medium):
+      
+      1. **Pattern Density**:
+         - Count pattern occurrences per file
+         - Identify hot-spot files with many matches
+      
+      2. **Code Quality Indicators**:
+         - Look for TODO/FIXME related to patterns
+         - Find commented-out code
+         - Identify deprecated decorators/markers
+      
+      3. **File-Level Suspects**:
+         - List top 10 most suspicious files per tree
+         - Suspicious = high pattern count + quality indicators
+      
+      4. **Tree Cohesion**:
+         - Is pattern usage consistent across tree?
+         - Mixed usage patterns (old + new) = incomplete migration
+      
+      **Output per Tree**: Hot-spot files, suspicion rankings, migration status
+  
+  - id: tree-differential-analysis
+    agent: foundation:bug-hunter
+    prompt: |
+      ## Task: Directory Tree Differential Analysis
+      
+      **Inputs**:
+      - Tree Architecture: {{steps.tree-architectural-analysis.result}}
+      - Tree Explorer: {{steps.tree-exploratory-analysis.result}}
+      - Repo Differential: {{steps.repo-differential-analysis.result}}
+      
+      ### Strategy: Aggregate Tree-Level Insights & Test Hypotheses
+      
+      For each analyzed tree:
+      
+      1. **Dead Code in Tree**:
+         - Files/modules marked as orphaned by architectural analysis
+         - High grep match count but no imports found
+         - Test: Try to find any imports of these files in the codebase
+      
+      2. **Inconsistent Migration**:
+         - Trees partially cleaned vs. not cleaned
+         - Files that mix old patterns with new code
+         - Test: Are old and new patterns in the same files?
+      
+      3. **Risk Assessment**:
+         - What's the risk of breaking things if we remove suspects?
+         - Validate: Check test files, check for dynamic imports (getattr, __import__)
+         - Are there cross-tree dependencies we need to update?
+      
+      4. **Action Priority**:
+         - Rank trees by ease of cleanup (low risk first)
+         - Consider: removal impact, coupling, test coverage
+      
+      **Output**: Risk-ranked tree cleanup plan with confidence levels
+  
+  # ==========================================================================
+  # PHASE 3: File Level Deep Dive
+  # ==========================================================================
+  
+  - id: identify-suspect-files
+    agent: foundation:explorer
+    prompt: |
+      ## Task: Identify Specific Files for Deep Analysis
+      
+      **Inputs**:
+      - Tree Analysis: {{steps.tree-differential-analysis.result}}
+      - Explorer Findings: {{steps.tree-exploratory-analysis.result}}
+      
+      ### Strategy: Select High-Value Targets
+      
+      1. **Aggregate Suspect Files**:
+         - Collect all hot-spot files from tree analysis
+         - Add files from repo differential dead code list
+      
+      2. **Priority Scoring**:
+         - Score each file by:
+           - Pattern match count (higher = more investigation needed)
+           - Dead code likelihood (explorer found, LSP didn't)
+           - File size (smaller = easier to analyze)
+           - Recent changes (git blame if available)
+      
+      3. **Select Top Files**:
+         - Choose top 15-20 files for individual analysis
+         - Ensure diversity (different trees, different file types)
+      
+      **Output Format**:
+      ```json
+      {
+        "critical_files": [...],  // Must review
+        "high_priority_files": [...],  // Should review
+        "medium_priority_files": [...],  // Time permitting
+        "scoring_rationale": {...}
+      }
+      ```
+  
+  - id: file-reachability-analysis
+    agent: foundation:bug-hunter
+    prompt: |
+      ## Task: Per-File Reachability Analysis (Hypothesis-Driven)
+      
+      **Context**: {{analysis_ask}}
+      
+      **Files to Analyze**: {{steps.identify-suspect-files.result.critical_files}}
+      
+      ### Strategy: Test Reachability Hypotheses
+      
+      For each critical file:
+      
+      1. **Symbol Inventory**:
+         - Read the file and list all definitions (functions, classes, variables)
+         - Note public vs private (underscore-prefixed) symbols
+      
+      2. **Reference Search**:
+         - For each symbol, use grep to search for references across codebase
+         - Count references: 0 = definitely dead, 1-2 = probably dead, 3+ = likely used
+         - Test hypothesis: Is this file imported anywhere?
+      
+      3. **Reachability Test**:
+         - Search for "import <filename>" or "from <module> import"
+         - Check if file is in __init__.py exports
+         - Look for indirect references (getattr, __import__, importlib)
+      
+      4. **Removal Impact Simulation**:
+         - What would break if we deleted this file?
+         - Grep for all imports of this file
+         - Check test files for imports
+      
+      5. **False Positive Detection**:
+         - Check for dynamic usage (reflection, plugin systems)
+         - Look for entry point registrations (CLI commands, decorators)
+         - Scan setup.py/pyproject.toml for entry points
+      
+      **Output per File**: Symbol reachability map, reference counts, safe-to-delete assessment
+  
+  - id: file-detailed-analysis
+    agent: foundation:explorer
+    prompt: |
+      ## Task: Detailed File Content Analysis
+      
+      **Context**: {{analysis_ask}}
+      
+      **Files to Analyze**:
+      - Critical: {{steps.identify-suspect-files.result.critical_files}}
+      - High Priority: {{steps.identify-suspect-files.result.high_priority_files}}
+      
+      **File Reachability Context**: {{steps.file-reachability-analysis.result}}
+      
+      ### Strategy: Read and Analyze File Contents
+      
+      For each file:
+      
+      1. **Read Full File**:
+         - Read the complete file content
+         - Understand the file's purpose
+         - Note file structure (imports, definitions, main logic)
+      
+      2. **Pattern Context Analysis**:
+         - For each pattern match, understand the context:
+           - Is it in active code path?
+           - Is it commented out?
+           - Is it in a string/docstring?
+           - Is it deprecated but still functional?
+      
+      3. **Code Quality Assessment**:
+         - Identify obvious dead code (unreachable, commented out)
+         - Find TODOs/FIXMEs related to patterns
+         - Check for half-finished refactoring
+         - Look for deprecation warnings or comments
+      
+      4. **Specific Recommendations**:
+         - What exactly needs to be done to this file?
+         - Safe to delete entirely? Or needs surgical edits?
+         - Dependencies that need updating?
+         - Cross-reference with reachability findings
+      
+      **Output per File**: Specific action items with confidence levels
+  
+  - id: file-action-plan
+    agent: foundation:bug-hunter
+    prompt: |
+      ## Task: Generate File-Level Action Plan
+      
+      **Inputs**:
+      - File Reachability: {{steps.file-reachability-analysis.result}}
+      - File Detailed: {{steps.file-detailed-analysis.result}}
+      
+      ### Strategy: Create Executable Action Plan with Validation
+      
+      For each analyzed file, generate:
+      
+      1. **Action Type**:
+         - DELETE_FILE: Safe to delete entirely (0 references found)
+         - EDIT_FILE: Needs specific edits (partial dead code)
+         - INVESTIGATE_FURTHER: Unclear, needs human review (dynamic usage suspected)
+         - NO_ACTION: False positive, actually needed (active references found)
+      
+      2. **Confidence Level**:
+         - HIGH: Strong evidence, low risk (0 grep matches for imports)
+         - MEDIUM: Good evidence, moderate risk (few matches, unclear context)
+         - LOW: Weak evidence, high risk (possible dynamic usage)
+      
+      3. **Specific Instructions**:
+         - For DELETE: List dependent files that need import updates (from grep results)
+         - For EDIT: Line numbers and specific changes needed
+         - For INVESTIGATE: What's unclear and what to check (entry points, dynamic imports)
+      
+      4. **Risk Mitigation**:
+         - What tests should be run after changes?
+         - What manual testing is recommended?
+         - How to verify no dynamic imports were missed?
+      
+      **Output**: Prioritized, actionable file-level plan with validation steps
+  
+  # ==========================================================================
+  # PHASE 4: Synthesis & Final Report
+  # ==========================================================================
+  
+  - id: aggregate-findings
+    agent: foundation:explorer
+    prompt: |
+      ## Task: Aggregate All Analysis Findings
+      
+      **Context**: {{analysis_ask}}
+      
+      **All Phase Results**:
+      - Repo Context: {{steps.repo-context.result}}
+      - Repo Hypothesis: {{steps.repo-hypothesis-analysis.result}}
+      - Repo Explorer: {{steps.repo-exploratory-analysis.result}}
+      - Repo Differential: {{steps.repo-differential-analysis.result}}
+      - Tree Analysis: {{steps.tree-differential-analysis.result}}
+      - File Analysis: {{steps.file-action-plan.result}}
+      
+      ### Strategy: Synthesize Multi-Level Insights
+      
+      1. **Cross-Level Patterns**:
+         - What patterns emerged at all levels (repo, tree, file)?
+         - Are repo-level findings confirmed by file-level analysis?
+         - Did hypothesis-driven investigation match exploratory findings?
+      
+      2. **Completeness Assessment**:
+         - Given the original analysis_ask, how complete is the retcon/migration?
+         - What percentage of pattern occurrences are accounted for?
+         - How many hypotheses were validated vs rejected?
+      
+      3. **Gap Analysis**:
+         - What did we miss? (occurrences found but not analyzed)
+         - What needs human investigation?
+         - Any potential dynamic usage that grep/reachability can't detect?
+      
+      4. **Impact Summary**:
+         - Total files to delete
+         - Total files to edit
+         - Total lines of code to remove/change
+         - Estimated effort (hours/days)
+      
+      **Output**: Comprehensive findings summary with metrics and confidence levels
+  
+  - id: final-report
+    agent: foundation:explorer
+    prompt: |
+      ## Task: Generate Final Analysis Report
+      
+      **Context**: {{analysis_ask}}
+      
+      **Aggregated Findings**: {{steps.aggregate-findings.result}}
+      
+      ### Report Structure:
+      
+      # Multi-Level Code Analysis Report
+      
+      ## Executive Summary
+      - What was analyzed (repo, patterns, scope)
+      - Key findings (high-level takeaways)
+      - Recommended actions (top 5 priorities)
+      
+      ## Methodology
+      - Analysis levels used (repo → tree → file)
+      - Perspectives employed (hypothesis-driven, exploratory, architectural, differential)
+      - Confidence in findings (based on grep, import analysis, reachability testing)
+      
+      ## Findings by Level
+      
+      ### Repository Level
+      - Overall patterns
+      - Architecture-level issues
+      - Cross-cutting concerns
+      
+      ### Directory Tree Level
+      - Per-tree findings
+      - Tree interdependencies
+      - Migration completeness by module
+      
+      ### File Level
+      - Critical files requiring action
+      - Dead code candidates
+      - Specific line-level issues
+      
+      ## Dead Code Analysis
+      - Confirmed dead code (high confidence)
+      - Probable dead code (medium confidence)
+      - Unclear cases (needs human review)
+      
+      ## Action Plan
+      
+      ### Phase 1: Low Risk (Do First)
+      - Files safe to delete
+      - Comments/docs to remove
+      
+      ### Phase 2: Medium Risk (Do Second)
+      - Files requiring edits
+      - Import/dependency updates
+      
+      ### Phase 3: High Risk (Do Last / Needs Review)
+      - Complex refactoring needed
+      - Cases requiring human judgment
+      
+      ## Testing Recommendations
+      - Unit tests to run
+      - Integration tests to run
+      - Manual testing scenarios
+      
+      ## Metrics
+      - Files analyzed: X
+      - Pattern occurrences found: Y
+      - Dead code candidates: Z
+      - Estimated cleanup effort: N hours
+      
+      ## Appendices
+      - Complete file lists
+      - Detailed findings per file
+      - LSP call graphs (if relevant)
+      
+      ---
+      
+      **Format**: Markdown, ready for documentation
+      **Tone**: Clear, actionable, confidence-calibrated
+  
+  - id: generate-action-scripts
+    agent: foundation:explorer
+    prompt: |
+      ## Task: Generate Executable Action Scripts
+      
+      **Aggregated Findings**: {{steps.aggregate-findings.result}}
+      **File Action Plan**: {{steps.file-action-plan.result}}
+      
+      ### Generate:
+      
+      1. **Deletion Script** (bash):
+         ```bash
+         # High confidence deletions
+         rm -f path/to/file1.py
+         rm -f path/to/file2.py
+         ...
+         ```
+      
+      2. **Git Grep Verification** (bash):
+         ```bash
+         # Verify patterns are gone
+         git grep -i "pattern1"
+         git grep -i "pattern2"
+         # Should return nothing after cleanup
+         ```
+      
+      3. **Test Command** (bash):
+         ```bash
+         # Run relevant tests
+         pytest tests/affected_module/
+         ```
+      
+      4. **Manual Review Checklist** (markdown):
+         - [ ] Review file X for reason Y
+         - [ ] Check integration with Z
+         ...
+      
+      **Output**: Ready-to-run scripts and checklists
+
+metadata:
+  author: "AI Agent Design"
+  use_cases:
+    - "Retcon verification (removed features/APIs)"
+    - "Dead code detection"
+    - "API migration audits"
+    - "Security pattern analysis"
+    - "Dependency tracking"
+    - "Technical debt assessment"
+  
+  strengths:
+    - "Multi-level analysis catches both architectural and specific issues"
+    - "Multi-perspective reduces false positives/negatives"
+    - "LSP + grep differential identifies dead code accurately"
+    - "Prioritization ensures high-value targets analyzed deeply"
+    - "Actionable output with confidence calibration"
+  
+  limitations:
+    - "Execution time proportional to repo size (plan for 10-30 min)"
+    - "LSP analysis limited to statically analyzable languages"
+    - "Cannot detect runtime-only references (reflection, dynamic imports)"
+    - "Human review still required for high-risk changes"
+  
+  customization:
+    - "Adjust exclude_dirs for project-specific ignore patterns"
+    - "Modify agent selection (use different agents per phase)"
+    - "Add/remove analysis levels (e.g., skip tree level for small repos)"
+    - "Extend with project-specific analysis steps"
