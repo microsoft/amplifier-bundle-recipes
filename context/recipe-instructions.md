@@ -133,6 +133,29 @@ Model names support glob patterns (fnmatch-style) for flexible version matching:
 - **Nested context**: Template variables in nested objects are resolved recursively
 - **Model patterns**: Use glob patterns like `claude-sonnet-*` to auto-select latest versions
 
+## Presenting Recipe Results
+
+When a recipe produces output designed for external use (announcements, reports, summaries meant for Teams/Slack/email):
+
+**ALWAYS wrap the result in code fences** when presenting to the user:
+
+```
+Here's the announcement ready for posting:
+
+\`\`\`
+[formatted content here]
+\`\`\`
+```
+
+**Why**: Terminal reflow destroys intentional line breaks. Without code fences, carefully formatted multi-line output becomes an unreadable wall of text.
+
+**Detection heuristic**: If the output has multiple lines with consistent structure (bullets, numbered items, labeled sections), it likely has intentional formatting. Wrap it.
+
+This applies to:
+- Announcement text (Teams, Slack, Discord posts)
+- Report summaries with structured sections
+- Any output the user will copy-paste elsewhere
+
 ## Getting Help
 
 **Delegate to `recipes:recipe-author`** when users need to:
