@@ -15,13 +15,24 @@ includes:
 
 ---
 
-## Creating Recipes
+## Creating and Editing Recipes
 
-To create, validate, or improve recipes, **delegate to the `recipes:recipe-author` agent**. This expert will:
-- Ask clarifying questions to understand your workflow
-- Design the appropriate recipe structure
-- Apply best practices and patterns
-- Validate the result
+### Required Workflow (Non-Negotiable)
+
+| Phase | Agent | Purpose |
+|-------|-------|---------|
+| 1. Author | `recipes:recipe-author` | Create, edit, validate, debug |
+| 2. Validate | `recipes:result-validator` | Verify recipe meets original intent |
+
+**MUST delegate to `recipes:recipe-author`** for ALL recipe work. Do NOT write recipe YAML directly.
+
+**MUST run `recipes:result-validator`** after creation/editing, providing the recipe AND conversation context.
+
+### Why This Matters
+
+- `recipe-author` has complete schema knowledge and asks clarifying questions
+- `result-validator` provides unbiased verification that the recipe solves what the user asked for
+- Skipping these steps results in recipes that are syntactically valid but semantically wrong
 
 ## Examples
 

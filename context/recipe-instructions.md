@@ -2,6 +2,33 @@
 
 You have access to the **recipes** tool for multi-step AI agent orchestration.
 
+## Recipe Authoring Lifecycle (REQUIRED)
+
+All recipe work MUST follow this lifecycle. Do NOT write recipe YAML directly.
+
+| Phase | Agent | Purpose |
+|-------|-------|---------|
+| 1. Author | `recipes:recipe-author` | Create, edit, validate, debug recipes |
+| 2. Validate | `recipes:result-validator` | Verify recipe meets user's original intent |
+
+### Why This Matters
+
+- `recipe-author` ensures **technical correctness** (valid YAML, proper schema, best practices)
+- `result-validator` ensures **intent alignment** (solves what the user actually asked for)
+- Skipping either step results in recipes that are syntactically valid but may not solve the right problem
+
+### The Workflow
+
+1. **User describes intent** → Delegate to `recipes:recipe-author`
+2. **recipe-author creates/edits** → Provides recipe + intent summary for validation
+3. **Delegate to `recipes:result-validator`** → Pass the recipe AND conversation context
+4. **On PASS** → Present to user
+5. **On FAIL** → Return to recipe-author with feedback, iterate
+
+**Anti-pattern**: Writing recipe YAML directly, even if you know the schema. You lose clarifying questions, context accumulation, and validation against intent.
+
+---
+
 ## How to Run Recipes
 
 ### Conversational (Recommended)
