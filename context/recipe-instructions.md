@@ -43,6 +43,30 @@ Within an Amplifier session, just ask naturally:
 
 Amplifier will invoke the recipes tool with the appropriate parameters.
 
+### Recipe Lookup Behavior
+
+When a user asks to run a recipe by name (without a full `@bundle:path`), follow this process:
+
+1. **First**: Call `recipes(operation="discover")` to find all available recipes
+2. **Match**: Look for recipes matching the requested name (case-insensitive, partial matches OK)
+3. **If one match**: Execute it directly using the discovered path
+4. **If multiple matches**: Ask the user which one, showing bundle name and description for each
+5. **If no matches**: Report that no recipe was found with that name, and list similar options if any
+
+**Example flow**:
+```
+User: "Run the code-review recipe"
+
+Agent thinking:
+1. Call recipes(operation="discover")
+2. Found: @recipes:examples/code-review.yaml (name: "Code Review", description: "...")
+3. Single match → execute directly
+
+Agent: "Running the code-review recipe from @recipes:examples/code-review.yaml..."
+```
+
+**Why this matters**: Recipes can live in any loaded bundle or the local `recipes/` directory. Without discovery, users would need to know exact paths. With discovery, natural language requests like "run the ecosystem activity report" just work.
+
 ### CLI (Direct Tool Invocation)
 
 From the command line, use `amplifier tool invoke`:
@@ -101,6 +125,7 @@ Recipes are declarative YAML workflows that provide:
 | `list` | Show active sessions |
 | `approvals` | Show pending approval gates |
 | `approve/deny` | Respond to approval gates |
+| `discover` | Find available recipes across all loaded bundles |
 
 ## Recipe Paths
 
