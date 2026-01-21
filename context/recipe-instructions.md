@@ -29,6 +29,35 @@ All recipe work MUST follow this lifecycle. Do NOT write recipe YAML directly.
 
 ---
 
+## Recipe Discovery
+
+When a user asks to run a recipe by name, discover available recipes across the ecosystem:
+
+1. **Check your environment context** for "Loaded bundles:" to see which bundles are active
+2. **For each loaded bundle**, check `@<bundle>:recipes/` for available recipe files
+3. **Also check `./recipes/`** for local project-specific recipes
+4. **Match the user's request** to available recipes (case-insensitive, partial matches OK)
+
+**Discovery behavior:**
+- Single match → execute directly
+- Multiple matches → ask user which one they want
+- No matches → report not found, suggest similar options if available
+
+**Example:**
+```
+User: "Run the code-review recipe"
+
+Agent thinking:
+1. Environment shows: Loaded bundles: amplifier, foundation, recipes
+2. Check @amplifier:recipes/ → empty
+3. Check @foundation:recipes/ → empty  
+4. Check @recipes:recipes/ → found code-review.yaml
+5. Check ./recipes/ → empty
+6. Single match → execute @recipes:recipes/code-review.yaml
+```
+
+---
+
 ## How to Run Recipes
 
 ### Conversational (Recommended)
