@@ -243,6 +243,7 @@ Operations:
 - approve: Approve a stage to continue execution
 - deny: Deny a stage to stop execution
 - cancel: Cancel a running recipe session (graceful or immediate)
+- discover: Discover available recipes across all loaded bundles
 
 Example:
   Execute recipe: {{"operation": "execute", "recipe_path": "@recipes:examples/code-review.yaml", "context": {{"file_path": "src/auth.py"}}}}
@@ -252,7 +253,8 @@ Example:
   List approvals: {{"operation": "approvals"}}
   Approve stage: {{"operation": "approve", "session_id": "...", "stage_name": "planning"}}
   Deny stage: {{"operation": "deny", "session_id": "...", "stage_name": "planning", "reason": "needs revision"}}
-  Cancel recipe: {{"operation": "cancel", "session_id": "...", "immediate": false}}"""
+  Cancel recipe: {{"operation": "cancel", "session_id": "...", "immediate": false}}
+  Discover recipes: {{"operation": "discover"}}"""
 
     @property
     def input_schema(self) -> dict:
@@ -270,6 +272,7 @@ Example:
                         "approve",
                         "deny",
                         "cancel",
+                        "discover",
                     ],
                     "description": "Operation to perform",
                 },
@@ -330,6 +333,8 @@ Example:
                 return await self._deny_stage(input)
             if operation == "cancel":
                 return await self._cancel_recipe(input)
+            if operation == "discover":
+                return await self._discover_recipes(input)
             return ToolResult(
                 success=False,
                 error={"message": f"Unknown operation: {operation}"},
@@ -833,5 +838,121 @@ Example:
                     "Send another cancel request (or use immediate=true) for immediate cancellation."
                 ),
                 "resume_info": "Use 'resume' operation to restart the recipe from where it stopped.",
+            },
+        )
+
+    async def _discover_recipes(self, input: dict[str, Any]) -> ToolResult:
+        """Discover available recipes across all loaded bundles.
+
+        Scans all loaded bundles for recipes/ directories and returns
+        metadata about each recipe found.
+
+        Args:
+            input: Tool input (no required parameters)
+
+        Returns:
+            ToolResult with list of discovered recipes
+        """
+        # Get mention resolver from coordinator capabilities
+        mention_resolver = self.coordinator.get_capability("mention_resolver")
+        if mention_resolver is None:
+            return ToolResult(
+                success=False,
+                error={
+                    "message": "mention_resolver capability not available. "
+                    "Cannot discover recipes without bundle access."
+                },
+            )
+
+        # Access the bundles dict from the mention resolver
+        bundles = getattr(mention_resolver, "bundles", None)
+        if bundles is None:
+            return ToolResult(
+                success=False,
+                error={
+                    "message": "mention_resolver does not expose bundles. "
+                    "Cannot enumerate loaded bundles."
+                },
+            )
+
+        discovered_recipes: list[dict[str, Any]] = []
+
+        for bundle_name, bundle in bundles.items():
+            # Get the base path for this bundle
+            base_path = getattr(bundle, "base_path", None)
+            if base_path is None:
+                continue
+
+            # Check for recipes directory
+            recipes_dir = base_path / "recipes"
+            if not recipes_dir.exists() or not recipes_dir.is_dir():
+                continue
+
+            # Scan for YAML files in recipes directory
+            for recipe_file in recipes_dir.glob("**/*.yaml"):
+                recipe_info: dict[str, Any] = {
+                    "bundle": bundle_name,
+                    "path": f"@{bundle_name}:recipes/{recipe_file.relative_to(recipes_dir)}",
+                    "file_name": recipe_file.name,
+                }
+
+                # Try to parse recipe for metadata
+                try:
+                    recipe = Recipe.from_yaml(recipe_file)
+                    recipe_info["name"] = recipe.name
+                    recipe_info["description"] = recipe.description
+                    recipe_info["version"] = recipe.version
+                    if recipe.tags:
+                        recipe_info["tags"] = recipe.tags
+                    if recipe.author:
+                        recipe_info["author"] = recipe.author
+                except Exception as e:
+                    # If parsing fails, still include the recipe with minimal info
+                    recipe_info["parse_error"] = str(e)
+                    logger.debug(f"Failed to parse recipe {recipe_file}: {e}")
+
+                discovered_recipes.append(recipe_info)
+
+        # Also check current working directory for local recipes
+        local_recipes_dir = Path.cwd() / "recipes"
+        if local_recipes_dir.exists() and local_recipes_dir.is_dir():
+            for recipe_file in local_recipes_dir.glob("**/*.yaml"):
+                recipe_info = {
+                    "bundle": None,
+                    "path": str(recipe_file),
+                    "file_name": recipe_file.name,
+                    "local": True,
+                }
+
+                try:
+                    recipe = Recipe.from_yaml(recipe_file)
+                    recipe_info["name"] = recipe.name
+                    recipe_info["description"] = recipe.description
+                    recipe_info["version"] = recipe.version
+                    if recipe.tags:
+                        recipe_info["tags"] = recipe.tags
+                    if recipe.author:
+                        recipe_info["author"] = recipe.author
+                except Exception as e:
+                    recipe_info["parse_error"] = str(e)
+                    logger.debug(f"Failed to parse local recipe {recipe_file}: {e}")
+
+                discovered_recipes.append(recipe_info)
+
+        # Sort recipes: local first, then by bundle name, then by name
+        discovered_recipes.sort(
+            key=lambda r: (
+                not r.get("local", False),  # Local recipes first
+                r.get("bundle") or "",  # Then by bundle name
+                r.get("name") or r.get("file_name", ""),  # Then by recipe name
+            )
+        )
+
+        return ToolResult(
+            success=True,
+            output={
+                "recipes": discovered_recipes,
+                "count": len(discovered_recipes),
+                "bundles_scanned": len(bundles),
             },
         )
