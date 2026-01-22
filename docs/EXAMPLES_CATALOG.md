@@ -36,6 +36,8 @@ amplifier tool invoke recipes operation=execute recipe_path=<recipe.yaml> contex
 | [repo-activity-analysis](#repo-activity-analysis) | GitHub | 6 | Bash + agent hybrid | zen-architect |
 | [multi-repo-activity-report](#multi-repo-activity-report) | GitHub | 3 | Recipe invocation | zen-architect |
 | [feature-announcement](#feature-announcement) | Communication | 3 | Human-first output | zen-architect |
+| [session-extract](#session-extract) | Verification | 1 | Quick metadata check | session-analyst |
+| [session-verify](#session-verify) | Verification | 2 | Cross-provider audit | session-analyst, zen-architect |
 | [context-intelligence](#context-intelligence) | Advanced | varies | Tiered complexity | various |
 
 ---
@@ -689,6 +691,125 @@ amplifier tool invoke recipes operation=execute \
 
 ---
 
+## Verification Examples
+
+### Session Extract
+
+**File:** `examples/session-extract.yaml`
+
+Quick metadata extraction to see what provider/model was used in a session. Use this when you don't remember what provider a session used and want to decide what verifier to use.
+
+**Use Cases:**
+- Check what provider/model a session used
+- Decide which provider to use for verification
+- Quick session overview before full audit
+
+**Workflow:**
+```
+1. Quick Extract → Provider, model, one-line summary, turn count
+```
+
+**Example Usage:**
+```
+In session: "run session-extract on session abc123"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=session-extract.yaml \
+       context='{"session_id": "abc123"}'
+```
+
+**Output:**
+```
+ORIGINAL_PROVIDER: anthropic
+ORIGINAL_MODEL: claude-opus-4-5-20251101
+
+One-Line Summary: Fixed authentication bug and added rate limiting
+
+Turn Count: 8
+```
+
+**Key Learnings:**
+- Lightweight extraction (single step, fast)
+- Guides user to next step (session-verify)
+- Part of two-recipe verification workflow
+
+---
+
+### Session Verify
+
+**File:** `examples/session-verify.yaml`
+
+Cross-provider verification audit that checks if work in a session actually accomplished what was intended. Uses a DIFFERENT provider than the original to catch blind spots.
+
+**Use Cases:**
+- Verify work actually got done (not just claimed)
+- Cross-provider auditing (Anthropic reviews OpenAI's work, etc.)
+- Post-session quality assurance
+- Catch gaps between intent, claims, and reality
+
+**Why Cross-Provider?**
+- Different models have different blind spots and biases
+- Anthropic models may miss what OpenAI catches (and vice versa)
+- A model is unlikely to catch its own systematic errors
+
+**Workflow:**
+```
+1. Extract Session Context → Intent, claims, reality from session
+2. Verification Review → Independent audit using different provider
+   → Verdict: PASS or ISSUES FOUND
+   → Evidence-based assessment
+```
+
+**Example Usage:**
+```
+In session: "run session-verify on session abc123 with verifier_provider openai"
+
+CLI: amplifier tool invoke recipes operation=execute \
+       recipe_path=session-verify.yaml \
+       context='{"session_id": "abc123", "verifier_provider": "openai"}'
+```
+
+**Inputs:**
+- `session_id` (required): Session to verify
+- `verifier_provider` (required): Provider for verification (openai, anthropic, google)
+- `verifier_model` (optional): Override default model for provider
+
+**Default Models per Provider:**
+- openai → gpt-5.2
+- google → gemini-3-pro-preview
+- anthropic → claude-opus-4-5-20251101
+
+**Output:**
+```
+Verdict: ISSUES FOUND
+
+Intent Coverage:
+✓ VERIFIED: Fix authentication bug - Evidence confirms completion
+✗ GAP: Add rate limiting - Code added but never tested
+? UNCLEAR: Update docs - No evidence either way
+
+Issues:
+- Rate limiting code was written but no test execution found
+- Claimed "tests pass" but no test command in tool results
+```
+
+**Key Learnings:**
+- Cross-provider verification pattern
+- Intent vs claims vs reality framework
+- Evidence-based verdicts
+- Two-recipe workflow (extract → verify)
+
+**Verification-Driven Development (VDD):**
+
+These recipes implement a simplified version of VDD - a methodology where:
+1. Work is done by one AI provider
+2. A different AI provider audits the work
+3. Different training = different blind spots = better coverage
+
+The key insight: fresh context + different provider = truly independent review.
+
+---
+
 ## Advanced Examples
 
 ### Context Intelligence
@@ -771,6 +892,7 @@ Each example demonstrates specific patterns:
 | **Analysis** | multi-file-analysis, parallel-analysis |
 | **GitHub** | repo-activity-analysis, multi-repo-activity-report |
 | **Communication** | feature-announcement |
+| **Verification** | session-extract, session-verify |
 | **Advanced** | context-intelligence |
 
 ### By Pattern
@@ -784,6 +906,8 @@ Each example demonstrates specific patterns:
 | **Recipe Composition** | comprehensive-review, multi-repo-activity-report |
 | **Bash Hybrid** | bash-step-example, repo-activity-analysis |
 | **Artifact Generation** | test-generation, feature-announcement |
+| **Cross-Provider Verification** | session-extract, session-verify |
+| **Two-Recipe Workflow** | session-extract, session-verify |
 
 ---
 
