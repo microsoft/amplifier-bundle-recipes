@@ -615,6 +615,91 @@ When generating or validating recipes, the agent checks:
 - [ ] Step dependencies: `depends_on` references existing step IDs
 - [ ] Step dependencies: No circular dependency chains
 
+### Changelog (for edits)
+- [ ] Version bumped appropriately (patch/minor/major)
+- [ ] Changelog entry added with date (YYYY-MM-DD format)
+- [ ] Category specified (BUGFIX, IMPROVEMENT, CRITICAL FIX, etc.)
+- [ ] Root cause documented (required for bug fixes)
+- [ ] Entry placed at top of changelog section (newest first)
+
+## Changelog Maintenance
+
+When editing an existing recipe, you MUST maintain the changelog. This is a core responsibility of the recipe-author agent.
+
+### Changelog Requirements
+
+1. **Location**: Changelog block goes at the top of the recipe file, after the header comment and before `name:`
+
+2. **Format**: Use the standard format with version, date, category, and description:
+   ```yaml
+   # =============================================================================
+   # CHANGELOG
+   # =============================================================================
+   #
+   # v1.2.0 (YYYY-MM-DD):
+   #   - CATEGORY: Brief summary
+   #     * Details about root cause (for bugs)
+   #     * Details about what changed
+   #     * Details about the result/impact
+   ```
+
+3. **Categories**: Use standard categories consistently:
+   - `BUGFIX` - Fixing broken behavior
+   - `CRITICAL FIX` - Urgent blocking issue fix
+   - `IMPROVEMENT` - Enhancing existing functionality
+   - `REFACTOR` - Code restructuring without behavior change
+   - `NEW FEATURE` - Adding new capabilities
+   - `BREAKING CHANGE` - Changes affecting existing usage
+
+4. **Root Cause Analysis**: For bug fixes, ALWAYS document:
+   - What was the root cause?
+   - What was the fix?
+   - What improved as a result?
+
+5. **Key Insights**: Document non-obvious discoveries with explicit labels:
+   - `ROOT CAUSE:` - Why the problem existed
+   - `THE KEY INSIGHT:` - The crucial realization that led to the fix
+   - `WHY THIS WORKS:` - Explanation of the solution
+
+### When Editing Recipes
+
+1. **Read the existing changelog** to understand the recipe's history
+2. **Bump the version** appropriately (patch/minor/major)
+3. **Add a new changelog entry** at the top of the changelog section
+4. **Include the date** in ISO format (YYYY-MM-DD)
+5. **Document thoroughly** - future maintainers will thank you
+
+### Example Workflow
+
+```
+User: "Fix the JSON parsing issue in the build-outline step"
+
+Recipe-author:
+1. Read existing recipe and changelog
+2. Understand the issue and implement fix
+3. Bump version (e.g., 1.6.0 -> 1.6.1 for bugfix)
+4. Add changelog entry:
+   # v1.6.1 (2026-01-22):
+   #   - BUGFIX: JSON parsing failures when LLM outputs unescaped quotes
+   #     * ROOT CAUSE: Code examples in prompts had quotes like "~/repos/foo"
+   #       that weren't escaped, causing parse errors
+   #     * FIX: Added lookahead heuristic to detect data quotes vs terminators
+   #     * RESULT: JSON parsing now handles embedded quotes correctly
+5. Present complete recipe with changelog to user
+```
+
+### Handoff Note for result-validator
+
+When completing recipe edits, include changelog status in your handoff:
+
+```
+**Changelog Status:**
+- Version bumped: 1.6.0 -> 1.6.1
+- Entry added: BUGFIX for JSON parsing
+- Root cause documented: Yes
+- Date included: Yes (2026-01-22)
+```
+
 ## Error Handling
 
 ### When validation fails:

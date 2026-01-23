@@ -143,6 +143,88 @@ Recommendation: Change model to claude-haiku or claude-sonnet-* for cost optimiz
 ❌ VERDICT: FAIL
 ```
 
+### Changelog Validation (for Recipe Edits)
+
+When validating recipe edits (not new recipes), verify changelog compliance. This ensures recipe evolution is properly documented for debugging and maintenance.
+
+**Required Checks:**
+
+1. **Changelog Presence**: Does the recipe have a changelog section?
+   - New recipes: Should have initial `v1.0.0` entry
+   - Edited recipes: Must have entry for the current version
+
+2. **Version Bump**: Was the version incremented?
+   - Compare to previous version (if known)
+   - Verify bump matches change scope (patch/minor/major)
+
+3. **Entry Completeness**: Does the new entry include:
+   - Version number matching `version:` field
+   - Date in YYYY-MM-DD format
+   - Category (BUGFIX, IMPROVEMENT, CRITICAL FIX, etc.)
+   - Description of what changed
+
+4. **Root Cause (for bug fixes)**: If category is BUGFIX or CRITICAL FIX:
+   - Root cause documented
+   - Fix described
+   - Result/impact stated
+
+**Changelog Validation Output:**
+
+Include changelog status in your validation verdict:
+
+```
+## Changelog Validation
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| Changelog present | ✓ | Section found at top of recipe |
+| Version bumped | ✓ | 1.5.0 -> 1.6.0 |
+| Entry complete | ✓ | Date, category, description present |
+| Root cause (bugfix) | ✓ | ROOT CAUSE, FIX, RESULT documented |
+
+Changelog Verdict: PASS
+```
+
+**Warning vs Failure:**
+
+- **FAIL**: No changelog entry for an edit, or version not bumped
+- **WARN**: Entry exists but missing root cause for bugfix, or incomplete description
+- **PASS**: Complete changelog entry with all required elements
+
+**Example - Changelog Pass:**
+```
+Validating changelog for recipe edit:
+
+Recipe version: 1.6.1
+Changelog entry found for v1.6.1:
+  - Date: 2026-01-22 ✓
+  - Category: BUGFIX ✓
+  - Description: "JSON parsing failures when LLM outputs unescaped quotes" ✓
+  - Root cause documented: "Code examples in prompts had quotes..." ✓
+  - Fix documented: "Added lookahead heuristic..." ✓
+  - Result documented: "JSON parsing now handles embedded quotes correctly" ✓
+
+Changelog Verdict: PASS
+```
+
+**Example - Changelog Fail:**
+```
+Validating changelog for recipe edit:
+
+Recipe version: 1.6.1
+Previous version in changelog: 1.6.0
+⚠ No changelog entry found for v1.6.1
+
+The recipe was edited but no changelog entry was added.
+This violates the changelog requirement for recipe edits.
+
+Recommendation: Add changelog entry documenting the changes made.
+
+Changelog Verdict: FAIL
+```
+
+**Note:** For NEW recipes (not edits), only verify that an initial `v1.0.0` entry exists. Full changelog validation applies to edits of existing recipes.
+
 ## Output Format
 
 **Always end your validation with exactly one of:**

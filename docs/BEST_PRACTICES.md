@@ -1320,6 +1320,86 @@ tests/
 - Changed output format
 - Breaking behavior changes
 
+### Changelog Requirements
+
+**Every recipe edit MUST include a changelog entry.** The changelog provides critical context for understanding recipe evolution, debugging issues, and learning from past solutions.
+
+**Location:** At the top of the recipe file, after the header comment block and before the `name:` field.
+
+**Format:**
+```yaml
+# =============================================================================
+# CHANGELOG
+# =============================================================================
+#
+# v1.2.0 (2026-01-22):
+#   - CATEGORY: Brief summary of change
+#     * Root cause: Why this change was needed
+#     * Fix/Change: What was actually done
+#     * Result: What improved
+#
+# v1.1.0 (2026-01-15):
+#   - BUGFIX: Description of bug fix
+#   - IMPROVEMENT: Description of improvement
+#
+# v1.0.0 (2026-01-10):
+#   - Initial recipe implementation
+#
+# =============================================================================
+```
+
+**Categories (use consistently):**
+
+| Category | When to Use |
+|----------|-------------|
+| `BUGFIX` | Fixing broken behavior |
+| `CRITICAL FIX` | Urgent fix for blocking issues |
+| `IMPROVEMENT` | Enhancing existing functionality |
+| `REFACTOR` | Code restructuring without behavior change |
+| `NEW FEATURE` | Adding new capabilities |
+| `BREAKING CHANGE` | Changes that affect existing usage |
+
+**Root Cause Documentation:**
+
+For bug fixes, document the root cause to help future maintainers:
+
+```yaml
+# v1.3.1 (2026-01-22):
+#   - BUGFIX: JSON parsing failures in build-outline step
+#     * ROOT CAUSE: LLM outputs unescaped quotes in prompt strings like "~/repos/foo"
+#       that weren't escaped, causing JSON parse errors at position ~11466
+#     * FIX: Added lookahead heuristic in clean_json_control_chars() to detect quotes
+#       that are data vs. string terminators
+#     * RESULT: JSON parsing now handles embedded quotes in LLM output
+```
+
+**Key Insights:**
+
+When you discover something non-obvious, document it explicitly:
+
+```yaml
+# v1.4.0 (2026-01-22):
+#   - CRITICAL FIX: Classification logic incorrectly identified sources
+#     * THE KEY INSIGHT: Just because doc A shares content with doc B does NOT mean
+#       A is derived from B - must check if A actually CITES B
+#     * A document with ZERO outbound citations CANNOT be synthesized
+#     * WHY THIS WORKS: If it doesn't cite anything, it doesn't derive from anything
+```
+
+**Why Changelogs Matter:**
+
+1. **Debugging**: When a recipe breaks, the changelog shows what changed and why
+2. **Learning**: Root cause analysis prevents repeating the same mistakes
+3. **Onboarding**: New maintainers understand design decisions
+4. **Rollback**: Clear version history enables safe rollback decisions
+5. **Patterns**: Successful fixes become reusable patterns
+
+**Changelog Validation:**
+
+The `result-validator` agent checks for changelog presence when validating recipe edits. Missing or incomplete changelogs will generate warnings.
+
+**See also:** `amplifier:recipes/document-generation.yaml` and `amplifier:recipes/outline-generation-from-doc.yaml` for exemplary changelog practices.
+
 ### Deprecation Process
 
 **1. Announce in comments:**
