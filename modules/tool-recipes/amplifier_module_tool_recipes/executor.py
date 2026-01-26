@@ -12,7 +12,8 @@ from typing import Any
 
 from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
-from .model_resolver import resolve_model_pattern
+from amplifier_foundation import ProviderPreference
+from amplifier_foundation import resolve_model_pattern
 from .models import BackoffConfig
 from .models import OrchestratorConfig
 from .models import RateLimitingConfig
@@ -1237,18 +1238,27 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Build orchestrator config dict for spawn if present
         orchestrator_dict = orchestrator_config.config if orchestrator_config else None
 
-        # Resolve provider and model for this step
-        step_provider = step.provider
-        step_model = step.model
-
-        # Resolve model pattern if specified
-        if step_model:
+        # Build provider preferences if step specifies provider/model
+        provider_preferences = None
+        if step.provider and step.model:
+            # Resolve model pattern if it's a glob
+            resolved_model = step.model
             model_resolution = await resolve_model_pattern(
-                model_hint=step_model,
-                provider_name=step_provider,
+                model_hint=step.model,
+                provider_name=step.provider,
                 coordinator=self.coordinator,
             )
-            step_model = model_resolution.resolved_model
+            resolved_model = model_resolution.resolved_model
+
+            # Create ordered preference list (single preference for now)
+            provider_preferences = [
+                ProviderPreference(provider=step.provider, model=resolved_model)
+            ]
+        elif step.provider:
+            # Provider without model - use provider's default
+            provider_preferences = [
+                ProviderPreference(provider=step.provider, model="")
+            ]
 
         # Spawn sub-session with agent via capability
         result = await spawn_fn(
@@ -1258,9 +1268,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             agent_configs=agents,
             sub_session_id=None,  # Let spawner generate ID
             orchestrator_config=orchestrator_dict,
-            # Provider/model override
-            provider_override=step_provider,
-            model_override=step_model,
+            # Provider preferences (replaces provider_override/model_override)
+            provider_preferences=provider_preferences,
         )
 
         return result
