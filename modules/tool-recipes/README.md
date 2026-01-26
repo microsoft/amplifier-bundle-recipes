@@ -122,6 +122,18 @@ tools:
       auto_cleanup_days: 7                # Auto-delete sessions after N days
 ```
 
+## Working Directory Resolution
+
+The tool determines the project working directory using this priority:
+
+1. **Coordinator capability** - `session.working_dir` if registered (enables server/web deployments)
+2. **Fallback** - `Path.cwd()` for CLI backward compatibility
+
+This affects:
+- Recipe session storage location (`~/.amplifier/projects/<project-slug>/recipe-sessions/`)
+- Bash step `cwd` resolution (relative paths resolve from this directory)
+- Sub-recipe path resolution when using relative paths
+
 ## Session Persistence
 
 Sessions persist to:

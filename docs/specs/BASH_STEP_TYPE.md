@@ -182,7 +182,7 @@ Working directory for command execution. Supports variable substitution.
 cwd: "{{working_dir}}/build"
 ```
 
-**Default:** Current working directory of the recipe session.
+**Default:** The recipe session's working directory (from `session.working_dir` capability if available, otherwise `Path.cwd()`).
 
 #### `env` (optional)
 
