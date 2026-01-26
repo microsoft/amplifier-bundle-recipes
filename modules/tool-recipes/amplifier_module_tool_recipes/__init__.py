@@ -219,6 +219,15 @@ class RecipesTool:
         self.coordinator = coordinator
         self.config = config
 
+    def _get_working_dir(self) -> Path:
+        """Get working directory from coordinator capability.
+
+        Returns session.working_dir capability if available, falls back to
+        Path.cwd() for backward compatibility with CLI and older deployments.
+        """
+        working_dir = self.coordinator.get_capability("session.working_dir")
+        return Path(working_dir) if working_dir else Path.cwd()
+
     @property
     def name(self) -> str:
         return "recipes"
@@ -378,8 +387,8 @@ Example:
             )
         context_vars = input.get("context", {})
 
-        # Determine project path (current working directory)
-        project_path = Path.cwd()
+        # Determine project path (from coordinator capability or cwd)
+        project_path = self._get_working_dir()
 
         # Load recipe
         try:
@@ -451,7 +460,7 @@ Example:
                 error={"message": "session_id is required for resume operation"},
             )
 
-        project_path = Path.cwd()
+        project_path = self._get_working_dir()
 
         # Check session exists
         if not self.session_manager.session_exists(session_id, project_path):
@@ -532,7 +541,7 @@ Example:
 
     async def _list_sessions(self, input: dict[str, Any]) -> ToolResult:
         """List active recipe sessions."""
-        project_path = Path.cwd()
+        project_path = self._get_working_dir()
 
         try:
             sessions = self.session_manager.list_sessions(project_path)
@@ -603,7 +612,7 @@ Example:
 
     async def _list_approvals(self, input: dict[str, Any]) -> ToolResult:
         """List pending approvals across all sessions."""
-        project_path = Path.cwd()
+        project_path = self._get_working_dir()
 
         try:
             pending_approvals = self.session_manager.list_pending_approvals(
@@ -639,7 +648,7 @@ Example:
                 error={"message": "stage_name is required for approve operation"},
             )
 
-        project_path = Path.cwd()
+        project_path = self._get_working_dir()
 
         # Verify session exists
         if not self.session_manager.session_exists(session_id, project_path):
@@ -706,7 +715,7 @@ Example:
                 error={"message": "stage_name is required for deny operation"},
             )
 
-        project_path = Path.cwd()
+        project_path = self._get_working_dir()
 
         # Verify session exists
         if not self.session_manager.session_exists(session_id, project_path):
@@ -776,7 +785,7 @@ Example:
                 error={"message": "session_id is required for cancel operation"},
             )
 
-        project_path = Path.cwd()
+        project_path = self._get_working_dir()
 
         # Verify session exists
         if not self.session_manager.session_exists(session_id, project_path):
