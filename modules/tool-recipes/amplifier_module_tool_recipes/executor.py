@@ -16,6 +16,7 @@ from amplifier_foundation import ProviderPreference
 from amplifier_foundation import resolve_model_pattern
 from .models import BackoffConfig
 from .models import OrchestratorConfig
+from .models import ProviderPreferenceConfig
 from .models import RateLimitingConfig
 from .models import Recipe
 from .models import RecursionConfig
@@ -1238,10 +1239,27 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Build orchestrator config dict for spawn if present
         orchestrator_dict = orchestrator_config.config if orchestrator_config else None
 
-        # Build provider preferences if step specifies provider/model
+        # Build provider preferences from step configuration
         provider_preferences = None
-        if step.provider and step.model:
-            # Resolve model pattern if it's a glob
+
+        if step.provider_preferences:
+            # New: Use explicit provider_preferences list with fallback order
+            provider_preferences = []
+            for pref in step.provider_preferences:
+                # Resolve model pattern if it's a glob
+                resolved_model = pref.model
+                if pref.model:
+                    model_resolution = await resolve_model_pattern(
+                        model_hint=pref.model,
+                        provider_name=pref.provider,
+                        coordinator=self.coordinator,
+                    )
+                    resolved_model = model_resolution.resolved_model
+                provider_preferences.append(
+                    ProviderPreference(provider=pref.provider, model=resolved_model)
+                )
+        elif step.provider and step.model:
+            # Legacy: Single provider + model fields
             resolved_model = step.model
             model_resolution = await resolve_model_pattern(
                 model_hint=step.model,
@@ -1249,13 +1267,11 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 coordinator=self.coordinator,
             )
             resolved_model = model_resolution.resolved_model
-
-            # Create ordered preference list (single preference for now)
             provider_preferences = [
                 ProviderPreference(provider=step.provider, model=resolved_model)
             ]
         elif step.provider:
-            # Provider without model - use provider's default
+            # Legacy: Provider without model - use provider's default
             provider_preferences = [
                 ProviderPreference(provider=step.provider, model="")
             ]
@@ -1268,7 +1284,6 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             agent_configs=agents,
             sub_session_id=None,  # Let spawner generate ID
             orchestrator_config=orchestrator_dict,
-            # Provider preferences (replaces provider_override/model_override)
             provider_preferences=provider_preferences,
         )
 

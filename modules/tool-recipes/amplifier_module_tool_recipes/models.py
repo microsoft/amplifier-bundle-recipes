@@ -190,6 +190,32 @@ class Stage:
 
 
 @dataclass
+class ProviderPreferenceConfig:
+    """Provider/model preference for step-level provider selection.
+
+    Used in provider_preferences list to specify fallback order.
+    The system tries each provider in order until one is available.
+
+    Example YAML:
+        provider_preferences:
+          - provider: anthropic
+            model: claude-haiku-*
+          - provider: openai
+            model: gpt-4o-mini
+    """
+
+    provider: str  # Provider ID (e.g., "anthropic", "openai")
+    model: str = ""  # Model name or glob pattern (e.g., "claude-haiku-*")
+
+    def validate(self) -> list[str]:
+        """Validate preference configuration."""
+        errors = []
+        if not self.provider:
+            errors.append("provider_preferences entry missing required 'provider' field")
+        return errors
+
+
+@dataclass
 class Step:
     """Represents a single step in a recipe workflow.
 
@@ -240,9 +266,12 @@ class Step:
     # Per-step recursion override (for recipe steps only)
     recursion: RecursionConfig | None = None
 
-    # Provider/model selection for agent steps
+    # Provider/model selection for agent steps (legacy single-value fields)
     provider: str | None = None  # Provider ID (e.g., "anthropic", "openai")
     model: str | None = None  # Model name or glob pattern (e.g., "claude-sonnet-*")
+
+    # Provider/model selection with fallback list (preferred over provider/model)
+    provider_preferences: list[ProviderPreferenceConfig] | None = None
 
     def validate(self) -> list[str]:
         """Validate step structure and constraints."""
@@ -414,6 +443,31 @@ class Step:
         if self.model and self.type != "agent":
             errors.append(f"Step '{self.id}': 'model' is only valid for agent steps")
 
+        # Provider preferences validation
+        if self.provider_preferences:
+            # Mutual exclusivity: can't use both old and new approaches
+            if self.provider or self.model:
+                errors.append(
+                    f"Step '{self.id}': cannot use both 'provider'/'model' and "
+                    "'provider_preferences' - choose one approach"
+                )
+            # Only valid for agent steps
+            if self.type != "agent":
+                errors.append(
+                    f"Step '{self.id}': 'provider_preferences' is only valid for agent steps"
+                )
+            # Cannot be empty list
+            elif len(self.provider_preferences) == 0:
+                errors.append(
+                    f"Step '{self.id}': 'provider_preferences' cannot be empty list"
+                )
+            else:
+                # Validate each entry
+                for i, pref in enumerate(self.provider_preferences):
+                    pref_errors = pref.validate()
+                    for err in pref_errors:
+                        errors.append(f"Step '{self.id}': provider_preferences[{i}]: {err}")
+
         return errors
 
 
@@ -479,6 +533,15 @@ class Recipe:
             step_data_copy["recursion"], dict
         ):
             step_data_copy["recursion"] = RecursionConfig(**step_data_copy["recursion"])
+
+        # Parse provider_preferences list if present
+        if "provider_preferences" in step_data_copy:
+            prefs_data = step_data_copy["provider_preferences"]
+            if isinstance(prefs_data, list):
+                step_data_copy["provider_preferences"] = [
+                    ProviderPreferenceConfig(**p) if isinstance(p, dict) else p
+                    for p in prefs_data
+                ]
 
         return Step(**step_data_copy)
 
