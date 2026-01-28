@@ -858,6 +858,88 @@ steps:
     prompt: "Design the architecture based on {{analysis}}"
 ```
 
+#### `provider_preferences` (optional, agent steps only)
+
+**Type:** list of `{provider, model}` objects
+**Purpose:** Specify an ordered list of provider/model preferences with automatic fallback.
+
+**How it works:**
+- The system tries each provider in order until one is available
+- First available provider is promoted to priority 0 (highest) for this step
+- If no providers in the list are available, falls back to session default
+- Each entry can include a model glob pattern that gets resolved
+
+**This is the preferred approach** for production recipes that need resilience across different provider configurations.
+
+**Example:**
+```yaml
+# Fallback chain: try Anthropic first, then OpenAI, then Azure
+- id: "analyze"
+  agent: "foundation:zen-architect"
+  provider_preferences:
+    - provider: anthropic
+      model: claude-sonnet-*
+    - provider: openai
+      model: gpt-4o
+    - provider: azure
+      model: gpt-4o
+  prompt: "Analyze the architecture"
+```
+
+**Entry fields:**
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `provider` | string | Yes | Provider ID (e.g., "anthropic", "openai") |
+| `model` | string | No | Model name or glob pattern (e.g., "claude-haiku-*") |
+
+**When to use `provider_preferences` vs `provider`/`model`:**
+
+| Use Case | Recommended Approach |
+|----------|---------------------|
+| Single provider, simple use | `provider` + `model` (legacy) |
+| Multi-provider fallback | `provider_preferences` |
+| Production recipes | `provider_preferences` |
+| CI/CD pipelines | `provider_preferences` |
+
+**Validation:**
+- Cannot be used together with `provider` or `model` fields (mutual exclusivity)
+- Only valid for agent steps (`type: "agent"` or default)
+- List cannot be empty
+- Each entry must have a `provider` field
+
+**Examples with different fallback strategies:**
+
+```yaml
+# Cost optimization: try cheap models first
+- id: "quick-check"
+  agent: "foundation:explorer"
+  provider_preferences:
+    - provider: anthropic
+      model: claude-haiku-*
+    - provider: openai
+      model: gpt-4o-mini
+  prompt: "Quick survey of the codebase"
+
+# Quality optimization: prefer best reasoning models
+- id: "complex-design"
+  agent: "foundation:zen-architect"
+  provider_preferences:
+    - provider: anthropic
+      model: claude-opus-*
+    - provider: openai
+      model: gpt-4o
+  prompt: "Design a complex distributed system"
+
+# Provider-only fallback (use each provider's default model)
+- id: "flexible-task"
+  agent: "foundation:modular-builder"
+  provider_preferences:
+    - provider: anthropic
+    - provider: openai
+    - provider: azure
+  prompt: "Implement the changes"
+```
+
 #### `prompt` (required)
 
 **Type:** string (template)
