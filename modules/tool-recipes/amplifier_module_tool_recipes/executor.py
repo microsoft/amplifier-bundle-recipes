@@ -16,7 +16,6 @@ from amplifier_foundation import ProviderPreference
 from amplifier_foundation import resolve_model_pattern
 from .models import BackoffConfig
 from .models import OrchestratorConfig
-from .models import ProviderPreferenceConfig
 from .models import RateLimitingConfig
 from .models import Recipe
 from .models import RecursionConfig
@@ -36,6 +35,16 @@ class BashResult:
 
 class SkipRemainingError(Exception):
     """Raised when step fails with on_error='skip_remaining'."""
+
+    pass
+
+
+class BreakLoopException(Exception):
+    """Raised when break_when condition is met during loop execution.
+
+    This is not an error - it signals early loop termination.
+    Results collected up to this point should be preserved.
+    """
 
     pass
 
@@ -198,7 +207,7 @@ class RateLimiter:
         await self._apply_backoff()
         elapsed_ms = (asyncio.get_event_loop().time() - start) * 1000
         self.stats["total_acquisitions"] += 1
-        self.stats["total_wait_time_ms"] += elapsed_ms
+        self.stats["total_wait_time_ms"] += int(elapsed_ms)
 
     def release(self) -> None:
         """Release slot after LLM call completes."""
@@ -769,8 +778,8 @@ class RecipeExecutor:
                             context["_skipped_steps"] = skipped_steps
                             continue
 
-                    # Handle foreach loops
-                    if step.foreach:
+                    # Handle foreach and while loops
+                    if step.foreach or step.while_condition:
                         try:
                             await self._execute_loop(
                                 step,
@@ -1301,16 +1310,20 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         session_id: str | None = None,
     ) -> None:
         """
-        Execute a step with foreach iteration.
+        Execute a step with foreach or while_condition iteration.
+
+        Supports two loop types:
+        - foreach: Iterate over a list of items
+        - while_condition: Iterate until condition becomes false (convergence-based)
 
         Simple, fail-fast implementation per philosophy:
         - No checkpointing (restart on failure)
         - No partial completion (fail-fast)
         - Minimal state tracking
-        - Optional parallel execution (all iterations concurrently)
+        - Optional parallel execution (all iterations concurrently, foreach only)
 
         Args:
-            step: Step with foreach field
+            step: Step with foreach or while_condition field
             context: Current context variables
             project_path: Current project directory
             recursion_state: Recursion tracking state
@@ -1318,11 +1331,47 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             session_id: Session identifier for cancellation checks
 
         Raises:
-            ValueError: If foreach variable invalid or iteration fails
+            ValueError: If loop variable invalid or iteration fails
             SkipRemainingError: If on_error='skip_remaining' and iteration fails
             CancellationRequestedError: If cancellation requested
         """
-        # Resolve foreach variable (step.foreach is guaranteed non-None by caller)
+        # Dispatch to foreach or while loop execution
+        if step.while_condition:
+            await self._execute_while_loop(
+                step,
+                context,
+                project_path,
+                recursion_state,
+                recipe_path,
+                rate_limiter,
+                orchestrator_config,
+                session_id,
+            )
+        elif step.foreach:
+            await self._execute_foreach_loop(
+                step,
+                context,
+                project_path,
+                recursion_state,
+                recipe_path,
+                rate_limiter,
+                orchestrator_config,
+                session_id,
+            )
+
+    async def _execute_foreach_loop(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        project_path: Path,
+        recursion_state: RecursionState,
+        recipe_path: Path | None = None,
+        rate_limiter: RateLimiter | None = None,
+        orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Execute foreach loop iteration."""
+        # Resolve foreach variable
         assert step.foreach is not None
         items = self._resolve_foreach_variable(step.foreach, context)
 
@@ -1450,7 +1499,25 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
                 # Process result: unwrap spawn() output and optionally parse JSON
                 result = self._process_step_result(result, step)
+
+                # Apply context updates if specified
+                self._apply_context_updates(step, context)
+
                 results.append(result)
+
+                # Check break_when condition after iteration
+                if step.break_when:
+                    try:
+                        should_break = evaluate_condition(step.break_when, context)
+                        if should_break:
+                            raise BreakLoopException()
+                    except ExpressionError:
+                        # Continue if break condition evaluation fails
+                        pass
+
+            except BreakLoopException:
+                # Break requested - exit loop early with results collected so far
+                break
             except SkipRemainingError:
                 # Propagate skip_remaining
                 raise
@@ -1678,6 +1745,142 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         recursion_state.total_steps = child_state.total_steps
 
         return result
+
+    async def _execute_while_loop(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        project_path: Path,
+        recursion_state: RecursionState,
+        recipe_path: Path | None = None,
+        rate_limiter: RateLimiter | None = None,
+        orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """
+        Execute while loop until condition becomes false or max iterations reached.
+
+        This enables convergence-based iteration patterns like SOAR meta-learning.
+        The condition is evaluated BEFORE each iteration.
+        """
+        assert step.while_condition is not None
+        results = []
+        iteration = 0
+
+        while iteration < step.max_while_iterations:
+            # Check for cancellation before each iteration
+            if session_id and project_path:
+                self._check_coordinator_cancellation(session_id, project_path)
+                self._check_cancellation(
+                    session_id, project_path, current_step=f"{step.id}[{iteration}]"
+                )
+
+            # Evaluate condition BEFORE iteration
+            try:
+                condition_met = evaluate_condition(step.while_condition, context)
+            except ExpressionError as e:
+                raise ValueError(
+                    f"Step '{step.id}': while_condition evaluation failed: {e}"
+                ) from e
+
+            if not condition_met:
+                break  # Exit loop - condition is false
+
+            # Execute step body based on type
+            try:
+                if step.type == "recipe":
+                    result = await self._execute_recipe_step(
+                        step,
+                        context,
+                        project_path,
+                        recursion_state,
+                        recipe_path,
+                        rate_limiter,
+                        orchestrator_config,
+                        parent_session_id=session_id,
+                    )
+                elif step.type == "bash":
+                    bash_result = await self._execute_bash_step(
+                        step, context, project_path
+                    )
+                    if step.output_exit_code:
+                        context[step.output_exit_code] = str(bash_result.exit_code)
+                    result = bash_result.stdout
+                else:
+                    # Agent step - track for recursion limits
+                    recursion_state.increment_steps()
+                    result = await self.execute_step_with_retry(
+                        step,
+                        context,
+                        rate_limiter,
+                        orchestrator_config,
+                        session_id=session_id,
+                        project_path=project_path,
+                    )
+
+                # Process result
+                result = self._process_step_result(result, step)
+
+                # Apply context updates if specified
+                self._apply_context_updates(step, context)
+
+                results.append(result)
+
+                # Check break_when condition after iteration
+                if step.break_when:
+                    try:
+                        should_break = evaluate_condition(step.break_when, context)
+                        if should_break:
+                            raise BreakLoopException()
+                    except ExpressionError:
+                        # Continue if break condition evaluation fails
+                        pass
+
+            except BreakLoopException:
+                # Break requested - exit loop early
+                break
+            except SkipRemainingError:
+                raise
+            except CancellationRequestedError:
+                raise
+            except Exception as e:
+                raise ValueError(
+                    f"Step '{step.id}' while loop iteration {iteration} failed: {e}"
+                ) from e
+
+            iteration += 1
+
+        # Store results
+        if step.collect:
+            context[step.collect] = results
+        elif step.output and results:
+            context[step.output] = results[-1]  # Last iteration result
+
+    def _apply_context_updates(self, step: Step, context: dict[str, Any]) -> None:
+        """
+        Apply update_context mappings to context.
+
+        Enables dynamic state mutation during loops for meta-learning patterns.
+        """
+        if not step.update_context:
+            return
+
+        for var_name, expression in step.update_context.items():
+            try:
+                # Substitute variables in the expression and evaluate
+                resolved_expr = self.substitute_variables(expression, context)
+
+                # Handle special cases:
+                # - Array concatenation: "{{list1}} + {{list2}}"
+                # - Numeric operations: "{{value}} + 1"
+                # For now, store the resolved expression result
+                # Could enhance with expression_evaluator for more complex operations
+
+                context[var_name] = resolved_expr
+            except Exception as e:
+                raise ValueError(
+                    f"Step '{step.id}': update_context['{var_name}'] failed: {e}"
+                ) from e
 
     def _resolve_foreach_variable(self, foreach: str, context: dict[str, Any]) -> Any:
         """

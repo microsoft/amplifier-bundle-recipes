@@ -211,7 +211,9 @@ class ProviderPreferenceConfig:
         """Validate preference configuration."""
         errors = []
         if not self.provider:
-            errors.append("provider_preferences entry missing required 'provider' field")
+            errors.append(
+                "provider_preferences entry missing required 'provider' field"
+            )
         return errors
 
 
@@ -259,6 +261,12 @@ class Step:
     retry: dict[str, Any] | None = None
     on_error: str = "fail"
     depends_on: list[str] = field(default_factory=list)
+
+    # Loop enhancements for meta-learning patterns (SOAR support)
+    while_condition: str | None = None  # Convergence-based loop condition
+    max_while_iterations: int = 100  # Safety limit for while loops
+    break_when: str | None = None  # Early exit condition for loops
+    update_context: dict[str, str] | None = None  # Dynamic context variable updates
 
     # JSON parsing control
     parse_json: bool = False  # Default: preserve output as-is, only parse clean JSON
@@ -466,7 +474,52 @@ class Step:
                 for i, pref in enumerate(self.provider_preferences):
                     pref_errors = pref.validate()
                     for err in pref_errors:
-                        errors.append(f"Step '{self.id}': provider_preferences[{i}]: {err}")
+                        errors.append(
+                            f"Step '{self.id}': provider_preferences[{i}]: {err}"
+                        )
+
+        # While loop validation
+        if self.while_condition:
+            if "{{" not in self.while_condition:
+                errors.append(
+                    f"Step '{self.id}': while_condition must contain a variable reference (e.g., '{{{{var}}}}')"
+                )
+            if self.foreach:
+                errors.append(
+                    f"Step '{self.id}': cannot use both while_condition and foreach"
+                )
+            if not 1 <= self.max_while_iterations <= 1000:
+                errors.append(
+                    f"Step '{self.id}': max_while_iterations must be 1-1000, got {self.max_while_iterations}"
+                )
+
+        # Break condition validation
+        if self.break_when:
+            if "{{" not in self.break_when:
+                errors.append(
+                    f"Step '{self.id}': break_when must contain a variable reference (e.g., '{{{{var}}}}')"
+                )
+            if not self.foreach and not self.while_condition:
+                errors.append(
+                    f"Step '{self.id}': break_when requires foreach or while_condition"
+                )
+
+        # State mutation validation
+        if self.update_context:
+            for key, value in self.update_context.items():
+                if not key.replace("_", "").isalnum():
+                    errors.append(
+                        f"Step '{self.id}': update_context key '{key}' must be alphanumeric with underscores"
+                    )
+                if key in ("recipe", "session", "step"):
+                    errors.append(
+                        f"Step '{self.id}': update_context cannot overwrite reserved name '{key}'"
+                    )
+                # Value must be a string (expression)
+                if not isinstance(value, str):
+                    errors.append(
+                        f"Step '{self.id}': update_context['{key}'] must be a string expression"
+                    )
 
         return errors
 
