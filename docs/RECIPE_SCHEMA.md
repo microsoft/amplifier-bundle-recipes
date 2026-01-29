@@ -520,10 +520,16 @@ Each step represents one unit of work in the workflow. Steps can be agent invoca
   # Common fields:
   condition: string             # Optional - Expression that must evaluate to true
   foreach: string               # Optional - Variable containing list to iterate
+  while_condition: string       # Optional - Expression for convergence-based loops
   as: string                    # Optional - Loop variable name (default: "item")
   collect: string               # Optional - Variable to collect all iteration results
-  max_iterations: integer       # Optional - Safety limit (default: 100)
+  max_iterations: integer       # Optional - Safety limit for foreach (default: 100)
+  max_while_iterations: integer # Optional - Safety limit for while loops (default: 100)
+  break_when: string            # Optional - Expression to break loop early
+  update_context: dict          # Optional - Context variable updates during loops
+  parallel: bool|int            # Optional - Run foreach iterations in parallel
   output: string                # Optional - Variable name for step result
+  parse_json: bool              # Optional - Parse JSON from step result (default: false)
   agent_config: dict            # Optional - Override agent configuration
   timeout: integer              # Optional - Max execution time (seconds)
   retry: dict                   # Optional - Retry configuration
@@ -1820,6 +1826,179 @@ steps:
 5. **Loop variable shadows context**: Local scope takes precedence
 6. **Condition + foreach**: Condition checked once, not per iteration
 
+### Convergence-Based Loops (While Loops)
+
+Use `while_condition` for loops that iterate until a condition becomes false (convergence-based iteration):
+
+```yaml
+- id: "meta-learning-loop"
+  while_condition: "{{iteration}} < {{max_iterations}} and not {{converged}}"
+  max_while_iterations: 10  # Safety limit (default: 100)
+  agent: "foundation:optimizer"
+  prompt: "Improve based on performance: {{metrics}}"
+  output: "improvement_result"
+  update_context:
+    iteration: "{{iteration}} + 1"
+    converged: "{{improvement_result.converged}}"
+```
+
+**How it works:**
+1. **Before each iteration**, evaluate `while_condition`
+2. If `true` → execute step body
+3. If `false` → exit loop
+4. Apply `update_context` mappings after each iteration
+5. Repeat until condition is false or `max_while_iterations` reached
+
+**Key differences from `foreach`:**
+- `foreach`: Fixed iteration count (list size)
+- `while_condition`: Dynamic iteration count (until convergence)
+- `foreach`: No state mutation needed
+- `while_condition`: Typically uses `update_context` to mutate state
+
+**Use cases:**
+- Meta-learning optimization loops (SOAR pattern)
+- Iterative improvement until quality threshold met
+- Convergence-based algorithms
+- Adaptive problem-solving workflows
+
+**Example: SOAR meta-learning**
+
+```yaml
+name: "soar-improvement"
+description: "Self-optimization via teacher/student meta-learning"
+version: "1.0.0"
+
+context:
+  iteration: 0
+  max_iterations: 10
+  converged: false
+  student_performance: []
+  convergence_threshold: 0.95
+
+steps:
+  - id: "teacher-generate"
+    while_condition: "{{iteration}} < {{max_iterations}} and not {{converged}}"
+    max_while_iterations: 10
+    agent: "soar:teacher-agent"
+    prompt: |
+      Generate problems targeting weak areas.
+      Performance history: {{student_performance}}
+      Iteration: {{iteration}}
+    output: "problems"
+    parse_json: true
+  
+  - id: "student-solve"
+    foreach: "{{problems}}"
+    as: "problem"
+    agent: "soar:student-agent"
+    prompt: "Solve: {{problem}}"
+    collect: "solutions"
+  
+  - id: "evaluate"
+    agent: "soar:evaluator"
+    prompt: "Score solutions against problems"
+    output: "eval_result"
+    parse_json: true
+    update_context:
+      iteration: "{{iteration}} + 1"
+      converged: "{{eval_result.performance}} > {{convergence_threshold}}"
+      student_performance: "{{student_performance}} + [{{eval_result.performance}}]"
+    break_when: "{{eval_result.performance}} > {{convergence_threshold}}"
+```
+
+### Early Loop Termination
+
+Use `break_when` to exit a loop early when a condition is met:
+
+```yaml
+- id: "search-until-found"
+  foreach: "{{candidates}}"
+  as: "candidate"
+  break_when: "{{candidate_score}} > {{threshold}}"
+  agent: "foundation:evaluator"
+  prompt: "Evaluate {{candidate}}"
+  output: "candidate_score"
+```
+
+**Behavior:**
+- Checked AFTER each iteration
+- If `true` → exit loop immediately, preserve results collected so far
+- If `false` → continue to next iteration
+- Works with both `foreach` and `while_condition` loops
+
+**Use cases:**
+- Search until first match found
+- Optimization until target quality reached
+- Early stopping when threshold exceeded
+
+### State Mutation During Loops
+
+Use `update_context` to modify context variables during loop iterations:
+
+```yaml
+- id: "accumulate-results"
+  while_condition: "{{iteration}} < {{max_iterations}}"
+  agent: "foundation:processor"
+  prompt: "Process iteration {{iteration}}"
+  output: "result"
+  update_context:
+    iteration: "{{iteration}} + 1"
+    accumulated_data: "{{accumulated_data}} + [{{result}}]"
+    quality_score: "{{result.quality}}"
+```
+
+**Syntax:**
+```yaml
+update_context:
+  variable_name: "expression with {{variables}}"
+```
+
+**When evaluated:**
+- AFTER step execution
+- AFTER `output` is stored in context
+- BEFORE `break_when` is checked
+
+**Current capabilities:**
+- Variable substitution: `"{{value}}"`
+- Simple concatenation: `"prefix-{{value}}"`
+- Future: Expression evaluation for arithmetic, array operations
+
+**Use cases:**
+- Incrementing iteration counters
+- Accumulating results across iterations
+- Updating convergence signals
+- Meta-learning state updates
+
+**Important:** `update_context` happens in-place during the loop. Variables are updated in the shared context, affecting subsequent iterations.
+
+### Combining Loop Features
+
+All loop features can be used together:
+
+```yaml
+- id: "complex-optimization"
+  while_condition: "{{iteration}} < {{max_iterations}} and not {{converged}}"
+  max_while_iterations: 20
+  agent: "foundation:optimizer"
+  prompt: "Optimize: {{current_state}}"
+  output: "improvement"
+  parse_json: true
+  update_context:
+    iteration: "{{iteration}} + 1"
+    current_state: "{{improvement.new_state}}"
+    quality: "{{improvement.quality}}"
+    converged: "{{improvement.quality}} > {{target_quality}}"
+  break_when: "{{improvement.quality}} > {{target_quality}}"
+```
+
+**Execution order:**
+1. Evaluate `while_condition` → Continue if true
+2. Execute step body
+3. Store `output`
+4. Apply `update_context` mappings
+5. Check `break_when` → Exit if true
+6. Repeat from step 1
+
 ### Deferred Features
 
 These features may be added based on real usage needs:
@@ -1828,7 +2007,7 @@ These features may be added based on real usage needs:
 - Checkpointing/resumability for long loops
 - Nested loops (`nested_foreach`)
 - Index variable (`index_as`)
-- Early termination (`break_if`)
+- Expression evaluation in `update_context` (arithmetic, array concat)
 
 ---
 
