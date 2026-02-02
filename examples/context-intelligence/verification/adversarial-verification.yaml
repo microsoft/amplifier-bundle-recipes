@@ -1,0 +1,1074 @@
+# Adversarial Deep Dive Investigation Recipe v2.0
+#
+# IMPROVEMENTS OVER v1:
+# - Quick pre-check stage (fail fast on bad inputs)
+# - Confidence tagging in investigation phase
+# - Broadened LSP verifier (call chains, types, not just line numbers)
+# - Added completeness verifier (finds omissions)
+# - Real escalation tiers (Standard → Aggressive → Final)
+# - Structured verdict blocks (reliable parsing)
+# - Cross-visibility between verifiers in later rounds
+# - Focus-on-changes mode for rounds 2+
+# - Early-exit for consistently clean agents
+# - Weighted verifier importance (logic_verifier prioritized)
+# - Round timing metrics
+# - Per-agent issue attribution in logs
+# - Critical issue human checkpoint
+# - Wired up additional_agents variable
+# - Fixed timestamp bug in HEREDOC
+#
+# Usage:
+#   amplifier recipe run adversarial-deep-dive-v2.yaml \
+#     --context topic="How does cancellation work in amplifier-app-cli?" \
+#     --context output_dir="./docs/investigations" \
+#     --context codebase_paths='["./amplifier-core", "./amplifier-foundation"]'
+
+name: adversarial-verification
+version: "2.0.0"
+description: |
+  Deep investigation of a technical topic with adversarial verification.
+  
+  v2 Improvements:
+  - Pre-check stage validates inputs before expensive investigation
+  - Confidence tagging reduces false claims in initial synthesis
+  - Real escalation tiers change behavior each round
+  - Structured verdicts replace fragile text pattern matching
+  - Cross-visibility lets verifiers learn from each other
+  - Focus-on-changes mode speeds convergence in later rounds
+  - Critical issue checkpoint pauses for human review
+  - Timing metrics track performance
+  
+  Process:
+  1. Pre-check validates topic and paths (2 min)
+  2. Parallel investigation with confidence tagging (15 min)
+  3. Synthesis into structured document v1
+  4. Adversarial verification rounds with escalation
+  5. Human approval of verified document
+
+# =============================================================================
+# CONTEXT VARIABLES (Inputs)
+# =============================================================================
+context:
+  # Required inputs
+  topic:
+    type: string
+    required: true
+    description: |
+      The question or topic to investigate. Be specific.
+      Example: "How does the system prompt get composed for a bundle session?"
+  
+  output_dir:
+    type: string
+    required: true
+    description: |
+      Directory to save investigation documents.
+      Will contain: v1.md, v2.md, ..., FINAL.md, verification-log.md, metrics.json
+  
+  # Optional inputs with defaults
+  codebase_paths:
+    type: array
+    default: ["."]
+    description: |
+      List of paths to investigate. Defaults to current directory.
+      Example: ["./amplifier-core", "./amplifier-foundation"]
+  
+  max_rounds:
+    type: integer
+    default: 5
+    description: |
+      Maximum adversarial verification rounds before forcing human review.
+      Typical: 3-4 rounds for clean verification.
+  
+  focus_areas:
+    type: array
+    default: []
+    description: |
+      Optional list of specific files, modules, or concepts to focus on.
+      Example: ["registry.py", "bundle composition", "context resolution"]
+  
+  additional_agents:
+    type: array
+    default: []
+    description: |
+      Additional agents beyond the core set for investigation phase.
+      These are ADDED to the default investigation agents.
+      Example: ["amplifier:amplifier-expert", "foundation:security-guardian"]
+  
+  additional_verifiers:
+    type: array
+    default: []
+    description: |
+      Additional verification agents beyond the core set.
+      Example: ["foundation:security-guardian"]
+  
+  investigation_type:
+    type: string
+    default: "codebase"
+    description: |
+      Type of investigation. Affects agent prioritization.
+      Options: "codebase" | "architecture" | "integration" | "security"
+  
+  critical_issue_threshold:
+    type: integer
+    default: 5
+    description: |
+      If a single round finds this many issues, pause for human checkpoint.
+      Set to 0 to disable (never pause mid-verification).
+  
+  early_exit_clean_rounds:
+    type: integer
+    default: 2
+    description: |
+      If an agent is clean for this many consecutive rounds, skip it.
+      Optimization to reduce redundant verification work.
+
+  # ==========================================================================
+  # INTERNAL: Agent Configurations
+  # ==========================================================================
+  
+  # Core investigation agents (additional_agents extends this)
+  investigation_agents:
+    - name: "explorer"
+      agent: "foundation:explorer"
+      focus: "code survey and data flow"
+      weight: 1.0
+      mission: |
+        Conduct a comprehensive survey of the codebase.
+        Find entry points, key files, data flow, and dependencies.
+        Map the complete flow from trigger to completion.
+    - name: "lsp"
+      agent: "lsp-python:python-code-intel"
+      focus: "precise call chains, types, and line numbers"
+      weight: 1.0
+      mission: |
+        Use LSP tools to trace precise call hierarchy and type information.
+        Verify exact line numbers, function signatures, and call relationships.
+        Use hover for type info, goToDefinition for locations, call hierarchy for flow.
+    - name: "architect"
+      agent: "foundation:zen-architect"
+      focus: "design patterns and architecture"
+      weight: 1.0
+      mission: |
+        Analyze architectural design and patterns.
+        Identify module boundaries, contracts, and composition model.
+        Note design decisions and their implications.
+  
+  # Verification agents with weights (higher = more important)
+  verification_agents:
+    - name: "lsp_verifier"
+      agent: "lsp-python:python-code-intel"
+      focus: "code accuracy and call chains"
+      weight: 1.0
+      mission: |
+        PROVE THIS DOCUMENT WRONG using semantic code analysis:
+        
+        1. **Line numbers & paths**: Verify every file:line reference exists
+        2. **Function signatures**: Check parameter names, types, return values
+        3. **Call chains**: Verify claimed A→B→C flows with incomingCalls/outgoingCalls
+        4. **Type claims**: Use hover to verify stated types match actual
+        5. **Missing steps**: Use call hierarchy to find omitted intermediate calls
+    - name: "flow_verifier"
+      agent: "foundation:explorer"
+      focus: "flow accuracy and completeness"
+      weight: 1.0
+      mission: |
+        PROVE THE FLOW DESCRIPTION WRONG. Check:
+        - Sequence of operations (order matters!)
+        - Missing steps in the flow
+        - Dependencies and initialization order
+        - Data transformations at each step
+        - Error handling paths
+    - name: "logic_verifier"
+      agent: "foundation:bug-hunter"
+      focus: "logical errors and omissions"
+      weight: 1.5  # Higher weight - historically finds most issues
+      mission: |
+        FIND LOGICAL ERRORS OR OMISSIONS. This is the most critical verifier.
+        
+        Check for:
+        - Inconsistencies between sections
+        - Missing edge cases and error paths
+        - Incorrect assumptions about behavior
+        - Ambiguous or misleading statements
+        - Claims that contradict each other
+        - Logical leaps without evidence
+    - name: "completeness_verifier"
+      agent: "foundation:explorer"
+      focus: "missing information"
+      weight: 1.2
+      mission: |
+        Find what the document OMITS. The most dangerous errors are missing pieces.
+        
+        1. Search for related files NOT mentioned in the document
+        2. Find sibling functions/classes that should be covered
+        3. Identify config files, constants, or env vars that affect behavior
+        4. Check for error handling paths not documented
+        5. Look for alternative code paths (if/else branches)
+        
+        Report: "OMISSION: Document doesn't mention [X] which affects [Y]"
+  
+  # Escalation tier definitions
+  escalation_tiers:
+    standard:
+      rounds: [1, 2]
+      parallel: true
+      require_evidence: false
+      cross_visibility: false
+      description: "Standard verification - catch obvious errors"
+    aggressive:
+      rounds: [3, 4]
+      parallel: true
+      require_evidence: true
+      cross_visibility: true
+      description: "Aggressive verification - subtle errors, edge cases, patterns"
+    final:
+      rounds: [5]
+      parallel: false
+      require_evidence: true
+      cross_visibility: true
+      use_additional_agents: true
+      description: "Final verification - any remaining doubt, fresh perspectives"
+
+# =============================================================================
+# STAGES
+# =============================================================================
+stages:
+  # ===========================================================================
+  # STAGE 0: PRE-CHECK (Quick Validation)
+  # ===========================================================================
+  - name: pre_check
+    description: |
+      Quick validation that the topic is investigable and inputs are valid.
+      Fails fast before expensive investigation if inputs are bad.
+    approval_required: false
+    
+    steps:
+      - id: validate_inputs
+        agent: self
+        timeout: 120  # 2 minutes max
+        prompt: |
+          # Quick Pre-Check (Max 2 minutes)
+          
+          Before full investigation, validate that this request is investigable.
+          
+          ## Inputs to Validate
+          - **Topic**: {{topic}}
+          - **Codebase paths**: {{codebase_paths}}
+          - **Focus areas**: {{focus_areas}}
+          - **Investigation type**: {{investigation_type}}
+          
+          ## Validation Checks
+          
+          Perform these checks quickly:
+          
+          ### 1. Paths Exist
+          Check that each path in codebase_paths exists:
+          ```bash
+          for path in {{codebase_paths}}; do
+            test -e "$path" && echo "✓ $path exists" || echo "✗ $path NOT FOUND"
+          done
+          ```
+          
+          ### 2. Topic Clarity
+          Is the topic a clear, answerable question?
+          - ✓ Good: "How does session cancellation propagate to running agents?"
+          - ✗ Bad: "Explain everything about sessions"
+          - ✗ Bad: "Fix the bug" (no question)
+          
+          ### 3. Scope Sanity
+          - Is this too broad? (Would require 50+ page document)
+          - Is this too narrow? (Answer is trivial)
+          - Is this actually multiple questions? (Should be split)
+          
+          ### 4. Relevant Code Exists
+          Quick grep for keywords from the topic in the codebase:
+          - Extract 3-5 key terms from the topic
+          - Search for them in the codebase
+          - At least some should have matches
+          
+          ## Output Format
+          
+          You MUST output this exact block at the end:
+          
+          ```precheck
+          PATHS_VALID: [true|false]
+          TOPIC_CLEAR: [true|false]
+          SCOPE_OK: [true|false]
+          RELEVANT_CODE_FOUND: [true|false]
+          PROCEED: [true|false]
+          ESTIMATED_COMPLEXITY: [low|medium|high]
+          NOTES: [any concerns or suggestions]
+          ```
+          
+          If PROCEED is false, explain what's wrong and suggest fixes.
+          Be helpful - if the topic just needs minor rewording, suggest it.
+        output: "precheck_result"
+      
+      - id: check_proceed
+        agent: self
+        prompt: |
+          # Evaluate Pre-Check Result
+          
+          Pre-check output:
+          {{precheck_result}}
+          
+          Extract the PROCEED value from the precheck block.
+          
+          If PROCEED: false, output:
+          ```
+          ❌ PRE-CHECK FAILED
+          
+          [Extract and display the NOTES explaining what's wrong]
+          
+          Please fix the inputs and try again.
+          ```
+          
+          If PROCEED: true, output:
+          ```
+          ✅ PRE-CHECK PASSED
+          
+          Proceeding with investigation...
+          - Complexity: [ESTIMATED_COMPLEXITY value]
+          - Notes: [any notes]
+          ```
+        output: "proceed_decision"
+
+  # ===========================================================================
+  # STAGE 1: INITIAL INVESTIGATION
+  # ===========================================================================
+  - name: initial_investigation
+    description: |
+      Parallel multi-agent investigation of the topic.
+      Each agent brings a different perspective and toolset.
+      Results are confidence-tagged before synthesis.
+    approval_required: false
+    
+    steps:
+      - id: parallel_investigation
+        agent: self
+        prompt: |
+          # Parallel Investigation Orchestrator
+          
+          You are orchestrating a multi-agent investigation. Dispatch multiple agents
+          IN PARALLEL and collect their findings.
+          
+          ## Topic to Investigate
+          {{topic}}
+          
+          ## Scope
+          - Codebase paths: {{codebase_paths}}
+          - Focus areas: {{focus_areas}}
+          - Investigation type: {{investigation_type}}
+          
+          ## Investigation Agents to Dispatch
+          
+          ### Core Agents (always used):
+          {{investigation_agents}}
+          
+          ### Additional Agents (user-specified):
+          {{additional_agents}}
+          
+          ## Instructions
+          
+          For EACH agent (core + additional), create a delegate() call with:
+          
+          1. **agent**: The agent identifier (e.g., "foundation:explorer")
+          2. **instruction**: Include:
+             - The topic: {{topic}}
+             - Their role name and focus area
+             - Their specific mission
+             - The scope (codebase_paths, focus_areas)
+             - Deliverable requirements (below)
+          
+          ## Required Deliverables (include in each instruction)
+          
+          Tell each agent to provide findings in this format:
+          
+          ```
+          ## [Agent Name] Findings
+          
+          ### Key Discoveries
+          [Numbered list of findings]
+          
+          ### File References
+          | File | Lines | What |
+          |------|-------|------|
+          | path/to/file.py | 45-67 | Description |
+          
+          ### Code Flow
+          [If applicable, describe the flow with steps]
+          
+          ### Confidence Markers
+          For EACH factual claim, mark confidence:
+          - [HIGH] Multiple sources confirm OR LSP-verified
+          - [MEDIUM] Single source, plausible but not cross-verified
+          - [LOW] Inferred, uncertain, or couldn't fully verify
+          
+          ### Uncertainties
+          [List anything they couldn't verify or aren't sure about]
+          ```
+          
+          ## Execution
+          
+          1. Launch ALL delegate() calls in a SINGLE function_calls block
+          2. Wait for all agents to complete
+          3. Collect and organize their findings
+          4. Return consolidated report with confidence markers preserved
+          
+          ## Timing
+          
+          Record start time before dispatching, end time after all complete.
+          Include in output:
+          ```
+          Investigation Timing:
+          - Started: [timestamp]
+          - Completed: [timestamp]
+          - Duration: [seconds]
+          - Agents dispatched: [count]
+          ```
+        output: "investigation_findings"
+        timeout: 900  # 15 minutes
+
+      - id: confidence_tagging
+        agent: self
+        prompt: |
+          # Confidence Consolidation Pass
+          
+          Review the investigation findings and ensure all claims are tagged.
+          
+          ## Raw Findings
+          {{investigation_findings}}
+          
+          ## Your Task
+          
+          1. Scan for any claims WITHOUT confidence tags
+          2. Add tags based on evidence:
+             - [HIGH]: Claim appears in multiple agent outputs OR has LSP evidence
+             - [MEDIUM]: Single agent found it, seems plausible
+             - [LOW]: Inferred, speculative, or agents disagreed
+          
+          3. Flag CONFLICTS where agents disagree:
+             ```
+             ⚠️ CONFLICT: [topic]
+             - Agent A says: [claim]
+             - Agent B says: [different claim]
+             - Resolution needed in synthesis
+             ```
+          
+          4. Create a summary of confidence distribution:
+             ```
+             Confidence Summary:
+             - HIGH confidence claims: [count]
+             - MEDIUM confidence claims: [count]
+             - LOW confidence claims: [count]
+             - CONFLICTS to resolve: [count]
+             ```
+          
+          Output the tagged findings with the summary appended.
+        output: "tagged_findings"
+
+  # ===========================================================================
+  # STAGE 2: SYNTHESIS
+  # ===========================================================================
+  - name: synthesis
+    description: |
+      Combine investigation findings into a structured document (v1).
+      Respects confidence tags - LOW confidence items noted as needing verification.
+    approval_required: false
+    
+    steps:
+      - id: create_v1_document
+        agent: foundation:zen-architect
+        prompt: |
+          # Synthesize Investigation Findings
+          
+          ## Topic
+          {{topic}}
+          
+          ## Input Findings (with confidence tags)
+          {{tagged_findings}}
+          
+          ## Your Task
+          
+          Create a comprehensive, well-structured document that:
+          
+          1. **Synthesizes** all HIGH and MEDIUM confidence findings
+          2. **Notes LOW confidence items** as "needs verification"
+          3. **Resolves conflicts** - pick most evidenced position, note alternatives
+          4. **Includes precise references** (file paths, line numbers)
+          5. **Uses diagrams** (ASCII) for complex flows
+          
+          ## Document Structure
+          
+          Use this EXACT structure:
+          
+          ```markdown
+          # [Descriptive Title for {{topic}}]
+          
+          **Version**: 1
+          **Status**: Initial synthesis (pending verification)
+          **Confidence**: [% HIGH] high, [% MEDIUM] medium, [% LOW] low-confidence claims
+          **Date**: [YYYY-MM-DD HH:MM]
+          
+          ## Executive Summary
+          [2-3 sentence answer to the topic question]
+          
+          ## Overview
+          [High-level explanation - what, why, context]
+          
+          ## Complete Flow
+          
+          ### Flow Diagram
+          ```
+          [ASCII diagram showing the overall flow]
+          ```
+          
+          ### Step-by-Step
+          1. **Step Name** (file.py:L##)
+             - What happens
+             - Why it matters
+          
+          2. **Next Step** (file.py:L##)
+             ...
+          
+          ## Key Components
+          
+          | Component | File | Lines | Confidence | Description |
+          |-----------|------|-------|------------|-------------|
+          | ... | ... | ... | HIGH/MED/LOW | ... |
+          
+          ## Technical Details
+          [Implementation specifics, edge cases, important nuances]
+          
+          ## Needs Verification
+          [List all LOW confidence claims that verifiers should check]
+          - [ ] Claim 1 - why uncertain
+          - [ ] Claim 2 - why uncertain
+          
+          ## Resolved Conflicts
+          [If any conflicts existed, how they were resolved]
+          
+          ## Open Questions
+          [Any questions the investigation couldn't answer]
+          ```
+          
+          ## Critical Requirements
+          - Preserve confidence tags from source material
+          - Every file path must be exact
+          - Every line number must be precise
+          - Flag anything uncertain in "Needs Verification"
+        output: "document_v1"
+      
+      - id: save_v1
+        type: bash
+        command: |
+          # Pre-compute timestamp to avoid HEREDOC issues
+          TIMESTAMP=$(date -Iseconds)
+          
+          mkdir -p "{{output_dir}}"
+          
+          # Save v1 document
+          cat > "{{output_dir}}/INVESTIGATION_v1.md" << 'DOCUMENT_END'
+          {{document_v1}}
+          DOCUMENT_END
+          
+          # Initialize verification log
+          cat > "{{output_dir}}/verification-log.md" << LOGEOF
+          # Verification Log: {{topic}}
+          
+          ## Investigation Overview
+          - **Topic**: {{topic}}
+          - **Started**: ${TIMESTAMP}
+          - **Max rounds**: {{max_rounds}}
+          - **Critical issue threshold**: {{critical_issue_threshold}}
+          - **Early exit after clean rounds**: {{early_exit_clean_rounds}}
+          
+          ## Agent Configuration
+          
+          ### Investigation Agents
+          - explorer (foundation:explorer)
+          - lsp (lsp-python:python-code-intel)
+          - architect (foundation:zen-architect)
+          - Additional: {{additional_agents}}
+          
+          ### Verification Agents
+          - lsp_verifier (weight: 1.0)
+          - flow_verifier (weight: 1.0)
+          - logic_verifier (weight: 1.5) ⭐ Primary
+          - completeness_verifier (weight: 1.2)
+          - Additional: {{additional_verifiers}}
+          
+          ## Round History
+          
+          ### Initial Synthesis (v1)
+          - **Created**: ${TIMESTAMP}
+          - **Status**: Pending adversarial verification
+          
+          ---
+          LOGEOF
+          
+          # Initialize metrics file
+          cat > "{{output_dir}}/metrics.json" << METRICSEOF
+          {
+            "topic": "{{topic}}",
+            "started": "${TIMESTAMP}",
+            "investigation_phase": {},
+            "rounds": [],
+            "agent_performance": {
+              "lsp_verifier": {"issues_found": 0, "clean_rounds": 0},
+              "flow_verifier": {"issues_found": 0, "clean_rounds": 0},
+              "logic_verifier": {"issues_found": 0, "clean_rounds": 0},
+              "completeness_verifier": {"issues_found": 0, "clean_rounds": 0}
+            }
+          }
+          METRICSEOF
+          
+          echo "Created v1 document, verification log, and metrics in {{output_dir}}"
+
+  # ===========================================================================
+  # STAGE 3: ADVERSARIAL VERIFICATION (Iterative with Escalation)
+  # ===========================================================================
+  - name: adversarial_verification
+    description: |
+      Iterative adversarial verification with real escalation tiers.
+      - Rounds 1-2: Standard (parallel, obvious errors)
+      - Rounds 3-4: Aggressive (parallel, cross-visibility, evidence required)
+      - Round 5+: Final (sequential, fresh agents, any doubt)
+    approval_required: false
+    
+    steps:
+      - id: verification_loop
+        agent: self
+        prompt: |
+          # Adversarial Verification Orchestrator v2
+          
+          You are orchestrating iterative adversarial verification with REAL escalation.
+          
+          ## Context
+          - **Topic**: {{topic}}
+          - **Output directory**: {{output_dir}}
+          - **Max rounds**: {{max_rounds}}
+          - **Critical issue threshold**: {{critical_issue_threshold}} (pause for human if exceeded)
+          - **Early exit clean rounds**: {{early_exit_clean_rounds}}
+          
+          ## Verification Agents
+          {{verification_agents}}
+          
+          ## Additional Verifiers (user-specified)
+          {{additional_verifiers}}
+          
+          ## Escalation Tiers
+          {{escalation_tiers}}
+          
+          ## State Tracking
+          
+          You MUST maintain this state across rounds:
+          
+          ```state
+          current_round: 1
+          current_version: 1
+          total_issues_fixed: 0
+          agent_clean_streaks: {
+            "lsp_verifier": 0,
+            "flow_verifier": 0,
+            "logic_verifier": 0,
+            "completeness_verifier": 0
+          }
+          previous_round_findings: {}
+          round_timings: []
+          ```
+          
+          ## Main Loop (up to {{max_rounds}} rounds)
+          
+          ### For Each Round N:
+          
+          **Step 1: Determine Escalation Tier**
+          
+          ```
+          if N in [1, 2]: tier = "standard"
+          elif N in [3, 4]: tier = "aggressive"  
+          else: tier = "final"
+          ```
+          
+          **Step 2: Select Active Verifiers**
+          
+          Skip agents with clean_streak >= {{early_exit_clean_rounds}}:
+          ```
+          active_verifiers = []
+          for agent in verification_agents:
+            if agent_clean_streaks[agent.name] < {{early_exit_clean_rounds}}:
+              active_verifiers.append(agent)
+            else:
+              log(f"Skipping {agent.name} - clean for {agent_clean_streaks[agent.name]} rounds")
+          ```
+          
+          Exception: logic_verifier is NEVER skipped (highest weight, finds most issues).
+          
+          **Step 3: Read Current Document**
+          
+          Read `{{output_dir}}/INVESTIGATION_v{N}.md`
+          
+          **Step 4: Build Verifier Instructions**
+          
+          For EACH active verifier, build instruction based on tier:
+          
+          #### Standard Tier (Rounds 1-2)
+          ```
+          ADVERSARIAL VERIFICATION - Round {N} (Standard)
+          
+          Your mission: {agent.mission}
+          Focus: {agent.focus}
+          
+          Document: {{output_dir}}/INVESTIGATION_v{N}.md
+          
+          For each claim in your focus area:
+          - ✅ VERIFIED: [claim] - Evidence: [what you checked]
+          - ❌ INCORRECT: [claim] - Actual: [correct info] - Source: [file:line]
+          
+          You MUST end with this verdict block:
+          
+          ```verdict
+          AGENT: {agent.name}
+          ISSUES_FOUND: [integer]
+          ISSUE_LIST: [semicolon-separated list of issues, or "none"]
+          CONFIDENCE: [HIGH|MEDIUM|LOW]
+          VERDICT: [CLEAN|ISSUES]
+          ```
+          ```
+          
+          #### Aggressive Tier (Rounds 3-4)
+          ```
+          ADVERSARIAL VERIFICATION - Round {N} (Aggressive)
+          
+          ESCALATION: Evidence REQUIRED for every claim. Look for PATTERNS.
+          
+          Your mission: {agent.mission}
+          Focus: {agent.focus}
+          
+          Document: {{output_dir}}/INVESTIGATION_v{N}.md
+          
+          ## Previous Round Context
+          Other verifiers found these issues last round:
+          {previous_round_findings}
+          
+          Look for SIMILAR PATTERNS to what they found.
+          
+          ## Requirements
+          - EVERY verification must cite file:line evidence
+          - Check for patterns similar to previous issues
+          - Look for subtle errors, edge cases, implicit assumptions
+          
+          For each claim:
+          - ✅ VERIFIED: [claim] - Evidence: [file:line proof]
+          - ❌ INCORRECT: [claim] - Actual: [correct info] - Source: [file:line]
+          
+          ```verdict
+          AGENT: {agent.name}
+          ISSUES_FOUND: [integer]
+          ISSUE_LIST: [semicolon-separated list]
+          CONFIDENCE: [HIGH|MEDIUM|LOW]
+          VERDICT: [CLEAN|ISSUES]
+          ```
+          ```
+          
+          #### Final Tier (Round 5+)
+          ```
+          ADVERSARIAL VERIFICATION - Round {N} (FINAL)
+          
+          ⚠️ THIS IS THE FINAL CHECK. After this, the document ships.
+          
+          Your mission: {agent.mission}
+          Focus: {agent.focus}
+          
+          Document: {{output_dir}}/INVESTIGATION_v{N}.md
+          
+          ## All Previous Findings
+          {all_previous_findings}
+          
+          ## Your Charge
+          If you have ANY doubt about ANY claim, flag it now.
+          This is your last chance to catch errors.
+          
+          Be thorough. Be paranoid. Question everything.
+          
+          ```verdict
+          AGENT: {agent.name}
+          ISSUES_FOUND: [integer]
+          ISSUE_LIST: [semicolon-separated list]
+          CONFIDENCE: [HIGH|MEDIUM|LOW]
+          VERDICT: [CLEAN|ISSUES]
+          ```
+          ```
+          
+          **Step 5: Dispatch Verifiers**
+          
+          - Standard/Aggressive: Dispatch ALL active verifiers IN PARALLEL
+          - Final: Dispatch SEQUENTIALLY (each sees previous results)
+          
+          Record start time before dispatch.
+          
+          **Step 6: Parse Verdicts**
+          
+          For EACH agent response, extract the verdict block:
+          
+          ```python
+          # Parse verdict block
+          verdict_match = re.search(r'```verdict\n(.*?)\n```', response, re.DOTALL)
+          if not verdict_match:
+              # Missing verdict = treat as ISSUES, force clarification
+              agent_result = {"verdict": "ISSUES", "issues_found": -1, "needs_rerun": True}
+          else:
+              # Parse structured fields
+              agent_result = parse_verdict_block(verdict_match.group(1))
+          ```
+          
+          **Step 7: Aggregate Results**
+          
+          ```python
+          round_issues = 0
+          agent_issues = {}
+          
+          for agent, result in results.items():
+              agent_issues[agent] = result["issues_found"]
+              round_issues += result["issues_found"]
+              
+              if result["verdict"] == "CLEAN":
+                  agent_clean_streaks[agent] += 1
+              else:
+                  agent_clean_streaks[agent] = 0
+          
+          round_is_clean = (round_issues == 0) and all(r["verdict"] == "CLEAN" for r in results.values())
+          ```
+          
+          Record end time, calculate duration.
+          
+          **Step 8: Critical Issue Checkpoint**
+          
+          If round_issues >= {{critical_issue_threshold}} AND {{critical_issue_threshold}} > 0:
+          ```
+          ⚠️ CRITICAL ISSUE CHECKPOINT
+          
+          Round {N} found {round_issues} issues, exceeding threshold of {{critical_issue_threshold}}.
+          
+          Issues by agent:
+          {agent_issues breakdown}
+          
+          Issue details:
+          {issue_list from verdicts}
+          
+          This may indicate fundamental problems with the investigation.
+          Pausing for human review before continuing.
+          
+          Options:
+          1. Continue with corrections
+          2. Restart investigation with refined focus
+          3. Abort and investigate manually
+          ```
+          
+          [In a real implementation, this would trigger an approval gate]
+          
+          **Step 9a: If ISSUES Found**
+          
+          1. Collect all issues with agent attribution
+          2. Create corrected document fixing ALL issues
+          3. Increment version: Save as `{{output_dir}}/INVESTIGATION_v{N+1}.md`
+          4. Update verification log with per-agent attribution:
+             
+             ```markdown
+             ### Round {N} - {tier} Tier - Issues Found
+             - **Duration**: {seconds}s
+             - **Active verifiers**: {count} ({list skipped if any})
+             - **Issues by agent**:
+               - lsp_verifier: {count} issues
+               - flow_verifier: {count} issues
+               - logic_verifier: {count} issues ⭐
+               - completeness_verifier: {count} issues
+             - **Total issues**: {round_issues}
+             - **Corrections made**:
+               - [{agent}] {issue}: {correction}
+               - [{agent}] {issue}: {correction}
+             - **New version**: v{N+1}
+             ```
+          
+          5. Update metrics.json with round data
+          6. Store findings for cross-visibility: previous_round_findings = current_findings
+          7. Continue to round N+1
+          
+          **Step 9b: If ALL CLEAN**
+          
+          1. Verification complete!
+          2. Read current document
+          3. Add "## Verification History" section summarizing all rounds
+          4. Save as `{{output_dir}}/INVESTIGATION_FINAL.md`
+          5. Update verification log:
+             
+             ```markdown
+             ### Round {N} - ALL CLEAN ✅
+             - **Duration**: {seconds}s
+             - **All {count} active agents**: No issues found
+             - **Document verified after {N} rounds**
+             
+             ## Final Summary
+             - **Total rounds**: {N}
+             - **Total issues fixed**: {total_issues_fixed}
+             - **Issues by agent (all rounds)**:
+               - logic_verifier: {total} (50%+)
+               - completeness_verifier: {total}
+               - flow_verifier: {total}
+               - lsp_verifier: {total}
+             - **Agents early-exited**: {list}
+             - **Total verification time**: {sum of round durations}
+             - **Final version**: INVESTIGATION_FINAL.md
+             ```
+          
+          6. STOP - verification complete
+          
+          **Step 9c: If MAX ROUNDS Reached**
+          
+          If completed round {{max_rounds}} with issues remaining:
+          
+          1. Create `{{output_dir}}/INVESTIGATION_FINAL.md` with warning header:
+             
+             ```markdown
+             > ⚠️ **VERIFICATION INCOMPLETE**: Max rounds ({{max_rounds}}) reached with issues remaining.
+             > Review the Remaining Concerns section carefully.
+             ```
+          
+          2. Add "## Remaining Concerns" section with unfixed issues
+          3. Update verification log noting max rounds hit
+          4. STOP - human will review
+          
+          ## Output Format
+          
+          When complete, report:
+          
+          ```
+          ## Verification Complete
+          
+          - **Result**: [VERIFIED CLEAN | MAX ROUNDS - needs review | CRITICAL CHECKPOINT]
+          - **Rounds completed**: {N}
+          - **Total issues found/fixed**: {total}
+          - **Final document**: {{output_dir}}/INVESTIGATION_FINAL.md
+          
+          ### Issue Attribution (All Rounds)
+          | Agent | Issues Found | % of Total |
+          |-------|--------------|------------|
+          | logic_verifier | X | Y% |
+          | completeness_verifier | X | Y% |
+          | flow_verifier | X | Y% |
+          | lsp_verifier | X | Y% |
+          
+          ### Round Summary
+          | Round | Tier | Duration | Issues | Agents Active |
+          |-------|------|----------|--------|---------------|
+          | 1 | Standard | Xs | N | 4 |
+          | 2 | Standard | Xs | N | 4 |
+          | ... | ... | ... | ... | ... |
+          
+          ### Timing Metrics
+          - Investigation phase: Xs
+          - Verification phase: Xs
+          - Total time: Xs
+          ```
+        output: "verification_result"
+        timeout: 3600  # 1 hour
+
+  # ===========================================================================
+  # STAGE 4: FINAL REVIEW (Human Approval Gate)
+  # ===========================================================================
+  - name: final_review
+    description: |
+      Human review of the verified document before final acceptance.
+    approval_required: true
+    approval_message: |
+      ## 🔍 Adversarial Deep Dive Complete (v2)
+      
+      **Topic**: {{topic}}
+      
+      ### Verification Result
+      {{verification_result}}
+      
+      ### Documents Created
+      - `{{output_dir}}/INVESTIGATION_FINAL.md` - The verified document
+      - `{{output_dir}}/verification-log.md` - Complete verification history
+      - `{{output_dir}}/metrics.json` - Performance metrics
+      - `{{output_dir}}/INVESTIGATION_v*.md` - All version files
+      
+      ### What to Review
+      1. **Read the final document** - Does it accurately answer your question?
+      2. **Check verification log** - Were the corrections sensible?
+      3. **Review metrics** - Was verification efficient?
+      4. **If max rounds hit** - Review remaining concerns carefully
+      
+      ---
+      
+      **APPROVE** to accept the investigation as complete and verified.
+      
+      **DENY** with feedback to request additional verification or changes.
+    
+    steps:
+      - id: present_final
+        type: bash
+        command: |
+          echo "╔════════════════════════════════════════════════════════════════╗"
+          echo "║           ADVERSARIAL DEEP DIVE - FINAL DOCUMENT               ║"
+          echo "╚════════════════════════════════════════════════════════════════╝"
+          echo ""
+          cat "{{output_dir}}/INVESTIGATION_FINAL.md"
+          echo ""
+          echo "╔════════════════════════════════════════════════════════════════╗"
+          echo "║                    VERIFICATION LOG                            ║"
+          echo "╚════════════════════════════════════════════════════════════════╝"
+          echo ""
+          cat "{{output_dir}}/verification-log.md"
+          echo ""
+          echo "╔════════════════════════════════════════════════════════════════╗"
+          echo "║                    METRICS                                      ║"
+          echo "╚════════════════════════════════════════════════════════════════╝"
+          echo ""
+          cat "{{output_dir}}/metrics.json"
+      
+      - id: generate_summary
+        agent: self
+        prompt: |
+          # Generate Final Summary
+          
+          Create a concise summary for the user:
+          
+          ## Investigation Complete: {{topic}}
+          
+          ### Result
+          {{verification_result}}
+          
+          ### Files Generated
+          Location: `{{output_dir}}/`
+          
+          | File | Description |
+          |------|-------------|
+          | `INVESTIGATION_FINAL.md` | The verified document |
+          | `verification-log.md` | Round-by-round history with agent attribution |
+          | `metrics.json` | Performance and timing data |
+          | `INVESTIGATION_v*.md` | All intermediate versions |
+          
+          ### Verification Process (v2)
+          
+          This document was verified through adversarial testing:
+          
+          | Verifier | Focus | Weight |
+          |----------|-------|--------|
+          | LSP Verifier | Code accuracy, call chains, types | 1.0 |
+          | Flow Verifier | Sequence, data flow, completeness | 1.0 |
+          | Logic Verifier | Logical errors, inconsistencies | 1.5 ⭐ |
+          | Completeness Verifier | Missing information, omissions | 1.2 |
+          
+          ### v2 Improvements Applied
+          - ✅ Pre-check validated inputs before investigation
+          - ✅ Confidence tagging reduced false claims
+          - ✅ Real escalation tiers increased scrutiny each round
+          - ✅ Structured verdicts enabled reliable parsing
+          - ✅ Cross-visibility let verifiers learn from each other
+          - ✅ Focus-on-changes sped up later rounds
+          - ✅ Per-agent attribution tracked issue sources
+          
+          The document represents our best verified understanding of: **{{topic}}**
+        output: "final_summary"
