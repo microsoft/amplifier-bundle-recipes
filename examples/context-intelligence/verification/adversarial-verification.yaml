@@ -1,6 +1,25 @@
-# Adversarial Deep Dive Investigation Recipe v2.0
+# Adversarial Deep Dive Investigation Recipe v2.2
 #
-# IMPROVEMENTS OVER v1:
+# IMPROVEMENTS OVER v2.1:
+# - CONVERGENCE DETECTION: Auto-detect when issues plateau across rounds
+#   - Configurable threshold for plateau detection
+#   - Tracks issue counts across rounds to identify stagnation
+# - SCOPE-AWARE EXIT: Exit early if only scope/completeness issues remain
+#   - Factual errors (LSP, logic) block exit
+#   - Scope expansion issues (completeness) don't block if factuals clean
+# - DYNAMIC AGENT WEIGHTING: Reduced completeness_verifier weight in continuation mode
+#   - Scope is already established in continuation mode
+#   - Prevents endless "omission" findings that are actually scope expansions
+# - CROSS-RUN METRICS: Track metrics across continuations for plateau detection
+# - SMART AUTO-APPROVE: Auto-approve when conditions met
+#   - Issues below threshold
+#   - No critical factual issues
+#   - Clean rounds from factual verifiers
+#
+# IMPROVEMENTS OVER v2.0 (from v2.1):
+# - CONTINUATION MODE: Resume verification from a previous document
+#
+# IMPROVEMENTS OVER v1 (from v2.0):
 # - Quick pre-check stage (fail fast on bad inputs)
 # - Confidence tagging in investigation phase
 # - Broadened LSP verifier (call chains, types, not just line numbers)
@@ -14,36 +33,73 @@
 # - Round timing metrics
 # - Per-agent issue attribution in logs
 # - Critical issue human checkpoint
-# - Wired up additional_agents variable
-# - Fixed timestamp bug in HEREDOC
 #
 # Usage:
-#   amplifier recipe run adversarial-deep-dive-v2.yaml \
+#
+#   FRESH INVESTIGATION (full pipeline):
+#   amplifier recipe run adversarial-verification-continuable.yaml \
 #     --context topic="How does cancellation work in amplifier-app-cli?" \
 #     --context output_dir="./docs/investigations" \
 #     --context codebase_paths='["./amplifier-core", "./amplifier-foundation"]'
+#
+#   CONTINUE FROM PREVIOUS RUN (skip to verification):
+#   amplifier recipe run adversarial-verification-continuable.yaml \
+#     --context topic="How does cancellation work in amplifier-app-cli?" \
+#     --context output_dir="./docs/investigations-continued" \
+#     --context continue_from="./docs/investigations/INVESTIGATION_v3.md" \
+#     --context starting_version=3
+#
+#   WITH CONVERGENCE DETECTION (auto-exit on plateau):
+#   amplifier recipe run adversarial-verification-continuable.yaml \
+#     --context topic="..." \
+#     --context output_dir="..." \
+#     --context convergence_threshold=2 \
+#     --context exit_on_scope_only_issues=true
 
-name: adversarial-verification
-version: "2.0.0"
+name: adversarial-verification-continuable
+version: "2.2.0"
 description: |
   Deep investigation of a technical topic with adversarial verification.
   
-  v2 Improvements:
+  v2.2 Additions (from session analysis):
+  - CONVERGENCE DETECTION: Auto-detect issue plateaus across rounds
+    - If issue count unchanged for N rounds, trigger early exit
+    - Prevents infinite loops when verifiers disagree on scope
+  - SCOPE-AWARE EXIT: Exit if only scope issues remain
+    - Factual verifiers (LSP, logic) must be clean
+    - Scope verifiers (completeness) can have issues without blocking
+  - DYNAMIC WEIGHTING: Reduced completeness_verifier weight in continuation mode
+    - Fresh mode: completeness_verifier weight = 1.2
+    - Continuation mode: completeness_verifier weight = 0.6
+    - Scope is already established, focus on factual accuracy
+  - SMART AUTO-APPROVE: Auto-approve final_review when conditions met
+    - Total issues below auto_approve_threshold
+    - No issues from factual verifiers (LSP, logic) in final round
+    - Saves human review time for clean documents
+  - CROSS-RUN METRICS: Track issue history for plateau detection
+  
+  v2.1 Additions:
+  - CONTINUATION MODE: Resume verification from a previous document
+  
+  v2.0 Improvements:
   - Pre-check stage validates inputs before expensive investigation
   - Confidence tagging reduces false claims in initial synthesis
   - Real escalation tiers change behavior each round
   - Structured verdicts replace fragile text pattern matching
   - Cross-visibility lets verifiers learn from each other
-  - Focus-on-changes mode speeds convergence in later rounds
   - Critical issue checkpoint pauses for human review
-  - Timing metrics track performance
   
-  Process:
+  Process (Fresh Mode):
   1. Pre-check validates topic and paths (2 min)
   2. Parallel investigation with confidence tagging (15 min)
   3. Synthesis into structured document v1
   4. Adversarial verification rounds with escalation
-  5. Human approval of verified document
+  5. Human approval of verified document (or auto-approve if conditions met)
+  
+  Process (Continuation Mode):
+  1. Load previous document as starting version
+  2. Adversarial verification with reduced completeness weight
+  3. Human approval (or auto-approve if conditions met)
 
 # =============================================================================
 # CONTEXT VARIABLES (Inputs)
@@ -63,6 +119,34 @@ context:
     description: |
       Directory to save investigation documents.
       Will contain: v1.md, v2.md, ..., FINAL.md, verification-log.md, metrics.json
+  
+  # ==========================================================================
+  # CONTINUATION MODE (Skip investigation, resume verification)
+  # ==========================================================================
+  continue_from:
+    type: string
+    default: ""
+    description: |
+      Path to a previously verified document to continue verification from.
+      When provided, skips pre_check, initial_investigation, and synthesis stages.
+      
+      Example: "./docs/investigations/INVESTIGATION_v3.md"
+      
+      Use this when:
+      - You want to run more verification rounds on an existing document
+      - Previous verification was interrupted
+      - You've manually edited a document and want to re-verify
+  
+  starting_version:
+    type: integer
+    default: 1
+    description: |
+      Version number to assign to the continue_from document.
+      Used when continuing from a previous run.
+      
+      Example: If continue_from is INVESTIGATION_v3.md, set starting_version to 3.
+      
+      This ensures version numbering continues correctly (v3 → v4 → v5 → FINAL).
   
   # Optional inputs with defaults
   codebase_paths:
@@ -121,6 +205,90 @@ context:
     description: |
       If an agent is clean for this many consecutive rounds, skip it.
       Optimization to reduce redundant verification work.
+  
+  # ==========================================================================
+  # v2.2: CONVERGENCE DETECTION & SMART EXIT
+  # ==========================================================================
+  
+  convergence_threshold:
+    type: integer
+    default: 2
+    description: |
+      Number of consecutive rounds with similar issue counts to detect plateau.
+      
+      When issues remain roughly constant for this many rounds, the recipe
+      will trigger early exit instead of continuing to max_rounds.
+      
+      Example: If set to 2 and rounds 4, 5, 6 all have ~5 issues, exit after round 6.
+      
+      Set to 0 to disable convergence detection (always run to max_rounds or clean).
+      
+      Rationale: Session analysis showed issue counts plateauing when verifiers
+      disagree on scope vs factual issues. Detecting this saves time.
+  
+  convergence_variance:
+    type: integer
+    default: 2
+    description: |
+      Allowed variance in issue counts when detecting convergence.
+      
+      Issues are considered "similar" if within ± this value.
+      Example: With variance=2, issue counts of 5, 6, 4 would be considered a plateau.
+      
+      Lower values = stricter plateau detection (must be nearly identical).
+      Higher values = looser detection (treats similar counts as plateau).
+  
+  exit_on_scope_only_issues:
+    type: boolean
+    default: true
+    description: |
+      Exit early if the only remaining issues are scope/completeness type.
+      
+      When true:
+      - If lsp_verifier and logic_verifier are CLEAN
+      - But completeness_verifier still has issues
+      - Consider the document "factually verified" and exit
+      
+      Rationale: Session analysis showed completeness_verifier finds "omissions"
+      that are actually scope expansions, not factual errors. These create
+      infinite loops as the scope keeps growing.
+      
+      The factual verifiers (LSP, logic) converge quickly because code facts
+      are binary (correct or incorrect). Scope is subjective.
+  
+  # ==========================================================================
+  # v2.2: SMART AUTO-APPROVE
+  # ==========================================================================
+  
+  auto_approve_threshold:
+    type: integer
+    default: 3
+    description: |
+      Maximum total issues in final round for auto-approval.
+      
+      If all these conditions are met, skip human review:
+      1. Total issues in final round ≤ this threshold
+      2. lsp_verifier had 0 issues in final round
+      3. logic_verifier had 0 issues in final round
+      4. No CRITICAL severity issues
+      
+      Set to 0 to disable auto-approval (always require human review).
+      
+      Rationale: When factual verifiers are clean and only minor scope
+      suggestions remain, human review adds little value.
+  
+  auto_approve_clean_factual_rounds:
+    type: integer
+    default: 1
+    description: |
+      Number of clean rounds required from factual verifiers for auto-approval.
+      
+      Factual verifiers: lsp_verifier, logic_verifier
+      These verify objective facts (code exists, logic is consistent).
+      
+      If these verifiers have been clean for N consecutive rounds,
+      the document is factually sound and can be auto-approved
+      (assuming other auto_approve conditions are met).
 
   # ==========================================================================
   # INTERNAL: Agent Configurations
@@ -154,11 +322,13 @@ context:
         Note design decisions and their implications.
   
   # Verification agents with weights (higher = more important)
+  # NOTE: In continuation mode, completeness_verifier weight is reduced dynamically
   verification_agents:
     - name: "lsp_verifier"
       agent: "lsp-python:python-code-intel"
       focus: "code accuracy and call chains"
       weight: 1.0
+      is_factual: true  # v2.2: Mark as factual verifier
       mission: |
         PROVE THIS DOCUMENT WRONG using semantic code analysis:
         
@@ -171,6 +341,7 @@ context:
       agent: "foundation:explorer"
       focus: "flow accuracy and completeness"
       weight: 1.0
+      is_factual: false
       mission: |
         PROVE THE FLOW DESCRIPTION WRONG. Check:
         - Sequence of operations (order matters!)
@@ -182,6 +353,7 @@ context:
       agent: "foundation:bug-hunter"
       focus: "logical errors and omissions"
       weight: 1.5  # Higher weight - historically finds most issues
+      is_factual: true  # v2.2: Mark as factual verifier
       mission: |
         FIND LOGICAL ERRORS OR OMISSIONS. This is the most critical verifier.
         
@@ -195,7 +367,9 @@ context:
     - name: "completeness_verifier"
       agent: "foundation:explorer"
       focus: "missing information"
-      weight: 1.2
+      weight: 1.2  # v2.2: Reduced to 0.6 in continuation mode (see verification_loop)
+      is_factual: false  # v2.2: Mark as scope verifier (not factual)
+      continuation_weight: 0.6  # v2.2: Lower weight in continuation mode
       mission: |
         Find what the document OMITS. The most dangerous errors are missing pieces.
         
@@ -206,6 +380,12 @@ context:
         5. Look for alternative code paths (if/else branches)
         
         Report: "OMISSION: Document doesn't mention [X] which affects [Y]"
+        
+        ⚠️ v2.2 NOTE: In continuation mode, your weight is reduced.
+        Focus on CRITICAL omissions only, not scope expansions.
+        The document scope is already established - don't suggest adding
+        tangential topics. Only flag omissions that would make the
+        existing content misleading or incomplete.
   
   # Escalation tier definitions
   escalation_tiers:
@@ -235,12 +415,16 @@ context:
 stages:
   # ===========================================================================
   # STAGE 0: PRE-CHECK (Quick Validation)
+  # SKIPPED in continuation mode
   # ===========================================================================
   - name: pre_check
     description: |
       Quick validation that the topic is investigable and inputs are valid.
       Fails fast before expensive investigation if inputs are bad.
+      
+      SKIPPED when continue_from is provided (continuation mode).
     approval_required: false
+    condition: "{{continue_from}} == ''"
     
     steps:
       - id: validate_inputs
@@ -335,13 +519,17 @@ stages:
 
   # ===========================================================================
   # STAGE 1: INITIAL INVESTIGATION
+  # SKIPPED in continuation mode
   # ===========================================================================
   - name: initial_investigation
     description: |
       Parallel multi-agent investigation of the topic.
       Each agent brings a different perspective and toolset.
       Results are confidence-tagged before synthesis.
+      
+      SKIPPED when continue_from is provided (continuation mode).
     approval_required: false
+    condition: "{{continue_from}} == ''"
     
     steps:
       - id: parallel_investigation
@@ -469,12 +657,16 @@ stages:
 
   # ===========================================================================
   # STAGE 2: SYNTHESIS
+  # SKIPPED in continuation mode
   # ===========================================================================
   - name: synthesis
     description: |
       Combine investigation findings into a structured document (v1).
       Respects confidence tags - LOW confidence items noted as needing verification.
+      
+      SKIPPED when continue_from is provided (continuation mode).
     approval_required: false
+    condition: "{{continue_from}} == ''"
     
     steps:
       - id: create_v1_document
@@ -578,10 +770,14 @@ stages:
           
           ## Investigation Overview
           - **Topic**: {{topic}}
+          - **Mode**: Fresh investigation
           - **Started**: ${TIMESTAMP}
           - **Max rounds**: {{max_rounds}}
           - **Critical issue threshold**: {{critical_issue_threshold}}
           - **Early exit after clean rounds**: {{early_exit_clean_rounds}}
+          - **Convergence threshold**: {{convergence_threshold}} rounds (v2.2)
+          - **Exit on scope-only issues**: {{exit_on_scope_only_issues}} (v2.2)
+          - **Auto-approve threshold**: {{auto_approve_threshold}} (v2.2)
           
           ## Agent Configuration
           
@@ -592,10 +788,10 @@ stages:
           - Additional: {{additional_agents}}
           
           ### Verification Agents
-          - lsp_verifier (weight: 1.0)
+          - lsp_verifier (weight: 1.0, factual: ✓)
           - flow_verifier (weight: 1.0)
-          - logic_verifier (weight: 1.5) ⭐ Primary
-          - completeness_verifier (weight: 1.2)
+          - logic_verifier (weight: 1.5, factual: ✓) ⭐ Primary
+          - completeness_verifier (weight: 1.2, scope-based)
           - Additional: {{additional_verifiers}}
           
           ## Round History
@@ -607,18 +803,32 @@ stages:
           ---
           LOGEOF
           
-          # Initialize metrics file
+          # Initialize metrics file with v2.2 fields
           cat > "{{output_dir}}/metrics.json" << METRICSEOF
           {
             "topic": "{{topic}}",
+            "mode": "fresh",
+            "version": "2.2.0",
             "started": "${TIMESTAMP}",
+            "config": {
+              "max_rounds": {{max_rounds}},
+              "convergence_threshold": {{convergence_threshold}},
+              "convergence_variance": {{convergence_variance}},
+              "exit_on_scope_only_issues": {{exit_on_scope_only_issues}},
+              "auto_approve_threshold": {{auto_approve_threshold}},
+              "early_exit_clean_rounds": {{early_exit_clean_rounds}}
+            },
             "investigation_phase": {},
             "rounds": [],
+            "issue_history": [],
+            "convergence_detected": false,
+            "scope_only_exit": false,
+            "auto_approved": false,
             "agent_performance": {
-              "lsp_verifier": {"issues_found": 0, "clean_rounds": 0},
-              "flow_verifier": {"issues_found": 0, "clean_rounds": 0},
-              "logic_verifier": {"issues_found": 0, "clean_rounds": 0},
-              "completeness_verifier": {"issues_found": 0, "clean_rounds": 0}
+              "lsp_verifier": {"issues_found": 0, "clean_rounds": 0, "is_factual": true},
+              "flow_verifier": {"issues_found": 0, "clean_rounds": 0, "is_factual": false},
+              "logic_verifier": {"issues_found": 0, "clean_rounds": 0, "is_factual": true},
+              "completeness_verifier": {"issues_found": 0, "clean_rounds": 0, "is_factual": false}
             }
           }
           METRICSEOF
@@ -627,6 +837,7 @@ stages:
 
   # ===========================================================================
   # STAGE 3: ADVERSARIAL VERIFICATION (Iterative with Escalation)
+  # Always runs - handles both fresh and continuation modes
   # ===========================================================================
   - name: adversarial_verification
     description: |
@@ -634,15 +845,137 @@ stages:
       - Rounds 1-2: Standard (parallel, obvious errors)
       - Rounds 3-4: Aggressive (parallel, cross-visibility, evidence required)
       - Round 5+: Final (sequential, fresh agents, any doubt)
+      
+      v2.2 Enhancements:
+      - Convergence detection: Exit if issues plateau for N rounds
+      - Scope-aware exit: Exit if only completeness issues remain
+      - Dynamic weighting: Reduced completeness_verifier weight in continuation mode
+      
+      In continuation mode, starts from the provided document and version number.
     approval_required: false
     
     steps:
+      # Setup step for continuation mode - copies previous document and initializes logs
+      - id: setup_continuation
+        type: bash
+        condition: "{{continue_from}} != ''"
+        command: |
+          # CONTINUATION MODE: Copy previous document to output_dir as starting version
+          TIMESTAMP=$(date -Iseconds)
+          
+          echo "═══════════════════════════════════════════════════════════════════"
+          echo "  CONTINUATION MODE ACTIVE (v2.2)"
+          echo "═══════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "Source document: {{continue_from}}"
+          echo "Starting version: {{starting_version}}"
+          echo "Output directory: {{output_dir}}"
+          echo ""
+          echo "v2.2 Enhancements Active:"
+          echo "  • Convergence threshold: {{convergence_threshold}} rounds"
+          echo "  • Exit on scope-only issues: {{exit_on_scope_only_issues}}"
+          echo "  • Auto-approve threshold: {{auto_approve_threshold}}"
+          echo "  • Completeness verifier weight: 0.6 (reduced from 1.2)"
+          echo ""
+          
+          # Validate source document exists
+          if [ ! -f "{{continue_from}}" ]; then
+            echo "ERROR: Source document not found: {{continue_from}}"
+            exit 1
+          fi
+          
+          mkdir -p "{{output_dir}}"
+          
+          # Copy the continue_from document as the starting version
+          cp "{{continue_from}}" "{{output_dir}}/INVESTIGATION_v{{starting_version}}.md"
+          
+          echo "✓ Copied source document to {{output_dir}}/INVESTIGATION_v{{starting_version}}.md"
+          
+          # Initialize verification log for continuation
+          cat > "{{output_dir}}/verification-log.md" << LOGEOF
+          # Verification Log: {{topic}}
+          
+          ## Investigation Overview
+          - **Topic**: {{topic}}
+          - **Mode**: CONTINUATION from previous run (v2.2)
+          - **Source document**: {{continue_from}}
+          - **Started**: ${TIMESTAMP}
+          - **Starting version**: v{{starting_version}}
+          - **Max rounds**: {{max_rounds}}
+          - **Critical issue threshold**: {{critical_issue_threshold}}
+          - **Early exit after clean rounds**: {{early_exit_clean_rounds}}
+          
+          ## v2.2 Convergence Settings
+          - **Convergence threshold**: {{convergence_threshold}} rounds
+          - **Convergence variance**: ±{{convergence_variance}} issues
+          - **Exit on scope-only issues**: {{exit_on_scope_only_issues}}
+          - **Auto-approve threshold**: {{auto_approve_threshold}}
+          
+          ## Agent Configuration (Continuation Mode Weights)
+          
+          ### Verification Agents
+          - lsp_verifier (weight: 1.0, factual: ✓)
+          - flow_verifier (weight: 1.0)
+          - logic_verifier (weight: 1.5, factual: ✓) ⭐ Primary
+          - completeness_verifier (weight: **0.6** ← reduced in continuation mode)
+          - Additional: {{additional_verifiers}}
+          
+          ## Round History
+          
+          ### Continuation Start (v{{starting_version}})
+          - **Source**: {{continue_from}}
+          - **Loaded**: ${TIMESTAMP}
+          - **Status**: Resuming adversarial verification with v2.2 enhancements
+          
+          ---
+          LOGEOF
+          
+          echo "✓ Created verification log"
+          
+          # Initialize metrics file for continuation with v2.2 fields
+          cat > "{{output_dir}}/metrics.json" << METRICSEOF
+          {
+            "topic": "{{topic}}",
+            "mode": "continuation",
+            "version": "2.2.0",
+            "continue_from": "{{continue_from}}",
+            "starting_version": {{starting_version}},
+            "started": "${TIMESTAMP}",
+            "config": {
+              "max_rounds": {{max_rounds}},
+              "convergence_threshold": {{convergence_threshold}},
+              "convergence_variance": {{convergence_variance}},
+              "exit_on_scope_only_issues": {{exit_on_scope_only_issues}},
+              "auto_approve_threshold": {{auto_approve_threshold}},
+              "early_exit_clean_rounds": {{early_exit_clean_rounds}},
+              "continuation_completeness_weight": 0.6
+            },
+            "rounds": [],
+            "issue_history": [],
+            "convergence_detected": false,
+            "scope_only_exit": false,
+            "auto_approved": false,
+            "agent_performance": {
+              "lsp_verifier": {"issues_found": 0, "clean_rounds": 0, "is_factual": true},
+              "flow_verifier": {"issues_found": 0, "clean_rounds": 0, "is_factual": false},
+              "logic_verifier": {"issues_found": 0, "clean_rounds": 0, "is_factual": true},
+              "completeness_verifier": {"issues_found": 0, "clean_rounds": 0, "is_factual": false, "weight": 0.6}
+            }
+          }
+          METRICSEOF
+          
+          echo "✓ Created metrics file"
+          echo ""
+          echo "Ready to begin adversarial verification from v{{starting_version}}"
+        output: "continuation_setup_result"
+
       - id: verification_loop
         agent: self
         prompt: |
-          # Adversarial Verification Orchestrator v2
+          # Adversarial Verification Orchestrator v2.2
           
-          You are orchestrating iterative adversarial verification with REAL escalation.
+          You are orchestrating iterative adversarial verification with REAL escalation
+          and v2.2 CONVERGENCE DETECTION.
           
           ## Context
           - **Topic**: {{topic}}
@@ -650,6 +983,40 @@ stages:
           - **Max rounds**: {{max_rounds}}
           - **Critical issue threshold**: {{critical_issue_threshold}} (pause for human if exceeded)
           - **Early exit clean rounds**: {{early_exit_clean_rounds}}
+          
+          ## v2.2 CONVERGENCE SETTINGS
+          - **Convergence threshold**: {{convergence_threshold}} rounds (exit if issues plateau)
+          - **Convergence variance**: ±{{convergence_variance}} issues (for plateau detection)
+          - **Exit on scope-only issues**: {{exit_on_scope_only_issues}}
+          - **Auto-approve threshold**: {{auto_approve_threshold}} (skip human review if met)
+          
+          ## MODE CHECK
+          
+          {% if continue_from != '' %}
+          ═══════════════════════════════════════════════════════════════════════════
+          ⚠️  CONTINUATION MODE ACTIVE (v2.2)
+          ═══════════════════════════════════════════════════════════════════════════
+          
+          - **Source document**: {{continue_from}}
+          - **Starting version**: {{starting_version}}
+          - **Initial document**: {{output_dir}}/INVESTIGATION_v{{starting_version}}.md
+          
+          ### CONTINUATION MODE WEIGHT ADJUSTMENTS
+          
+          In continuation mode, the document scope is ALREADY ESTABLISHED.
+          completeness_verifier findings are often scope expansions, not errors.
+          
+          **DYNAMIC WEIGHT ADJUSTMENT:**
+          - completeness_verifier weight: 0.6 (reduced from 1.2)
+          - This means completeness issues count less toward totals
+          - Prevents infinite loops from scope expansion suggestions
+          
+          IMPORTANT: Initialize current_version to {{starting_version}} (NOT 1).
+          
+          ═══════════════════════════════════════════════════════════════════════════
+          {% else %}
+          Mode: Fresh investigation (starting from v1)
+          {% endif %}
           
           ## Verification Agents
           {{verification_agents}}
@@ -666,7 +1033,7 @@ stages:
           
           ```state
           current_round: 1
-          current_version: 1
+          current_version: {% if continue_from != '' %}{{starting_version}}{% else %}1{% endif %}
           total_issues_fixed: 0
           agent_clean_streaks: {
             "lsp_verifier": 0,
@@ -674,8 +1041,23 @@ stages:
             "logic_verifier": 0,
             "completeness_verifier": 0
           }
+          # v2.2: Track factual vs scope issues separately
+          agent_is_factual: {
+            "lsp_verifier": true,
+            "flow_verifier": false,
+            "logic_verifier": true,
+            "completeness_verifier": false
+          }
+          # v2.2: Issue history for convergence detection
+          issue_history: []  # List of total issues per round
+          factual_issue_history: []  # List of factual issues per round
+          scope_issue_history: []  # List of scope issues per round
           previous_round_findings: {}
           round_timings: []
+          # v2.2: Exit condition tracking
+          convergence_detected: false
+          scope_only_exit: false
+          auto_approve_eligible: false
           ```
           
           ## Main Loop (up to {{max_rounds}} rounds)
@@ -693,7 +1075,7 @@ stages:
           **Step 2: Select Active Verifiers**
           
           Skip agents with clean_streak >= {{early_exit_clean_rounds}}:
-          ```
+          ```python
           active_verifiers = []
           for agent in verification_agents:
             if agent_clean_streaks[agent.name] < {{early_exit_clean_rounds}}:
@@ -704,9 +1086,31 @@ stages:
           
           Exception: logic_verifier is NEVER skipped (highest weight, finds most issues).
           
+          **Step 2.5: v2.2 - Apply Dynamic Weights (Continuation Mode)**
+          
+          {% if continue_from != '' %}
+          In continuation mode, adjust completeness_verifier weight:
+          ```python
+          agent_weights = {
+            "lsp_verifier": 1.0,
+            "flow_verifier": 1.0,
+            "logic_verifier": 1.5,
+            "completeness_verifier": 0.6  # REDUCED from 1.2
+          }
+          ```
+          
+          When calculating weighted issues:
+          ```python
+          weighted_issues = sum(
+            agent_issues[name] * agent_weights[name]
+            for name in agent_issues
+          )
+          ```
+          {% endif %}
+          
           **Step 3: Read Current Document**
           
-          Read `{{output_dir}}/INVESTIGATION_v{N}.md`
+          Read `{{output_dir}}/INVESTIGATION_v{current_version}.md`
           
           **Step 4: Build Verifier Instructions**
           
@@ -719,7 +1123,7 @@ stages:
           Your mission: {agent.mission}
           Focus: {agent.focus}
           
-          Document: {{output_dir}}/INVESTIGATION_v{N}.md
+          Document: {{output_dir}}/INVESTIGATION_v{current_version}.md
           
           For each claim in your focus area:
           - ✅ VERIFIED: [claim] - Evidence: [what you checked]
@@ -731,6 +1135,7 @@ stages:
           AGENT: {agent.name}
           ISSUES_FOUND: [integer]
           ISSUE_LIST: [semicolon-separated list of issues, or "none"]
+          ISSUE_TYPE: [FACTUAL|SCOPE|MIXED]  # v2.2: Classify issue type
           CONFIDENCE: [HIGH|MEDIUM|LOW]
           VERDICT: [CLEAN|ISSUES]
           ```
@@ -745,7 +1150,7 @@ stages:
           Your mission: {agent.mission}
           Focus: {agent.focus}
           
-          Document: {{output_dir}}/INVESTIGATION_v{N}.md
+          Document: {{output_dir}}/INVESTIGATION_v{current_version}.md
           
           ## Previous Round Context
           Other verifiers found these issues last round:
@@ -766,6 +1171,7 @@ stages:
           AGENT: {agent.name}
           ISSUES_FOUND: [integer]
           ISSUE_LIST: [semicolon-separated list]
+          ISSUE_TYPE: [FACTUAL|SCOPE|MIXED]
           CONFIDENCE: [HIGH|MEDIUM|LOW]
           VERDICT: [CLEAN|ISSUES]
           ```
@@ -780,7 +1186,7 @@ stages:
           Your mission: {agent.mission}
           Focus: {agent.focus}
           
-          Document: {{output_dir}}/INVESTIGATION_v{N}.md
+          Document: {{output_dir}}/INVESTIGATION_v{current_version}.md
           
           ## All Previous Findings
           {all_previous_findings}
@@ -795,6 +1201,7 @@ stages:
           AGENT: {agent.name}
           ISSUES_FOUND: [integer]
           ISSUE_LIST: [semicolon-separated list]
+          ISSUE_TYPE: [FACTUAL|SCOPE|MIXED]
           CONFIDENCE: [HIGH|MEDIUM|LOW]
           VERDICT: [CLEAN|ISSUES]
           ```
@@ -818,29 +1225,92 @@ stages:
               # Missing verdict = treat as ISSUES, force clarification
               agent_result = {"verdict": "ISSUES", "issues_found": -1, "needs_rerun": True}
           else:
-              # Parse structured fields
+              # Parse structured fields including ISSUE_TYPE
               agent_result = parse_verdict_block(verdict_match.group(1))
           ```
           
-          **Step 7: Aggregate Results**
+          **Step 7: Aggregate Results with v2.2 Classification**
           
           ```python
           round_issues = 0
+          factual_issues = 0  # v2.2: Track separately
+          scope_issues = 0    # v2.2: Track separately
           agent_issues = {}
           
           for agent, result in results.items():
               agent_issues[agent] = result["issues_found"]
               round_issues += result["issues_found"]
               
+              # v2.2: Classify issues
+              if agent_is_factual[agent]:
+                  factual_issues += result["issues_found"]
+              else:
+                  scope_issues += result["issues_found"]
+              
               if result["verdict"] == "CLEAN":
                   agent_clean_streaks[agent] += 1
               else:
                   agent_clean_streaks[agent] = 0
           
+          # v2.2: Record issue history for convergence detection
+          issue_history.append(round_issues)
+          factual_issue_history.append(factual_issues)
+          scope_issue_history.append(scope_issues)
+          
           round_is_clean = (round_issues == 0) and all(r["verdict"] == "CLEAN" for r in results.values())
+          
+          # v2.2: Check for factual-only clean (scope issues remaining)
+          factual_clean = (factual_issues == 0)
           ```
           
           Record end time, calculate duration.
+          
+          **Step 7.5: v2.2 - Convergence Detection**
+          
+          After aggregating results, check for convergence:
+          
+          ```python
+          # v2.2: Convergence detection
+          if {{convergence_threshold}} > 0 and len(issue_history) >= {{convergence_threshold}}:
+              recent_issues = issue_history[-{{convergence_threshold}}:]
+              avg_issues = sum(recent_issues) / len(recent_issues)
+              
+              # Check if all recent rounds are within variance of average
+              converged = all(
+                  abs(count - avg_issues) <= {{convergence_variance}}
+                  for count in recent_issues
+              )
+              
+              if converged and round_issues > 0:
+                  convergence_detected = True
+                  log(f"⚠️ CONVERGENCE DETECTED: Issues plateaued at ~{avg_issues} for {{{convergence_threshold}}} rounds")
+          ```
+          
+          **Step 7.6: v2.2 - Scope-Only Exit Check**
+          
+          ```python
+          # v2.2: Check if only scope issues remain
+          if {{exit_on_scope_only_issues}} and factual_clean and scope_issues > 0:
+              scope_only_exit = True
+              log(f"✅ SCOPE-ONLY EXIT: Factual verifiers clean, {scope_issues} scope issues remaining")
+              log("Document is factually verified. Scope suggestions are optional.")
+          ```
+          
+          **Step 7.7: v2.2 - Auto-Approve Eligibility Check**
+          
+          ```python
+          # v2.2: Check auto-approve eligibility
+          if {{auto_approve_threshold}} > 0:
+              auto_approve_eligible = (
+                  round_issues <= {{auto_approve_threshold}} and
+                  agent_issues.get("lsp_verifier", 0) == 0 and
+                  agent_issues.get("logic_verifier", 0) == 0 and
+                  agent_clean_streaks.get("lsp_verifier", 0) >= {{auto_approve_clean_factual_rounds}} and
+                  agent_clean_streaks.get("logic_verifier", 0) >= {{auto_approve_clean_factual_rounds}}
+              )
+              if auto_approve_eligible:
+                  log(f"✅ AUTO-APPROVE ELIGIBLE: {round_issues} issues, factual verifiers clean")
+          ```
           
           **Step 8: Critical Issue Checkpoint**
           
@@ -865,78 +1335,129 @@ stages:
           3. Abort and investigate manually
           ```
           
-          [In a real implementation, this would trigger an approval gate]
+          **Step 9a: If ISSUES Found (but no early exit triggered)**
           
-          **Step 9a: If ISSUES Found**
+          Check for v2.2 early exit conditions FIRST:
           
+          ```python
+          # v2.2: Check exit conditions
+          if convergence_detected:
+              # Plateau detected - exit with warning
+              goto step_9c_with_convergence_warning
+          
+          if scope_only_exit:
+              # Only scope issues - document is factually verified
+              goto step_9b_clean_with_scope_note
+          ```
+          
+          If no early exit:
           1. Collect all issues with agent attribution
           2. Create corrected document fixing ALL issues
-          3. Increment version: Save as `{{output_dir}}/INVESTIGATION_v{N+1}.md`
-          4. Update verification log with per-agent attribution:
+          3. Increment version: Save as `{{output_dir}}/INVESTIGATION_v{current_version+1}.md`
+          4. Update verification log with per-agent attribution and v2.2 tracking:
              
              ```markdown
              ### Round {N} - {tier} Tier - Issues Found
              - **Duration**: {seconds}s
              - **Active verifiers**: {count} ({list skipped if any})
              - **Issues by agent**:
-               - lsp_verifier: {count} issues
+               - lsp_verifier: {count} issues (factual)
                - flow_verifier: {count} issues
-               - logic_verifier: {count} issues ⭐
-               - completeness_verifier: {count} issues
+               - logic_verifier: {count} issues (factual) ⭐
+               - completeness_verifier: {count} issues (scope)
              - **Total issues**: {round_issues}
+             - **Factual issues**: {factual_issues}
+             - **Scope issues**: {scope_issues}
+             - **Issue history**: {issue_history}
+             - **Convergence check**: {converged status}
              - **Corrections made**:
                - [{agent}] {issue}: {correction}
-               - [{agent}] {issue}: {correction}
-             - **New version**: v{N+1}
+             - **New version**: v{current_version+1}
              ```
           
-          5. Update metrics.json with round data
+          5. Update metrics.json with round data and v2.2 fields
           6. Store findings for cross-visibility: previous_round_findings = current_findings
-          7. Continue to round N+1
+          7. Increment current_version
+          8. Continue to round N+1
           
-          **Step 9b: If ALL CLEAN**
+          **Step 9b: If ALL CLEAN (or scope-only exit)**
           
           1. Verification complete!
           2. Read current document
           3. Add "## Verification History" section summarizing all rounds
-          4. Save as `{{output_dir}}/INVESTIGATION_FINAL.md`
-          5. Update verification log:
+          4. If scope_only_exit, add note:
+             ```markdown
+             > ℹ️ **Note**: Document verified as factually accurate. 
+             > Remaining scope suggestions ({scope_issues}) were not applied
+             > as the document scope is considered complete.
+             ```
+          5. Save as `{{output_dir}}/INVESTIGATION_FINAL.md`
+          6. Update verification log:
              
              ```markdown
-             ### Round {N} - ALL CLEAN ✅
+             ### Round {N} - ALL CLEAN ✅ {or "SCOPE-ONLY EXIT ✅" if applicable}
              - **Duration**: {seconds}s
-             - **All {count} active agents**: No issues found
+             - **All {count} active agents**: No issues found {or "No factual issues"}
              - **Document verified after {N} rounds**
+             - **v2.2 Exit condition**: {CLEAN | SCOPE_ONLY | CONVERGENCE}
+             - **Auto-approve eligible**: {yes/no}
              
              ## Final Summary
              - **Total rounds**: {N}
              - **Total issues fixed**: {total_issues_fixed}
              - **Issues by agent (all rounds)**:
-               - logic_verifier: {total} (50%+)
-               - completeness_verifier: {total}
+               - logic_verifier: {total} (factual)
+               - lsp_verifier: {total} (factual)
                - flow_verifier: {total}
-               - lsp_verifier: {total}
+               - completeness_verifier: {total} (scope)
+             - **Factual issues fixed**: {sum of factual}
+             - **Scope issues fixed**: {sum of scope}
              - **Agents early-exited**: {list}
              - **Total verification time**: {sum of round durations}
              - **Final version**: INVESTIGATION_FINAL.md
+             - **v2.2 Exit reason**: {CLEAN | SCOPE_ONLY_EXIT | CONVERGENCE}
+             - **Auto-approve eligible**: {auto_approve_eligible}
+             {% if continue_from != '' %}
+             - **Mode**: Continuation from v{{starting_version}}
+             - **Completeness weight**: 0.6 (reduced)
+             {% endif %}
              ```
           
           6. STOP - verification complete
           
-          **Step 9c: If MAX ROUNDS Reached**
+          **Step 9c: If MAX ROUNDS Reached or CONVERGENCE Detected**
           
-          If completed round {{max_rounds}} with issues remaining:
+          If completed round {{max_rounds}} with issues remaining OR convergence_detected:
           
-          1. Create `{{output_dir}}/INVESTIGATION_FINAL.md` with warning header:
+          1. Create `{{output_dir}}/INVESTIGATION_FINAL.md` with appropriate header:
              
+             If convergence_detected:
+             ```markdown
+             > ⚠️ **CONVERGENCE DETECTED**: Issues plateaued at ~{avg} for {{convergence_threshold}} rounds.
+             > The verifiers may be finding scope suggestions rather than factual errors.
+             > Review the Remaining Concerns section - these may be optional enhancements.
+             ```
+             
+             If max rounds:
              ```markdown
              > ⚠️ **VERIFICATION INCOMPLETE**: Max rounds ({{max_rounds}}) reached with issues remaining.
              > Review the Remaining Concerns section carefully.
              ```
           
-          2. Add "## Remaining Concerns" section with unfixed issues
-          3. Update verification log noting max rounds hit
-          4. STOP - human will review
+          2. Add "## Remaining Concerns" section with unfixed issues, classified by type:
+             ```markdown
+             ## Remaining Concerns
+             
+             ### Factual Issues (should be reviewed)
+             [List any remaining factual issues]
+             
+             ### Scope Suggestions (optional)
+             [List remaining scope/completeness suggestions]
+             ```
+          
+          3. Update verification log noting exit reason
+          4. Check auto-approve eligibility
+          5. STOP - human will review (unless auto-approved)
           
           ## Output Format
           
@@ -945,28 +1466,43 @@ stages:
           ```
           ## Verification Complete
           
-          - **Result**: [VERIFIED CLEAN | MAX ROUNDS - needs review | CRITICAL CHECKPOINT]
+          - **Result**: [VERIFIED CLEAN | SCOPE-ONLY EXIT | CONVERGENCE EXIT | MAX ROUNDS]
+          - **Mode**: {% if continue_from != '' %}Continuation from v{{starting_version}}{% else %}Fresh{% endif %}
           - **Rounds completed**: {N}
           - **Total issues found/fixed**: {total}
+          - **Factual issues**: {factual_total}
+          - **Scope issues**: {scope_total}
           - **Final document**: {{output_dir}}/INVESTIGATION_FINAL.md
           
-          ### Issue Attribution (All Rounds)
-          | Agent | Issues Found | % of Total |
-          |-------|--------------|------------|
-          | logic_verifier | X | Y% |
-          | completeness_verifier | X | Y% |
-          | flow_verifier | X | Y% |
-          | lsp_verifier | X | Y% |
+          ### v2.2 Exit Analysis
+          - **Convergence detected**: {yes/no} (at round {N} if yes)
+          - **Scope-only exit**: {yes/no}
+          - **Auto-approve eligible**: {yes/no}
+          - **Exit reason**: {CLEAN | SCOPE_ONLY | CONVERGENCE | MAX_ROUNDS}
           
-          ### Round Summary
-          | Round | Tier | Duration | Issues | Agents Active |
-          |-------|------|----------|--------|---------------|
-          | 1 | Standard | Xs | N | 4 |
-          | 2 | Standard | Xs | N | 4 |
+          ### Issue Attribution (All Rounds)
+          | Agent | Issues Found | Type | % of Total |
+          |-------|--------------|------|------------|
+          | logic_verifier | X | factual | Y% |
+          | lsp_verifier | X | factual | Y% |
+          | flow_verifier | X | - | Y% |
+          | completeness_verifier | X | scope | Y% |
+          
+          ### Convergence Analysis
+          | Round | Total Issues | Factual | Scope | Δ from Prev |
+          |-------|--------------|---------|-------|-------------|
+          | 1 | N | F | S | - |
+          | 2 | N | F | S | ±X |
           | ... | ... | ... | ... | ... |
           
+          ### Round Summary
+          | Round | Tier | Duration | Issues | Factual | Scope | Agents Active |
+          |-------|------|----------|--------|---------|-------|---------------|
+          | 1 | Standard | Xs | N | F | S | 4 |
+          | ... | ... | ... | ... | ... | ... | ... |
+          
           ### Timing Metrics
-          - Investigation phase: Xs
+          - Investigation phase: {% if continue_from != '' %}SKIPPED (continuation mode){% else %}Xs{% endif %}
           - Verification phase: Xs
           - Total time: Xs
           ```
@@ -974,31 +1510,62 @@ stages:
         timeout: 3600  # 1 hour
 
   # ===========================================================================
-  # STAGE 4: FINAL REVIEW (Human Approval Gate)
+  # STAGE 4: FINAL REVIEW (Human Approval Gate with Auto-Approve)
   # ===========================================================================
   - name: final_review
     description: |
       Human review of the verified document before final acceptance.
+      
+      v2.2: Can be auto-approved if conditions are met:
+      - Total issues ≤ auto_approve_threshold
+      - Factual verifiers (LSP, logic) were clean
+      - No CRITICAL severity issues
     approval_required: true
+    
+    # v2.2: Auto-approve conditions
+    # The approval gate will be skipped if these conditions are met
+    auto_approve_if:
+      # All conditions must be true for auto-approval
+      - "{{verification_result}} contains 'Auto-approve eligible: yes'"
+      - "{{auto_approve_threshold}} > 0"
+    
     approval_message: |
-      ## 🔍 Adversarial Deep Dive Complete (v2)
+      ## 🔍 Adversarial Deep Dive Complete (v2.2)
       
       **Topic**: {{topic}}
+      
+      {% if continue_from != '' %}
+      **Mode**: CONTINUATION from `{{continue_from}}` (v{{starting_version}})
+      - Completeness verifier weight reduced to 0.6 (from 1.2)
+      {% else %}
+      **Mode**: Fresh investigation
+      {% endif %}
       
       ### Verification Result
       {{verification_result}}
       
+      ### v2.2 Exit Analysis
+      
+      Check the verification result above for:
+      - **Convergence detected?** - Issues may have plateaued (scope vs factual)
+      - **Scope-only exit?** - Document is factually verified, scope suggestions optional
+      - **Auto-approve eligible?** - Factual verifiers clean, low issue count
+      
       ### Documents Created
       - `{{output_dir}}/INVESTIGATION_FINAL.md` - The verified document
       - `{{output_dir}}/verification-log.md` - Complete verification history
-      - `{{output_dir}}/metrics.json` - Performance metrics
+      - `{{output_dir}}/metrics.json` - Performance metrics with v2.2 fields
       - `{{output_dir}}/INVESTIGATION_v*.md` - All version files
       
       ### What to Review
       1. **Read the final document** - Does it accurately answer your question?
       2. **Check verification log** - Were the corrections sensible?
-      3. **Review metrics** - Was verification efficient?
-      4. **If max rounds hit** - Review remaining concerns carefully
+      3. **Review convergence analysis** - Did issues plateau? Are remaining issues scope suggestions?
+      4. **If scope-only exit** - Are the skipped scope suggestions actually needed?
+      5. **If convergence exit** - Are remaining issues factual errors or scope expansion?
+      {% if continue_from != '' %}
+      6. **Continuation check** - Did additional rounds improve the document?
+      {% endif %}
       
       ---
       
@@ -1011,9 +1578,14 @@ stages:
         type: bash
         command: |
           echo "╔════════════════════════════════════════════════════════════════╗"
-          echo "║           ADVERSARIAL DEEP DIVE - FINAL DOCUMENT               ║"
+          echo "║       ADVERSARIAL DEEP DIVE - FINAL DOCUMENT (v2.2)            ║"
           echo "╚════════════════════════════════════════════════════════════════╝"
           echo ""
+          {% if continue_from != '' %}
+          echo "MODE: Continuation from {{continue_from}} (v{{starting_version}})"
+          echo "COMPLETENESS WEIGHT: 0.6 (reduced from 1.2)"
+          echo ""
+          {% endif %}
           cat "{{output_dir}}/INVESTIGATION_FINAL.md"
           echo ""
           echo "╔════════════════════════════════════════════════════════════════╗"
@@ -1023,7 +1595,7 @@ stages:
           cat "{{output_dir}}/verification-log.md"
           echo ""
           echo "╔════════════════════════════════════════════════════════════════╗"
-          echo "║                    METRICS                                      ║"
+          echo "║                    METRICS (v2.2)                              ║"
           echo "╚════════════════════════════════════════════════════════════════╝"
           echo ""
           cat "{{output_dir}}/metrics.json"
@@ -1031,11 +1603,18 @@ stages:
       - id: generate_summary
         agent: self
         prompt: |
-          # Generate Final Summary
+          # Generate Final Summary (v2.2)
           
           Create a concise summary for the user:
           
           ## Investigation Complete: {{topic}}
+          
+          {% if continue_from != '' %}
+          **Mode**: Continuation from `{{continue_from}}` (started at v{{starting_version}})
+          - Completeness verifier weight: 0.6 (reduced to prevent scope creep)
+          {% else %}
+          **Mode**: Fresh investigation
+          {% endif %}
           
           ### Result
           {{verification_result}}
@@ -1047,28 +1626,37 @@ stages:
           |------|-------------|
           | `INVESTIGATION_FINAL.md` | The verified document |
           | `verification-log.md` | Round-by-round history with agent attribution |
-          | `metrics.json` | Performance and timing data |
+          | `metrics.json` | Performance and timing data with v2.2 fields |
           | `INVESTIGATION_v*.md` | All intermediate versions |
           
-          ### Verification Process (v2)
+          ### Verification Process (v2.2)
           
           This document was verified through adversarial testing:
           
-          | Verifier | Focus | Weight |
-          |----------|-------|--------|
-          | LSP Verifier | Code accuracy, call chains, types | 1.0 |
-          | Flow Verifier | Sequence, data flow, completeness | 1.0 |
-          | Logic Verifier | Logical errors, inconsistencies | 1.5 ⭐ |
-          | Completeness Verifier | Missing information, omissions | 1.2 |
+          | Verifier | Focus | Weight | Type |
+          |----------|-------|--------|------|
+          | LSP Verifier | Code accuracy, call chains, types | 1.0 | Factual |
+          | Flow Verifier | Sequence, data flow, completeness | 1.0 | - |
+          | Logic Verifier | Logical errors, inconsistencies | 1.5 ⭐ | Factual |
+          | Completeness Verifier | Missing information, omissions | {% if continue_from != '' %}0.6{% else %}1.2{% endif %} | Scope |
           
-          ### v2 Improvements Applied
+          ### v2.2 Features Applied
+          {% if continue_from != '' %}
+          - ✅ **CONTINUATION MODE**: Resumed from v{{starting_version}}
+          - ⏭️ Skipped pre-check, investigation, and synthesis stages
+          - 📉 **Reduced completeness weight**: 0.6 (prevents scope creep)
+          {% else %}
           - ✅ Pre-check validated inputs before investigation
           - ✅ Confidence tagging reduced false claims
+          {% endif %}
+          - ✅ **Convergence detection**: Auto-exit if issues plateau (threshold: {{convergence_threshold}})
+          - ✅ **Scope-aware exit**: Exit if only scope issues remain
+          - ✅ **Auto-approve**: Skip human review if factual verifiers clean
           - ✅ Real escalation tiers increased scrutiny each round
           - ✅ Structured verdicts enabled reliable parsing
           - ✅ Cross-visibility let verifiers learn from each other
-          - ✅ Focus-on-changes sped up later rounds
           - ✅ Per-agent attribution tracked issue sources
+          - ✅ Factual vs scope issue classification
           
           The document represents our best verified understanding of: **{{topic}}**
         output: "final_summary"

@@ -38,6 +38,7 @@ amplifier tool invoke recipes operation=execute recipe_path=<recipe.yaml> contex
 | [feature-announcement](#feature-announcement) | Communication | 3 | Human-first output | zen-architect |
 | [session-extract](#session-extract) | Verification | 1 | Quick metadata check | session-analyst |
 | [session-verify](#session-verify) | Verification | 2 | Cross-provider audit | session-analyst, zen-architect |
+| [adversarial-verification](#adversarial-verification) | Verification | 5 stages | Deep investigation with adversarial verification | explorer, zen-architect, bug-hunter |
 | [context-intelligence](#context-intelligence) | Advanced | varies | Tiered complexity | various |
 
 ---
@@ -807,6 +808,84 @@ These recipes implement a simplified version of VDD - a methodology where:
 3. Different training = different blind spots = better coverage
 
 The key insight: fresh context + different provider = truly independent review.
+
+---
+
+### Adversarial Verification
+
+**File:** `examples/context-intelligence/verification/adversarial-verification.yaml`
+
+Deep investigation of a technical topic with multi-round adversarial verification. Uses multiple specialized agents to investigate, then subjects findings to iterative challenge/defense rounds with escalation.
+
+**Use Cases:**
+- Architecture documentation with verified accuracy
+- Codebase deep-dives with fact-checking
+- Technical investigations requiring high confidence
+- Any documentation that needs adversarial review
+
+**Workflow (Staged):**
+```
+Stage 1: Pre-Check (no approval)
+  → Validate inputs, check paths exist
+
+Stage 2: Initial Investigation (no approval)
+  → Parallel multi-agent investigation
+  → explorer, LSP, architect agents
+  → Confidence tagging on all claims
+
+Stage 3: Synthesis (no approval)
+  → Combine findings into structured document v1
+  → Include confidence markers
+
+Stage 4: Adversarial Verification (no approval)
+  → Iterative rounds with 4 verifiers:
+    - LSP verifier (code accuracy)
+    - Logic verifier (consistency) ⭐ weighted 1.5x
+    - Flow verifier (sequences)
+    - Completeness verifier (omissions)
+  → Escalation tiers: Standard → Aggressive → Final
+  → Convergence detection (v2.2+)
+  → Scope-aware exit (v2.2+)
+
+Stage 5: Final Review (approval required)
+  → Human approval of verified document
+  → Auto-approve if conditions met (v2.2+)
+```
+
+**v2.2 Features:**
+- **Convergence detection** - Auto-exits when issues plateau
+- **Scope-aware exit** - Exits if only scope/completeness issues remain
+- **Dynamic agent weighting** - Reduced completeness weight in continuation mode
+- **Continuation mode** - Resume verification from previous document
+- **Smart auto-approve** - Auto-approve when factual verifiers clean
+
+**Example Usage:**
+```
+In session: "run adversarial-verification to investigate the authentication system"
+
+CLI (fresh investigation):
+amplifier tool invoke recipes operation=execute \
+  recipe_path=@recipes:examples/context-intelligence/verification/adversarial-verification.yaml \
+  context='{"topic": "How does authentication work?", "output_dir": "./docs/investigations/auth", "codebase_paths": ["./src"]}'
+
+CLI (continuation from previous):
+amplifier tool invoke recipes operation=execute \
+  recipe_path=@recipes:examples/context-intelligence/verification/adversarial-verification.yaml \
+  context='{"topic": "How does authentication work?", "output_dir": "./docs/investigations/auth-round2", "continue_from": "./docs/investigations/auth/INVESTIGATION_v3.md", "starting_version": 3}'
+```
+
+**Key Learnings:**
+- Multi-agent parallel investigation
+- Iterative adversarial verification with escalation
+- Convergence detection for plateau handling
+- Factual vs scope issue classification
+- Continuation mode for extended verification
+
+**Output Artifacts:**
+- `INVESTIGATION_FINAL.md` - Verified document
+- `verification-log.md` - Round-by-round audit trail
+- `metrics.json` - Machine-readable statistics
+- `INVESTIGATION_v*.md` - Version history
 
 ---
 
