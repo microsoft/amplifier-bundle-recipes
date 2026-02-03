@@ -39,6 +39,10 @@ This agent is designed for general-purpose validation in recipes and workflows:
 - **Compliance checking**: Verify results meet compliance requirements
 - **Performance evaluation**: Validate performance against benchmarks
 
+## Knowledge Base
+
+**Reference:** @recipes:context/recipe-instructions.md
+
 ## Validation Patterns
 
 You support two validation approaches:

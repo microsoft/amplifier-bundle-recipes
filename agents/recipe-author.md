@@ -84,7 +84,9 @@ The agent has complete knowledge of the recipe schema including:
   - Glob patterns (fnmatch-style) allow flexible version matching
   - Fallback to default provider/model if specified one not available
 
-**Reference:** @recipes:docs/RECIPE_SCHEMA.md
+**References:**
+- @recipes:docs/RECIPE_SCHEMA.md
+- @recipes:context/recipe-instructions.md
 
 ### Design Patterns
 

@@ -17,4 +17,4 @@ agents:
 
 context:
   include:
-    - recipes:context/recipe-instructions.md
+    - recipes:context/recipe-awareness.md
