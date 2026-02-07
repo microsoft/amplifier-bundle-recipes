@@ -269,7 +269,7 @@ class RecipeExecutor:
         if event_name and event_data:
             hooks = getattr(self.coordinator, "hooks", None)
             if hooks is not None:
-                asyncio.create_task(hooks.fire(event_name, event_data))
+                asyncio.create_task(hooks.emit(event_name, event_data))
 
     def _build_steps_status(
         self,
