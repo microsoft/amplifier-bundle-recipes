@@ -39,9 +39,9 @@ All recipe work MUST follow this lifecycle. Do NOT write recipe YAML directly.
 
 For detailed usage, schema knowledge, and best practices, delegate to `recipes:recipe-author`.
 
-## New: While Loops and Enhanced Expressions
+## While Loops and Enhanced Expressions
 
-Recipes now support convergence-based iteration:
+Recipes support convergence-based iteration:
 
 - **`while_condition`** — loop until a condition becomes false
 - **`break_when`** — exit loop early when a condition becomes true

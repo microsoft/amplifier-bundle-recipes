@@ -307,8 +307,7 @@ Step: analyze-code
 **Cause:** Using `while_steps` with steps that have complex fields (e.g., `provider_preferences`
 as a list of dicts). The step parsing didn't convert nested objects.
 
-**Fix:** Use the sub-recipe pattern instead of `while_steps` for complex loop bodies. Or ensure
-your bundle has the fix from PR #22 (`Recipe._parse_step()` for while_steps parsing).
+**Fix:** Use the sub-recipe pattern instead of `while_steps` for complex loop bodies.
 
 ### Error: `Undefined variable: {{_loop_iteration}}`
 
@@ -330,10 +329,9 @@ steps:
 
 ### Error: `Undefined variable: {{result.field}}` in update_context
 
-**Cause:** The step's output wasn't stored in context before `update_context` ran. This was
-fixed in PR #23.
+**Cause:** The step's output is not stored in context before `update_context` runs.
 
-**Fix:** Ensure your bundle has the fix. The step output is now stored in `context[step.output]`
+**Fix:** The step output is stored in `context[step.output]`
 before `update_context` expressions are evaluated.
 
 ### Error: `Key 'field' not found` when accessing sub-recipe output
