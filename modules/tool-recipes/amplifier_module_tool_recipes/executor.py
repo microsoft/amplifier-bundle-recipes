@@ -244,17 +244,96 @@ class RecipeExecutor:
         self.coordinator = coordinator
         self.session_manager = session_manager
 
-    def _show_progress(self, message: str, level: str = "info") -> None:
+    def _show_progress(
+        self,
+        message: str,
+        level: str = "info",
+        event_name: str | None = None,
+        event_data: dict[str, Any] | None = None,
+    ) -> None:
         """
         Show progress message to user via display system.
 
         Args:
             message: Progress message to display
             level: Message level (info, warning, error)
+            event_name: Optional hook event name (e.g., "recipe:start")
+            event_data: Optional structured data for the hook event
         """
+        # Text display for CLI/terminal
         display_system = getattr(self.coordinator, "display_system", None)
         if display_system is not None:
             display_system.show_message(message=message, level=level, source="recipe")
+
+        # Structured event for hooks (enables UI integration like Canvas)
+        if event_name and event_data:
+            hooks = getattr(self.coordinator, "hooks", None)
+            if hooks is not None:
+                asyncio.create_task(hooks.fire(event_name, event_data))
+
+    def _build_steps_status(
+        self,
+        steps: list[Any],
+        current_index: int,
+        completed_steps: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Build steps status list for recipe events.
+
+        Args:
+            steps: List of recipe steps
+            current_index: Index of currently executing step
+            completed_steps: Optional list of completed step IDs
+
+        Returns:
+            List of step status dictionaries for event emission
+        """
+        completed = set(completed_steps or [])
+        return [
+            {
+                "id": step.id,
+                "name": step.id,
+                "status": (
+                    "completed"
+                    if step.id in completed or i < current_index
+                    else "running"
+                    if i == current_index
+                    else "pending"
+                ),
+            }
+            for i, step in enumerate(steps)
+        ]
+
+    def _build_recipe_event_data(
+        self,
+        recipe: Recipe,
+        current_step: int,
+        steps_status: list[dict[str, Any]],
+        status: str,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        """
+        Build standardized recipe event data.
+
+        Args:
+            recipe: The recipe being executed
+            current_step: Current step index (0-based)
+            steps_status: List of step status dictionaries
+            status: Recipe status ('running', 'waiting_approval', 'completed', 'failed')
+            **extra: Additional fields to include
+
+        Returns:
+            Event data dictionary
+        """
+        return {
+            "name": recipe.name,
+            "description": recipe.description,
+            "current_step": current_step,
+            "total_steps": len(steps_status),
+            "steps": steps_status,
+            "status": status,
+            **extra,
+        }
 
     def _check_cancellation(
         self,
@@ -442,7 +521,14 @@ class RecipeExecutor:
 
         # Show recipe start progress
         total_steps = len(recipe.steps)
-        self._show_progress(f"📋 Starting recipe: {recipe.name} ({total_steps} steps)")
+        steps_status = self._build_steps_status(recipe.steps, 0, [])
+        self._show_progress(
+            f"📋 Starting recipe: {recipe.name} ({total_steps} steps)",
+            event_name="recipe:start",
+            event_data=self._build_recipe_event_data(
+                recipe, 0, steps_status, "running"
+            ),
+        )
 
         # Add metadata to context
         context["recipe"] = {
@@ -481,8 +567,15 @@ class RecipeExecutor:
                 # Show step progress
                 step_num = i + 1
                 step_type = step.type or "agent"
+                steps_status = self._build_steps_status(
+                    recipe.steps, i, completed_steps
+                )
                 self._show_progress(
-                    f"  [{step_num}/{total_steps}] {step.id} ({step_type})"
+                    f"  [{step_num}/{total_steps}] {step.id} ({step_type})",
+                    event_name="recipe:step",
+                    event_data=self._build_recipe_event_data(
+                        recipe, i, steps_status, "running"
+                    ),
                 )
 
                 # Check condition if present
@@ -621,7 +714,16 @@ class RecipeExecutor:
         self.session_manager.cleanup_old_sessions(project_path)
 
         # Show completion
-        self._show_progress(f"✅ Recipe completed: {recipe.name}")
+        steps_status = self._build_steps_status(
+            recipe.steps, total_steps, completed_steps
+        )
+        self._show_progress(
+            f"✅ Recipe completed: {recipe.name}",
+            event_name="recipe:complete",
+            event_data=self._build_recipe_event_data(
+                recipe, total_steps, steps_status, "completed", success=True
+            ),
+        )
 
         return context
 
@@ -892,6 +994,35 @@ class RecipeExecutor:
                         default=stage.approval.default,
                     )
 
+                    # Emit approval event for UI
+                    all_steps = [s for stg in recipe.stages for s in stg.steps]
+                    current_step_in_stage = len(stage.steps) - 1  # Last step in stage
+                    steps_status = self._build_steps_status(
+                        all_steps, current_step_in_stage, completed_steps
+                    )
+                    # Mark current step as waiting for approval
+                    for i, step_stat in enumerate(steps_status):
+                        if step_stat["id"] == stage.steps[-1].id:
+                            steps_status[i]["status"] = "waiting_approval"
+                            steps_status[i]["is_approval_gate"] = True
+                            break
+                    approval_prompt = (
+                        stage.approval.prompt
+                        or f"Approve completion of stage '{stage.name}'?"
+                    )
+                    self._show_progress(
+                        f"⏸️ Waiting for approval: {stage.name}",
+                        event_name="recipe:approval",
+                        event_data=self._build_recipe_event_data(
+                            recipe,
+                            current_step_in_stage,
+                            steps_status,
+                            "waiting_approval",
+                            prompt=approval_prompt,
+                            stage_name=stage.name,
+                        ),
+                    )
+
                     # Raise to indicate paused state
                     raise ApprovalGatePausedError(
                         session_id=session_id,
@@ -953,8 +1084,17 @@ class RecipeExecutor:
         # Cleanup old sessions
         self.session_manager.cleanup_old_sessions(project_path)
 
-        # Show completion
-        self._show_progress(f"✅ Recipe completed: {recipe.name}")
+        # Show completion - gather all steps from all stages for status
+        all_steps = [step for stage in recipe.stages for step in stage.steps]
+        total_steps = len(all_steps)
+        steps_status = self._build_steps_status(all_steps, total_steps, completed_steps)
+        self._show_progress(
+            f"✅ Recipe completed: {recipe.name}",
+            event_name="recipe:complete",
+            event_data=self._build_recipe_event_data(
+                recipe, total_steps, steps_status, "completed", success=True
+            ),
+        )
 
         return context
 
