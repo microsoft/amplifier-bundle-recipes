@@ -1,0 +1,712 @@
+# =============================================================================
+# ATTRACTOR: Non-Interactive Software Factory
+# =============================================================================
+#
+# Inspired by StrongDM's Attractor (https://factory.strongdm.ai/)
+#
+# A non-interactive coding agent structured as a graph of phases.
+# Runs end-to-end when the work is fully specified.
+#
+# Core loop: Seed -> Validation Harness -> Feedback Loop
+#   - Seed: spec + scenarios define the target
+#   - Validation: end-to-end scenarios (holdout set, never modified by agents)
+#   - Feedback: failure analysis drives targeted refinement
+#   - Tokens are the fuel
+#
+# Principles (from factory.strongdm.ai):
+#   - Code must not be written by humans
+#   - Code must not be reviewed by humans
+#   - Code is opaque weights; correctness inferred from external behavior only
+#   - Scenarios replace tests; satisfaction replaces pass/fail
+#   - Compounding correctness, not compounding error
+#
+# Usage:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=./attractor.yaml \
+#     context='{"spec_path": "./spec.md", "scenarios_path": "./scenarios.md"}'
+#
+# =============================================================================
+
+name: "attractor"
+description: |
+  Non-interactive software factory. Takes a fully-specified seed (spec + scenarios)
+  and runs agents in a convergence loop until scenarios pass. Code is treated as
+  opaque: correctness is inferred exclusively from externally observable behavior.
+version: "2.0.0"
+author: "Amplifier Community"
+tags:
+  - "factory"
+  - "attractor"
+  - "non-interactive"
+  - "convergence"
+  - "scenarios"
+  - "validation"
+  - "shift-work"
+
+# =============================================================================
+# CONTEXT
+# =============================================================================
+context:
+  # --- Required inputs ---
+  spec_path: ""
+  scenarios_path: ""
+
+  # --- Optional inputs ---
+  project_dir: "./project"
+  reference_path: ""
+  existing_code_path: ""
+
+  # --- Factory configuration ---
+  max_iterations: "5"
+  satisfaction_threshold: "1.0"
+  working_dir: "./.attractor"
+
+  # --- Runtime state (managed by the loop) ---
+  converged: "false"
+  current_iteration: "0"
+  current_satisfaction: "0"
+  current_passed: "0"
+  current_total: "0"
+
+# =============================================================================
+# SAFETY LIMITS
+# =============================================================================
+recursion:
+  max_depth: 5
+  max_total_steps: 500
+
+rate_limiting:
+  max_concurrent_llm: 2
+  min_delay_ms: 1000
+  backoff:
+    enabled: true
+    initial_delay_ms: 3000
+    max_delay_ms: 60000
+
+# =============================================================================
+# STAGES
+# =============================================================================
+stages:
+
+  # ===========================================================================
+  # STAGE 1: SEED
+  # ===========================================================================
+  - name: "seed"
+    steps:
+
+      - id: "validate-inputs"
+        type: "bash"
+        command: |
+          set -euo pipefail
+          errors=""
+          if [ -z "{{spec_path}}" ]; then
+            errors="${errors}  - spec_path is required\n"
+          elif [ ! -f "{{spec_path}}" ]; then
+            errors="${errors}  - spec_path '{{spec_path}}' not found\n"
+          fi
+          if [ -z "{{scenarios_path}}" ]; then
+            errors="${errors}  - scenarios_path is required\n"
+          elif [ ! -f "{{scenarios_path}}" ] && [ ! -d "{{scenarios_path}}" ]; then
+            errors="${errors}  - scenarios_path '{{scenarios_path}}' not found\n"
+          fi
+          if [ -n "$errors" ]; then
+            printf "VALIDATION FAILED:\n%b" "$errors" >&2
+            exit 1
+          fi
+          echo "Inputs validated"
+        output: "inputs_valid"
+
+      - id: "setup-directories"
+        type: "bash"
+        command: |
+          set -euo pipefail
+          mkdir -p "{{working_dir}}/state"
+          mkdir -p "{{working_dir}}/iterations"
+          mkdir -p "{{working_dir}}/harness"
+          mkdir -p "{{working_dir}}/feedback"
+          mkdir -p "{{project_dir}}"
+
+          if [ -f "{{scenarios_path}}" ]; then
+            cp "{{scenarios_path}}" "{{working_dir}}/harness/scenarios_holdout.md"
+          elif [ -d "{{scenarios_path}}" ]; then
+            cp -r "{{scenarios_path}}/." "{{working_dir}}/harness/scenarios_holdout/"
+          fi
+
+          cat > "{{working_dir}}/state/tracker.json" << 'TRACKER'
+          {
+            "iteration": 0,
+            "converged": false,
+            "satisfaction": 0,
+            "history": []
+          }
+          TRACKER
+
+          echo "Directories created, scenarios protected as holdout"
+        output: "dirs_created"
+
+      - id: "analyze-spec"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        provider_preferences:
+          - provider: anthropic
+            model: claude-sonnet-*
+          - provider: openai
+            model: gpt-4o
+        prompt: |
+          ## SEED ANALYSIS: Specification
+
+          Read and deeply analyze this software specification:
+
+          **Spec file:** {{spec_path}}
+
+          Your analysis MUST produce:
+          1. **Summary** - One-paragraph description of what is being built
+          2. **Language** - Primary programming language
+          3. **Framework** - Framework if applicable
+          4. **Components** - Major components/modules needed
+          5. **Requirements** - Every functional requirement
+          6. **Technical stack** - Language, framework, storage, dependencies
+          7. **Complexity** - simple / medium / complex
+          8. **Entry point** - How the software is started
+          9. **Dependencies** - External libraries or services needed
+
+          {{#if reference_path}}
+          GENE TRANSFUSION: A reference implementation exists at {{reference_path}}.
+          Study it carefully. Extract working patterns, architecture decisions,
+          and idioms to guide the new implementation.
+          {{/if}}
+
+          {{#if existing_code_path}}
+          EXISTING CODE: There is existing code at {{existing_code_path}}.
+          Analyze its current state. Prefer evolution over rewrite.
+          {{/if}}
+
+          Save your analysis as JSON to: {{working_dir}}/state/spec_analysis.json
+
+          The JSON structure:
+          ```json
+          {
+            "summary": "one paragraph",
+            "language": "python",
+            "framework": "",
+            "components": ["component-a", "component-b"],
+            "requirements": ["requirement 1", "requirement 2"],
+            "technical_stack": {"language": "python", "framework": "", "storage": "", "dependencies": []},
+            "complexity": "medium",
+            "entry_point": "python main.py",
+            "estimated_files": 8
+          }
+          ```
+        output: "spec_analysis_status"
+        timeout: 300
+        retry:
+          max_attempts: 2
+          backoff: "exponential"
+          initial_delay: 3
+
+      - id: "analyze-scenarios"
+        agent: "foundation:zen-architect"
+        mode: "ANALYZE"
+        provider_preferences:
+          - provider: anthropic
+            model: claude-sonnet-*
+          - provider: openai
+            model: gpt-4o
+        prompt: |
+          ## SEED ANALYSIS: Scenarios
+
+          Read and parse the end-to-end scenarios.
+
+          Scenarios location: {{working_dir}}/harness/scenarios_holdout.md
+          (or directory: {{working_dir}}/harness/scenarios_holdout/)
+
+          Also read the spec analysis: {{working_dir}}/state/spec_analysis.json
+
+          These scenarios are the ONLY measure of success. They are a holdout set
+          and must NEVER be modified.
+
+          For each scenario, extract:
+          1. **id** - Unique identifier (e.g., "scenario-01")
+          2. **name** - Short descriptive name
+          3. **description** - What user-visible behavior this validates
+          4. **preconditions** - Setup steps
+          5. **steps** - Ordered sequence of actions
+          6. **assertions** - Observable outcomes that must hold
+          7. **type** - "deterministic" or "semantic" (needs LLM judge)
+
+          Save to: {{working_dir}}/state/scenarios.json
+
+          Format:
+          ```json
+          {
+            "total_scenarios": 5,
+            "deterministic_count": 3,
+            "semantic_count": 2,
+            "scenarios": [
+              {
+                "id": "scenario-01",
+                "name": "Create item",
+                "description": "User can create a new item via the API",
+                "preconditions": ["server is running"],
+                "steps": ["POST /items with {\"name\": \"test\"}"],
+                "assertions": ["response status is 201"],
+                "type": "deterministic"
+              }
+            ]
+          }
+          ```
+        output: "scenarios_analysis_status"
+        timeout: 300
+        retry:
+          max_attempts: 2
+          backoff: "exponential"
+          initial_delay: 3
+
+      - id: "load-seed-state"
+        type: "bash"
+        command: |
+          set -euo pipefail
+          spec_file="{{working_dir}}/state/spec_analysis.json"
+          scenarios_file="{{working_dir}}/state/scenarios.json"
+
+          if [ ! -f "$spec_file" ]; then
+            echo "ERROR: spec_analysis.json not created" >&2; exit 1
+          fi
+          if [ ! -f "$scenarios_file" ]; then
+            echo "ERROR: scenarios.json not created" >&2; exit 1
+          fi
+
+          python3 << 'PYEOF'
+          import json
+          with open("{{working_dir}}/state/spec_analysis.json") as f:
+              spec = json.load(f)
+          with open("{{working_dir}}/state/scenarios.json") as f:
+              scenarios = json.load(f)
+          seed = {
+              "language": spec.get("language", "python"),
+              "framework": spec.get("framework", ""),
+              "complexity": spec.get("complexity", "medium"),
+              "components": spec.get("components", []),
+              "total_scenarios": scenarios.get("total_scenarios", 0),
+              "deterministic_count": scenarios.get("deterministic_count", 0),
+              "semantic_count": scenarios.get("semantic_count", 0),
+              "entry_point": spec.get("entry_point", ""),
+              "ready": "true"
+          }
+          print(json.dumps(seed))
+          PYEOF
+        output: "seed_state"
+        parse_json: true
+
+  # ===========================================================================
+  # STAGE 2: SCAFFOLD
+  # ===========================================================================
+  - name: "scaffold"
+    approval:
+      required: true
+      prompt: |
+        SEED PROCESSING COMPLETE
+
+        Language:        {{seed_state.language}}
+        Framework:       {{seed_state.framework}}
+        Complexity:      {{seed_state.complexity}}
+        Components:      {{seed_state.components}}
+        Total scenarios: {{seed_state.total_scenarios}}
+          Deterministic: {{seed_state.deterministic_count}}
+          Semantic:      {{seed_state.semantic_count}}
+
+        Next: scaffold the project and build the validation harness.
+        Approve to continue.
+      timeout: 0
+      default: "approve"
+
+    steps:
+
+      - id: "generate-scaffold"
+        agent: "foundation:modular-builder"
+        provider_preferences:
+          - provider: anthropic
+            model: claude-sonnet-*
+          - provider: openai
+            model: gpt-4o
+        prompt: |
+          ## PROJECT SCAFFOLDING
+
+          Read the spec analysis: {{working_dir}}/state/spec_analysis.json
+          Read the scenarios: {{working_dir}}/state/scenarios.json
+
+          Create the project skeleton in: {{project_dir}}/
+
+          RULES:
+          - Create directory structure, package files, dependency manifests
+          - Create entry points and placeholder modules for each component
+          - Make the project RUNNABLE (imports resolve, entry point works)
+          - Do NOT implement business logic yet (the factory loop handles that)
+          - If existing code exists at {{existing_code_path}}, preserve and extend it
+
+          {{#if reference_path}}
+          GENE TRANSFUSION: Study the reference at {{reference_path}} for
+          project structure patterns.
+          {{/if}}
+
+          For language "{{seed_state.language}}":
+          - Create appropriate project files
+          - Set up dependency management
+          - Create the main entry point: {{seed_state.entry_point}}
+          - Create placeholder modules for: {{seed_state.components}}
+
+          After creating files, list every file you created.
+        output: "scaffold_status"
+        timeout: 600
+        retry:
+          max_attempts: 2
+          backoff: "exponential"
+          initial_delay: 5
+
+      - id: "build-harness"
+        agent: "foundation:zen-architect"
+        mode: "ARCHITECT"
+        provider_preferences:
+          - provider: anthropic
+            model: claude-sonnet-*
+          - provider: openai
+            model: gpt-4o
+        prompt: |
+          ## VALIDATION HARNESS
+
+          Read the structured scenarios: {{working_dir}}/state/scenarios.json
+          Read the spec analysis: {{working_dir}}/state/spec_analysis.json
+          Look at the project structure at: {{project_dir}}/
+
+          Create a validation harness that runs ALL scenarios against the project.
+
+          The harness MUST:
+          1. Be a single executable entry point: {{working_dir}}/harness/run_scenarios.sh
+          2. Run each scenario INDEPENDENTLY (one failure must not block others)
+          3. Output ONLY valid JSON to stdout (all other output to stderr)
+          4. NEVER modify source code or scenarios
+          5. Handle the project not being fully implemented (graceful errors)
+          6. Set up and tear down any preconditions per scenario
+
+          For "deterministic" scenarios: execute steps, check assertions with exact matching.
+          For "semantic" scenarios: capture output to {{working_dir}}/harness/observations/ for LLM judging.
+
+          The harness output format MUST be:
+          ```json
+          {
+            "timestamp": "2025-01-01T00:00:00Z",
+            "total": 5,
+            "passed": 0,
+            "failed": 5,
+            "errored": 0,
+            "needs_judge": 0,
+            "satisfaction": 0.0,
+            "results": [
+              {
+                "scenario_id": "scenario-01",
+                "name": "Create item",
+                "status": "passed|failed|errored|needs_judge",
+                "duration_ms": 123,
+                "evidence": "what was observed",
+                "expected": "what was expected",
+                "error": ""
+              }
+            ]
+          }
+          ```
+
+          Where satisfaction = passed / total (excluding needs_judge from denominator).
+
+          Create helper scripts in {{working_dir}}/harness/.
+          Make all scripts executable with chmod +x.
+
+          Also create {{working_dir}}/harness/install_deps.sh to install project dependencies.
+
+          CRITICAL: This harness tests EXTERNAL BEHAVIOR ONLY. The code is opaque.
+        output: "harness_build_status"
+        timeout: 600
+        retry:
+          max_attempts: 2
+          backoff: "exponential"
+          initial_delay: 5
+
+      - id: "verify-harness"
+        type: "bash"
+        command: |
+          set -euo pipefail
+
+          install_script="{{working_dir}}/harness/install_deps.sh"
+          if [ -f "$install_script" ]; then
+            chmod +x "$install_script"
+            "$install_script" 2>&1 | tail -5 >&2 || true
+          fi
+
+          harness="{{working_dir}}/harness/run_scenarios.sh"
+
+          if [ ! -f "$harness" ]; then
+            echo '{"runnable": "false", "error": "run_scenarios.sh not found"}'
+            exit 0
+          fi
+
+          chmod +x "$harness"
+
+          set +e
+          output=$("$harness" 2>/dev/null)
+          exit_code=$?
+          set -e
+
+          if echo "$output" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+            echo "$output" > "{{working_dir}}/state/baseline_results.json"
+            satisfaction=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin).get('satisfaction', 0))")
+            passed=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin).get('passed', 0))")
+            total=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total', 0))")
+            echo "{\"runnable\": \"true\", \"satisfaction\": \"$satisfaction\", \"passed\": \"$passed\", \"total\": \"$total\"}"
+          else
+            echo "$output" > "{{working_dir}}/state/harness_raw_output.log" 2>/dev/null || true
+            echo "{\"runnable\": \"false\", \"error\": \"harness output is not valid JSON\", \"exit_code\": \"$exit_code\"}"
+          fi
+        output: "harness_status"
+        parse_json: true
+        timeout: 300
+        on_error: "continue"
+
+      - id: "fix-harness"
+        condition: "{{harness_status.runnable}} != 'true'"
+        agent: "foundation:bug-hunter"
+        provider_preferences:
+          - provider: anthropic
+            model: claude-sonnet-*
+          - provider: openai
+            model: gpt-4o
+        prompt: |
+          ## FIX VALIDATION HARNESS
+
+          The validation harness failed to produce valid JSON output.
+
+          Error: {{harness_status.error}}
+
+          Read these files:
+          - Harness script: {{working_dir}}/harness/run_scenarios.sh
+          - Raw output (if exists): {{working_dir}}/state/harness_raw_output.log
+          - Scenarios: {{working_dir}}/state/scenarios.json
+          - Project structure: {{project_dir}}/
+          - Any helper scripts in: {{working_dir}}/harness/
+
+          Fix the harness so it:
+          1. Runs without crashing
+          2. Outputs ONLY valid JSON to stdout (everything else to stderr)
+          3. Handles unimplemented features gracefully (mark as "failed" or "errored")
+        output: "harness_fix_status"
+        timeout: 300
+
+      - id: "reverify-harness"
+        condition: "{{harness_status.runnable}} != 'true'"
+        type: "bash"
+        command: |
+          set -euo pipefail
+          harness="{{working_dir}}/harness/run_scenarios.sh"
+          chmod +x "$harness"
+          set +e
+          output=$("$harness" 2>/dev/null)
+          exit_code=$?
+          set -e
+          if echo "$output" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+            echo "$output" > "{{working_dir}}/state/baseline_results.json"
+            satisfaction=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin).get('satisfaction', 0))")
+            passed=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin).get('passed', 0))")
+            total=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total', 0))")
+            echo "{\"runnable\": \"true\", \"satisfaction\": \"$satisfaction\", \"passed\": \"$passed\", \"total\": \"$total\"}"
+          else
+            echo "$output" > "{{working_dir}}/state/harness_raw_output_2.log" 2>/dev/null || true
+            echo "{\"runnable\": \"false\", \"error\": \"Still broken after fix attempt\"}"
+          fi
+        output: "harness_status"
+        parse_json: true
+        timeout: 300
+        on_error: "continue"
+
+
+  # ===========================================================================
+  # STAGE 3: FACTORY
+  # The convergence loop. Generate -> Validate -> Feedback -> Repeat.
+  # "The loop runs until the holdout scenarios pass (and stay passing)"
+  #
+    # ===========================================================================
+  - name: "factory"
+    approval:
+      required: true
+      prompt: |
+        SCAFFOLD COMPLETE
+
+        Project:              {{project_dir}}
+        Harness runnable:     {{harness_status.runnable}}
+        Baseline satisfaction: {{harness_status.satisfaction}}
+        Max iterations:       {{max_iterations}}
+        Target satisfaction:  {{satisfaction_threshold}}
+
+        The factory will now loop: generate -> validate -> feedback -> repeat
+        until satisfaction >= {{satisfaction_threshold}} or {{max_iterations}} iterations.
+
+        Approve to start the factory.
+      timeout: 0
+      default: "approve"
+
+    steps:
+
+      # --- Convergence loop: call sub-recipe per iteration ---
+      - id: "factory-iteration"
+        type: "recipe"
+        recipe: "./factory-iteration.yaml"
+        context:
+          working_dir: "{{working_dir}}"
+          project_dir: "{{project_dir}}"
+          satisfaction_threshold: "{{satisfaction_threshold}}"
+          reference_path: "{{reference_path}}"
+          iteration_num: "{{current_iteration}}"
+        output: "iteration_result"
+        parse_json: true
+        timeout: 1800
+        on_error: "continue"
+        while_condition: "{{converged}} != 'true'"
+        max_while_iterations: 10
+        break_when: "{{converged}} == 'true'"
+        update_context:
+          converged: "{{iteration_result.iteration_result.converged}}"
+          current_iteration: "{{iteration_result.iteration_result.iteration}}"
+          current_satisfaction: "{{iteration_result.iteration_result.satisfaction}}"
+          current_passed: "{{iteration_result.iteration_result.passed}}"
+          current_total: "{{iteration_result.iteration_result.total}}"
+
+
+  # ===========================================================================
+  # STAGE 4: REPORT
+  # ===========================================================================
+  - name: "report"
+    approval:
+      required: true
+      prompt: |
+        FACTORY LOOP COMPLETE
+
+        Converged:    {{converged}}
+        Satisfaction: {{current_satisfaction}} (target: {{satisfaction_threshold}})
+        Iterations:   {{current_iteration}} / {{max_iterations}}
+        Passed:       {{current_passed}} / {{current_total}}
+
+        Approve to generate the final report.
+      timeout: 0
+      default: "approve"
+
+    steps:
+
+      - id: "semantic-judging"
+        agent: "foundation:zen-architect"
+        mode: "REVIEW"
+        provider_preferences:
+          - provider: anthropic
+            model: claude-sonnet-*
+          - provider: openai
+            model: gpt-4o
+        prompt: |
+          ## SEMANTIC VALIDATION (LLM-as-Judge)
+
+          Read the scenarios: {{working_dir}}/state/scenarios.json
+          Read the convergence tracker: {{working_dir}}/state/tracker.json
+          Find the latest results file in: {{working_dir}}/iterations/
+          Read any observation files in: {{working_dir}}/harness/observations/
+
+          For scenarios with type "semantic" or status "needs_judge":
+          1. Read the scenario requirements
+          2. Read the captured observations/output
+          3. Judge: does the behavior SATISFY the scenario's intent?
+          4. Score each 0.0 to 1.0
+
+          If there are NO semantic scenarios, confirm the harness results as final.
+
+          Save evaluation to: {{working_dir}}/state/final_assessment.json
+
+          Format:
+          ```json
+          {
+            "has_semantic_scenarios": false,
+            "semantic_evaluations": [],
+            "final_satisfaction": 0.8,
+            "final_passed": 4,
+            "final_total": 5,
+            "verdict": "CONVERGED"
+          }
+          ```
+        output: "semantic_status"
+        timeout: 300
+
+      - id: "generate-report"
+        agent: "foundation:zen-architect"
+        mode: "REVIEW"
+        provider_preferences:
+          - provider: anthropic
+            model: claude-sonnet-*
+          - provider: openai
+            model: gpt-4o
+        prompt: |
+          ## FACTORY RUN REPORT
+
+          Read ALL artifacts:
+          - Convergence tracker: {{working_dir}}/state/tracker.json
+          - Spec analysis: {{working_dir}}/state/spec_analysis.json
+          - Scenarios: {{working_dir}}/state/scenarios.json
+          - Final assessment: {{working_dir}}/state/final_assessment.json
+          - All validation results: {{working_dir}}/iterations/
+          - All feedback files: {{working_dir}}/feedback/
+
+          Write a comprehensive factory report to: {{working_dir}}/factory_report.md
+
+          Include:
+          - Verdict (CONVERGED / DID NOT CONVERGE)
+          - Convergence history table
+          - Per-scenario results
+          - Techniques applied (Shift Work, Gene Transfusion, Pyramid Summaries, Validation Constraint)
+          - Key findings (what compounded correctly vs error)
+          - Remaining issues (if any)
+        output: "report_status"
+        timeout: 300
+
+      - id: "final-summary"
+        type: "bash"
+        command: |
+          set -euo pipefail
+
+          echo ""
+          echo "================================================================"
+          echo "  ATTRACTOR — Factory Run Complete"
+          echo "================================================================"
+          echo ""
+          echo "  Converged:    {{converged}}"
+          echo "  Satisfaction: {{current_satisfaction}} (target: {{satisfaction_threshold}})"
+          echo "  Iterations:   {{current_iteration}} / {{max_iterations}}"
+          echo "  Passed:       {{current_passed}} / {{current_total}}"
+          echo ""
+          echo "  Project:      {{project_dir}}"
+          echo "  Report:       {{working_dir}}/factory_report.md"
+          echo "  Tracker:      {{working_dir}}/state/tracker.json"
+          echo ""
+          echo "================================================================"
+
+          python3 << 'PYEOF'
+          import json
+          with open("{{working_dir}}/state/tracker.json") as f:
+              tracker = json.load(f)
+          result = {
+              "complete": "true",
+              "converged": "{{converged}}",
+              "satisfaction": "{{current_satisfaction}}",
+              "iterations": "{{current_iteration}}",
+              "passed": "{{current_passed}}",
+              "total": "{{current_total}}",
+              "project_dir": "{{project_dir}}",
+              "report_path": "{{working_dir}}/factory_report.md",
+              "tracker_path": "{{working_dir}}/state/tracker.json",
+              "history": tracker.get("history", [])
+          }
+          print(json.dumps(result))
+          PYEOF
+        output: "final_results"
+        parse_json: true

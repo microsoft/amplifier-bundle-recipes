@@ -1,0 +1,202 @@
+# Factory Iteration Sub-Recipe
+# Called by attractor-v2.yaml's while loop for each generate→validate→assess→feedback cycle.
+
+name: "factory-iteration"
+description: "Single iteration of the Attractor factory convergence loop."
+version: "2.0.0"
+
+context:
+  working_dir: ""
+  project_dir: ""
+  satisfaction_threshold: "1.0"
+  reference_path: ""
+  iteration_num: "1"
+
+steps:
+  - id: "calc-iteration"
+    type: "bash"
+    command: |
+      echo $(({{iteration_num}} + 1))
+    output: "iteration_num"
+
+  - id: "generate"
+    agent: "foundation:modular-builder"
+    provider_preferences:
+      - provider: anthropic
+        model: claude-sonnet-*
+      - provider: openai
+        model: gpt-4o
+    prompt: |
+      ## FACTORY ITERATION {{iteration_num}}
+
+      Read the specification: {{working_dir}}/state/spec_analysis.json
+      Read the scenarios: {{working_dir}}/state/scenarios.json
+      Read the current project: {{project_dir}}/
+      Read the convergence history: {{working_dir}}/state/tracker.json
+      Read ALL previous feedback files in: {{working_dir}}/feedback/
+      Read ALL previous results in: {{working_dir}}/iterations/
+
+      {{#if reference_path}}
+      GENE TRANSFUSION: Study the reference implementation at {{reference_path}}.
+      Transfer working patterns. Adapt to fit the current specification.
+      {{/if}}
+
+      YOUR TASK: Implement the COMPLETE software described in the specification.
+
+      RULES:
+      - Write ALL code needed to satisfy every scenario
+      - Make the code runnable and complete
+      - Focus on EXTERNAL BEHAVIOR that scenarios will test
+      - Internal code structure does not matter — only observable behavior
+      - Protect previously PASSING scenarios (do not break what works)
+      - Do NOT modify anything in {{working_dir}}/harness/
+
+      If previous feedback exists, apply the fixes in priority order.
+      If previous approaches haven't worked, try a fundamentally different strategy.
+    output: "gen_status"
+    timeout: 900
+    retry:
+      max_attempts: 2
+      backoff: "exponential"
+      initial_delay: 5
+
+  - id: "validate"
+    type: "bash"
+    command: |
+      set -euo pipefail
+
+      install_script="{{working_dir}}/harness/install_deps.sh"
+      if [ -f "$install_script" ]; then
+        chmod +x "$install_script"
+        "$install_script" 2>&1 | tail -3 >&2 || true
+      fi
+
+      harness="{{working_dir}}/harness/run_scenarios.sh"
+      results_file="{{working_dir}}/iterations/results_{{iteration_num}}.json"
+      chmod +x "$harness"
+
+      set +e
+      output=$("$harness" 2>/dev/null)
+      set -e
+
+      if echo "$output" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+        echo "$output" > "$results_file"
+        python3 << PYEOF
+      import json
+      with open("$results_file") as f:
+          r = json.load(f)
+      print(json.dumps({
+          "success": "true",
+          "satisfaction": str(r.get("satisfaction", 0)),
+          "passed": str(r.get("passed", 0)),
+          "total": str(r.get("total", 0)),
+          "failed": str(r.get("failed", 0)),
+          "errored": str(r.get("errored", 0))
+      }))
+      PYEOF
+      else
+        echo "$output" > "{{working_dir}}/iterations/raw_{{iteration_num}}.log" 2>/dev/null || true
+        echo '{"success": "false", "satisfaction": "0", "passed": "0", "total": "0", "failed": "0", "errored": "0"}'
+      fi
+    output: "validation_result"
+    parse_json: true
+    timeout: 300
+    on_error: "continue"
+
+  - id: "assess"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      python3 << 'PYEOF'
+      import json, os
+
+      iteration = int("{{iteration_num}}")
+      satisfaction = float("{{validation_result.satisfaction}}")
+      threshold = float("{{satisfaction_threshold}}")
+      converged = "true" if satisfaction >= threshold else "false"
+
+      tracker_path = "{{working_dir}}/state/tracker.json"
+      if os.path.exists(tracker_path):
+          with open(tracker_path) as f:
+              tracker = json.load(f)
+      else:
+          tracker = {"iteration": 0, "converged": False, "satisfaction": 0, "history": []}
+
+      tracker["iteration"] = iteration
+      tracker["converged"] = converged == "true"
+      tracker["satisfaction"] = satisfaction
+      tracker["history"].append({
+          "iteration": iteration,
+          "satisfaction": satisfaction,
+          "passed": int("{{validation_result.passed}}"),
+          "total": int("{{validation_result.total}}")
+      })
+      with open(tracker_path, "w") as f:
+          json.dump(tracker, f, indent=2)
+
+      print(json.dumps({
+          "converged": converged,
+          "iteration": str(iteration),
+          "satisfaction": str(satisfaction),
+          "passed": "{{validation_result.passed}}",
+          "total": "{{validation_result.total}}"
+      }))
+      PYEOF
+    output: "assess_result"
+    parse_json: true
+
+  - id: "feedback"
+    condition: "{{assess_result.converged}} != 'true'"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    provider_preferences:
+      - provider: anthropic
+        model: claude-sonnet-*
+      - provider: openai
+        model: gpt-4o
+    prompt: |
+      ## FACTORY FEEDBACK: Iteration {{iteration_num}}
+
+      Satisfaction: {{assess_result.satisfaction}} (target: {{satisfaction_threshold}})
+      Passed: {{assess_result.passed}} / {{assess_result.total}}
+
+      Read the validation results: {{working_dir}}/iterations/results_{{iteration_num}}.json
+      Read the current code: {{project_dir}}/
+      Read the spec: {{working_dir}}/state/spec_analysis.json
+      Read the scenarios: {{working_dir}}/state/scenarios.json
+      Read the convergence history: {{working_dir}}/state/tracker.json
+      Read ALL previous feedback files in: {{working_dir}}/feedback/
+      Read ALL previous results in: {{working_dir}}/iterations/
+
+      PYRAMID SUMMARY — Compress all iteration history:
+
+      ## Convergence Trend
+      For each iteration: satisfaction, passed/total, delta from previous
+      Trend: improving / stagnant / oscillating
+
+      ## What Worked (carry forward)
+      ## What Failed (abandon — do NOT retry)
+
+      ## Targeted Fixes
+      For each remaining failed/errored scenario:
+      1. What the scenario expected
+      2. What actually happened
+      3. Root cause hypothesis
+      4. Specific, actionable fix instruction
+
+      RULES:
+      - Focus on BEHAVIORAL fixes
+      - Prioritize by IMPACT: fix what unblocks the most scenarios first
+      - For still-failing scenarios: try a FUNDAMENTALLY DIFFERENT strategy
+      - Be specific: name files, functions, expected vs actual behavior
+
+      Save feedback to: {{working_dir}}/feedback/iteration_{{iteration_num}}.md
+    output: "feedback_status"
+    timeout: 300
+
+  - id: "return-result"
+    type: "bash"
+    command: |
+      echo '{"converged": "{{assess_result.converged}}", "iteration": "{{assess_result.iteration}}", "satisfaction": "{{assess_result.satisfaction}}", "passed": "{{assess_result.passed}}", "total": "{{assess_result.total}}"}'
+    output: "iteration_result"
+    parse_json: true
