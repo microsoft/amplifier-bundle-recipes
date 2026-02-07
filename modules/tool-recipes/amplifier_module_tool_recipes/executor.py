@@ -1813,6 +1813,25 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 context["_loop_index"] = iteration
                 context["_loop_iteration"] = iteration + 1
 
+                # Emit per-iteration event for convergence dashboards
+                self._show_progress(
+                    f"  ↻ {step.id} iteration {iteration + 1}"
+                    f" / {step.max_while_iterations}",
+                    event_name="recipe:loop_iteration",
+                    event_data={
+                        "step_id": step.id,
+                        "iteration": iteration + 1,
+                        "max_iterations": step.max_while_iterations,
+                        "context_snapshot": {
+                            k: v
+                            for k, v in context.items()
+                            if k not in ("recipe", "session", "step", "stage")
+                            and not k.startswith("_")
+                            and isinstance(v, (str, int, float, bool))
+                        },
+                    },
+                )
+
                 try:
                     if step.while_steps:
                         # Multi-step body: execute each sub-step in sequence
@@ -1936,6 +1955,18 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             # Clean up loop metadata from context after loop exits by any path
             context.pop("_loop_index", None)
             context.pop("_loop_iteration", None)
+
+        # Emit loop completion event
+        self._show_progress(
+            f"  ✓ {step.id} completed after {iteration} iteration(s)",
+            event_name="recipe:loop_complete",
+            event_data={
+                "step_id": step.id,
+                "iterations_completed": iteration,
+                "max_iterations": step.max_while_iterations,
+                "results_count": len(results),
+            },
+        )
 
         # Store results
         if step.collect:
