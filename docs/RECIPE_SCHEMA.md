@@ -523,6 +523,11 @@ Each step represents one unit of work in the workflow. Steps can be agent invoca
   as: string                    # Optional - Loop variable name (default: "item")
   collect: string               # Optional - Variable to collect all iteration results
   max_iterations: integer       # Optional - Safety limit (default: 100)
+  while_condition: string       # Optional - Expression: loop while true (mutually exclusive with foreach)
+  max_while_iterations: integer # Optional - Safety limit for while loops (default: 100, range: 1-1000)
+  break_when: string            # Optional - Expression: exit loop early if true (requires foreach or while_condition)
+  update_context: dict          # Optional - Variables to update after each loop iteration
+  while_steps: list             # Optional - Multi-step loop body (list of step definitions, requires while_condition)
   output: string                # Optional - Variable name for step result
   agent_config: dict            # Optional - Override agent configuration
   timeout: integer              # Optional - Max execution time (seconds)
@@ -1507,22 +1512,40 @@ Step conditions use a simple expression syntax for runtime evaluation.
 ### Syntax Overview
 
 ```
-<expression> := <comparison> | <expression> "and" <expression> | <expression> "or" <expression>
+<expression> := <or_expr>
+<or_expr>    := <and_expr> ("or" <and_expr>)*
+<and_expr>   := <not_expr> ("and" <not_expr>)*
+<not_expr>   := "not" <not_expr> | <comparison> | "(" <expression> ")"
 <comparison> := <value> <operator> <value>
-<operator>   := "==" | "!="
-<value>      := <variable> | <string-literal>
+<operator>   := "==" | "!=" | "<" | ">" | "<=" | ">="
+<value>      := <variable> | <string-literal> | <number>
 <variable>   := "{{" identifier ("." identifier)* "}}"
 <string>     := "'" chars "'" | '"' chars '"'
+<number>     := [0-9]+ ("." [0-9]+)?
 ```
 
 ### Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `==` | Equality | `{{status}} == 'approved'` |
-| `!=` | Inequality | `{{status}} != 'pending'` |
-| `and` | Both must be true | `{{a}} == 'x' and {{b}} == 'y'` |
-| `or` | Either can be true | `{{a}} == 'x' or {{b}} == 'y'` |
+| Operator | Example | Description |
+|----------|---------|-------------|
+| `==` | `{{status}} == 'passed'` | Equal to |
+| `!=` | `{{status}} != 'failed'` | Not equal to |
+| `<` | `{{count}} < 10` | Less than (numeric-aware) |
+| `>` | `{{score}} > 0.8` | Greater than (numeric-aware) |
+| `<=` | `{{count}} <= {{max}}` | Less than or equal (numeric-aware) |
+| `>=` | `{{score}} >= {{threshold}}` | Greater than or equal (numeric-aware) |
+| `not` | `not {{converged}}` | Logical negation (unary) |
+| `and` | `{{a}} and {{b}}` | Logical AND |
+| `or` | `{{a}} or {{b}}` | Logical OR |
+| `()` | `({{a}} or {{b}}) and {{c}}` | Grouping / precedence |
+
+**Numeric comparison:** When both operands parse as numbers (int or float), comparison
+operators (`<`, `>`, `<=`, `>=`) compare numerically. Otherwise they compare as strings.
+
+**Boolean normalization:** These values are treated as falsy: `false`, `False`, `""`, `"0"`, `"none"`, `"None"`.
+All other non-empty values are truthy.
+
+**Operator precedence** (lowest to highest): `or` → `and` → `not` → comparison → `()`
 
 ### Variable References
 
@@ -1566,7 +1589,16 @@ condition: "{{severity}} == 'critical' or {{severity}} == 'high'"
 condition: "{{a}} == 'x' and {{b}} == 'y' or {{c}} == 'z'"
 ```
 
-**Note:** Operator precedence is left-to-right. For complex conditions, break into multiple steps.
+**Operator precedence** (lowest to highest): `or` → `and` → `not` → comparison → `()`.
+Use parentheses for explicit grouping:
+
+```yaml
+# Parentheses for clarity
+condition: "({{severity}} == 'critical' or {{severity}} == 'high') and {{auto_fix}} == 'true'"
+
+# Negation
+condition: "not {{skip_review}}"
+```
 
 ### Error Handling
 
@@ -1640,10 +1672,7 @@ steps:
 
 These operators are not yet implemented but may be added based on need:
 
-- Numeric comparisons: `>`, `<`, `>=`, `<=`
-- Negation: `not`
 - String functions: `.contains()`, `.startswith()`, `.endswith()`
-- Parentheses for grouping
 
 ---
 
@@ -1820,6 +1849,79 @@ steps:
 5. **Loop variable shadows context**: Local scope takes precedence
 6. **Condition + foreach**: Condition checked once, not per iteration
 
+### While Loops (Convergence-Based Iteration)
+
+While loops repeat a step until a condition becomes false. Unlike `foreach` which iterates
+over a fixed list, `while_condition` enables open-ended iteration for convergence workflows.
+
+```yaml
+- id: "converge"
+  type: "bash"
+  command: |
+    echo "{\"value\": \"$(({{counter}} + 1))\"}"
+  output: "result"
+  parse_json: true
+  while_condition: "{{counter}} < {{max_count}}"
+  max_while_iterations: 10
+  update_context:
+    counter: "{{result.value}}"
+```
+
+#### While Loop Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `while_condition` | string | - | Expression evaluated before each iteration. Loop exits when false. Must contain `{{`. Mutually exclusive with `foreach`. |
+| `max_while_iterations` | integer | 100 | Safety limit (1-1000). Loop exits when reached. |
+| `break_when` | string | - | Expression evaluated after each iteration body + `update_context`. Loop exits when true. Requires `foreach` or `while_condition`. |
+| `update_context` | dict | - | Map of variable names to expressions. After each iteration, each expression is resolved and stored back into context. |
+| `while_steps` | list | - | Multi-step loop body. Each entry is a full step definition. Requires `while_condition`. |
+
+#### Execution Order
+
+1. Check `max_while_iterations` safety limit
+2. Evaluate `while_condition` → exit if false
+3. Inject `_loop_index` (0-based) and `_loop_iteration` (1-based) into context
+4. Execute step body (or `while_steps` sub-steps in sequence)
+5. Store result in `context[step.output]`
+6. Apply `update_context` mutations
+7. Evaluate `break_when` → exit if true
+8. Increment counter, go to 1
+
+#### Loop Metadata Variables
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `_loop_index` | integer | 0-based iteration counter |
+| `_loop_iteration` | integer | 1-based iteration counter |
+
+These are injected at runtime and available in the loop body's `command` and `prompt` fields.
+They are cleaned up from context after the loop exits.
+
+**Note:** The static validator does not recognize these runtime variables. If the validator
+rejects `{{_loop_iteration}}`, use context variables managed via `update_context` instead.
+
+#### Pattern: Sub-Recipe as Loop Body
+
+For complex multi-step loop bodies, call a sub-recipe:
+
+```yaml
+- id: "factory-loop"
+  type: "recipe"
+  recipe: "./iteration.yaml"
+  context:
+    input_var: "{{parent_var}}"
+  output: "iter_result"
+  parse_json: true
+  while_condition: "{{done}} != 'true'"
+  break_when: "{{done}} == 'true'"
+  update_context:
+    done: "{{iter_result.last_step_output.done}}"
+```
+
+**Important:** Sub-recipe output is the sub-recipe's full context. Access nested step
+outputs as `{{iter_result.step_output_name.field}}`, not `{{iter_result.field}}`.
+
 ### Deferred Features
 
 These features may be added based on real usage needs:
@@ -1827,8 +1929,6 @@ These features may be added based on real usage needs:
 - `continue_on_error` - partial completion on failures
 - Checkpointing/resumability for long loops
 - Nested loops (`nested_foreach`)
-- Index variable (`index_as`)
-- Early termination (`break_if`)
 
 ---
 
@@ -2114,6 +2214,24 @@ steps:
 - Makes sub-recipes predictable (same inputs → same outputs)
 - Enables testing sub-recipes in isolation
 - Follows security principle of least privilege
+
+#### Sub-Recipe Output Structure
+
+When a parent recipe calls a sub-recipe, the step's `output` variable receives the
+sub-recipe's **full context** — all variables including `recipe`, `session`, `step`,
+and every step output defined in the sub-recipe.
+
+To access a specific step's output from the sub-recipe, use nested dot notation:
+
+```yaml
+# If sub-recipe has a step with output: "result"
+# And the parent step has output: "iter_out"
+# Then access fields as:
+#   "{{iter_out.result.field}}"   # CORRECT
+#   "{{iter_out.field}}"          # WRONG — "field" is not a top-level context key
+```
+
+**Pattern:** `{{parent_output_name.sub_step_output_name.field}}`
 
 ### Recursion Protection
 
@@ -2494,6 +2612,22 @@ Full results are always saved in the recipe session files. Use `recipes list` to
 ---
 
 ## Schema Change History
+
+### v1.7.0 — While Loops and Expression Enhancements
+
+- **Added** `while_condition` step field for convergence-based iteration
+- **Added** `max_while_iterations` step field (safety limit, default 100)
+- **Added** `break_when` step field for early loop termination
+- **Added** `update_context` step field for per-iteration state mutation
+- **Added** `while_steps` step field for multi-step loop bodies
+- **Added** `_loop_index` and `_loop_iteration` runtime loop metadata
+- **Added** comparison operators: `<`, `>`, `<=`, `>=`
+- **Added** `not` unary operator
+- **Added** parentheses for expression grouping
+- **Added** numeric-aware comparison (auto-detects numeric strings)
+- **Added** boolean normalization for falsy values
+- **Fixed** approval prompt variable resolution
+- **Fixed** type-safe bool serialization (`true`/`false` instead of `True`/`False`)
 
 ### v1.6.0
 - Bounded parallelism (`parallel: N` for integer concurrency limits)

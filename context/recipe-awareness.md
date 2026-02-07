@@ -38,3 +38,14 @@ All recipe work MUST follow this lifecycle. Do NOT write recipe YAML directly.
 | `approve/deny` | Respond to approval gates |
 
 For detailed usage, schema knowledge, and best practices, delegate to `recipes:recipe-author`.
+
+## New: While Loops and Enhanced Expressions
+
+Recipes now support convergence-based iteration:
+
+- **`while_condition`** — loop until a condition becomes false
+- **`break_when`** — exit loop early when a condition becomes true
+- **`update_context`** — mutate context variables after each iteration
+- **Expression operators** — `<`, `>`, `>=`, `<=`, `not`, parentheses, numeric comparison
+
+For details, delegate to `recipes:recipe-author`.

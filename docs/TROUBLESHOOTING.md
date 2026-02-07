@@ -300,6 +300,65 @@ Step: analyze-code
 
 ---
 
+## While Loop and Sub-Recipe Errors
+
+### Error: `'dict' object has no attribute 'validate'`
+
+**Cause:** Using `while_steps` with steps that have complex fields (e.g., `provider_preferences`
+as a list of dicts). The step parsing didn't convert nested objects.
+
+**Fix:** Use the sub-recipe pattern instead of `while_steps` for complex loop bodies. Or ensure
+your bundle has the fix from PR #22 (`Recipe._parse_step()` for while_steps parsing).
+
+### Error: `Undefined variable: {{_loop_iteration}}`
+
+**Cause:** The static validator doesn't recognize runtime loop variables (`_loop_iteration`,
+`_loop_index`). These are injected at execution time by the while-loop executor.
+
+**Fix:** Use context variables managed via `update_context` instead of `_loop_iteration`:
+```yaml
+context:
+  iteration: "0"
+steps:
+  - id: "loop"
+    type: "bash"
+    command: "echo iteration {{iteration}}"
+    while_condition: "{{iteration}} < 5"
+    update_context:
+      iteration: "{{_loop_iteration}}"  # _loop_iteration is available at runtime
+```
+
+### Error: `Undefined variable: {{result.field}}` in update_context
+
+**Cause:** The step's output wasn't stored in context before `update_context` ran. This was
+fixed in PR #23.
+
+**Fix:** Ensure your bundle has the fix. The step output is now stored in `context[step.output]`
+before `update_context` expressions are evaluated.
+
+### Error: `Key 'field' not found` when accessing sub-recipe output
+
+**Cause:** Sub-recipe output is the sub-recipe's full context, not just the last step's output.
+
+**Fix:** Use nested dot notation to access sub-recipe step outputs:
+```yaml
+# If sub-recipe step has output: "result" with field "done"
+# And parent step has output: "iter_out"
+update_context:
+  done: "{{iter_out.result.done}}"    # CORRECT: nested path
+  # done: "{{iter_out.done}}"         # WRONG: "done" is not a top-level key
+```
+
+### Error: `agent steps require 'agent' field` on a while loop step
+
+**Cause:** Steps default to `type: "agent"`. A while-loop container step without an explicit
+type triggers agent validation.
+
+**Fix:** Add `type: "bash"` with `command: "true"` to while loop container steps, or use
+`type: "recipe"` with a sub-recipe as the loop body.
+
+---
+
 ## Session Issues
 
 ### Error: "Recipe session not found: [session-id]"
