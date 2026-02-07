@@ -20,11 +20,6 @@
 #   - Scenarios replace tests; satisfaction replaces pass/fail
 #   - Compounding correctness, not compounding error
 #
-# Usage:
-#   amplifier tool invoke recipes operation=execute \
-#     recipe_path=./attractor.yaml \
-#     context='{"spec_path": "./spec.md", "scenarios_path": "./scenarios.md"}'
-#
 # =============================================================================
 
 name: "attractor"
@@ -32,6 +27,22 @@ description: |
   Non-interactive software factory. Takes a fully-specified seed (spec + scenarios)
   and runs agents in a convergence loop until scenarios pass. Code is treated as
   opaque: correctness is inferred exclusively from externally observable behavior.
+
+  Before running, you need a spec file and a scenarios file. If the user doesn't
+  have these yet, help them create them first — read the AUTHORING-GUIDE.md in this
+  recipe's directory for guidance on writing specs and scenarios that converge fast.
+  Good specs are concrete about interfaces, data formats, error cases, and entry
+  points. Good scenarios test observable behavior with machine-checkable assertions.
+
+  Interactive usage:
+    "Help me write a spec for the Attractor recipe"
+    "Use the Attractor recipe to build this from ./spec.md and ./scenarios.md"
+    "Run the Attractor recipe against my spec and scenarios"
+
+  CLI usage:
+    amplifier tool invoke recipes operation=execute \
+      recipe_path=@recipes:examples/attractor/attractor.yaml \
+      context='{"spec_path": "./spec.md", "scenarios_path": "./scenarios.md"}'
 version: "2.0.0"
 author: "Amplifier Community"
 tags:
@@ -531,7 +542,10 @@ stages:
   # The convergence loop. Generate -> Validate -> Feedback -> Repeat.
   # "The loop runs until the holdout scenarios pass (and stay passing)"
   #
-    # ===========================================================================
+  # v2: This entire stage is now a SINGLE while_condition loop with while_steps.
+  # The old v1 had 5 manually unrolled copies of this (~710 lines).
+  # This is ~150 lines. max_iterations is a true runtime parameter.
+  # ===========================================================================
   - name: "factory"
     approval:
       required: true
@@ -676,7 +690,7 @@ stages:
 
           echo ""
           echo "================================================================"
-          echo "  ATTRACTOR — Factory Run Complete"
+          echo "  ATTRACTOR v2 — Factory Run Complete"
           echo "================================================================"
           echo ""
           echo "  Converged:    {{converged}}"

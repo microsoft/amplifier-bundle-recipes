@@ -55,16 +55,44 @@ Four stages, each with an approval gate:
    report with iteration history, per-scenario results, and technique
    analysis.
 
-## Quick Start
+## Usage
 
-```bash
-amplifier tool invoke recipes operation=execute \
-  recipe_path=./attractor.yaml \
-  context='{"spec_path": "./examples/todo-api/spec.md", "scenarios_path": "./examples/todo-api/scenarios.md"}'
-```
+### Start with a spec
+
+If you don't have a spec and scenarios yet, ask for help writing them:
+
+> Help me write a spec for the Attractor recipe. I want to build a REST API
+> that manages a todo list.
+
+The assistant will read the [AUTHORING-GUIDE.md](AUTHORING-GUIDE.md) and walk
+you through creating a spec file and scenarios file that are structured for
+fast convergence.
+
+### Run with existing files
+
+Once you have your spec and scenarios ready:
+
+> Use the Attractor recipe to build this from ./spec.md and ./scenarios.md
+
+Or if the files are in a different location:
+
+> Run the Attractor recipe against the spec in docs/api-spec.md with
+> scenarios in docs/scenarios.md
+
+### Run the included example
+
+> Run the Attractor recipe with the todo-api example
 
 The included example builds a Todo REST API (Python, stdlib only, 10
 scenarios). It converges on the first iteration.
+
+### From CLI
+
+```bash
+amplifier tool invoke recipes operation=execute \
+  recipe_path=@recipes:examples/attractor/attractor.yaml \
+  context='{"spec_path": "./spec.md", "scenarios_path": "./scenarios.md"}'
+```
 
 ## Files
 
