@@ -1678,13 +1678,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         # Multi-step body: execute each sub-step in sequence
                         last_result = None
                         for sub_step_data in step.while_steps:
-                            step_data = dict(sub_step_data)
-                            # Key remapping (same as Recipe._parse_step)
-                            if "as" in step_data:
-                                step_data["as_var"] = step_data.pop("as")
-                            if "context" in step_data:
-                                step_data["step_context"] = step_data.pop("context")
-                            sub_step = Step(**step_data)
+                            sub_step = Recipe._parse_step(sub_step_data)
                             errors = sub_step.validate()
                             if errors:
                                 raise ValueError(
