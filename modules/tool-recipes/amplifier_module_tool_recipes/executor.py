@@ -1758,6 +1758,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
                         result = self._process_step_result(result, step)
                         results.append(result)
+                        if step.output:
+                            context[step.output] = result
 
                 except SkipRemainingError:
                     raise
