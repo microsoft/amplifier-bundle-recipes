@@ -892,6 +892,44 @@ context:
 
 **Reference:** See `api_delay_seconds` and `api_retry_attempts` in `@amplifier:recipes/ecosystem-activity-report.yaml`
 
+### Convergence Loops
+
+For iterative refinement workflows (generate → validate → feedback → repeat until done),
+use `while_condition` with a sub-recipe for the loop body:
+
+```yaml
+context:
+  converged: "false"
+  current_iteration: "0"
+
+steps:
+  - id: "refine"
+    type: "recipe"
+    recipe: "./iteration-body.yaml"
+    context:
+      iteration: "{{current_iteration}}"
+    output: "iter_result"
+    parse_json: true
+    while_condition: "{{converged}} != 'true'"
+    max_while_iterations: 10
+    break_when: "{{converged}} == 'true'"
+    update_context:
+      converged: "{{iter_result.assess.converged}}"
+      current_iteration: "{{iter_result.assess.iteration}}"
+```
+
+**Key points:**
+
+- Use **flat context variables** (`converged`, `current_iteration`) for loop state — not nested JSON.
+  This keeps `while_condition` and approval prompts simple.
+- Use **file-based storage** (working directory) for large per-iteration state (validation results,
+  feedback reports) that would bloat context.
+- The sub-recipe pattern is preferred over `while_steps` for multi-step bodies because sub-recipes
+  have full parsing, independent validation, and context isolation.
+- Sub-recipe output is the full sub-recipe context. Access step outputs via nested paths:
+  `{{iter_result.step_output.field}}`.
+- Always include `max_while_iterations` as a safety limit to prevent infinite loops.
+
 ### Recipe-Level Rate Limiting
 
 **For comprehensive control over LLM call rates across entire recipe trees, use the `rate_limiting` configuration:**
