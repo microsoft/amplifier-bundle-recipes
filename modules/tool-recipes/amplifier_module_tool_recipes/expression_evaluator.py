@@ -5,7 +5,7 @@ Supports boolean expressions with:
 - Boolean operators: and or not
 - Parenthesized grouping: (expr)
 - Variable references: {{variable}}
-- String literals: 'value' or "value"
+- String literals: 'value' or "value" (with escape sequences: \\, \', \")
 - Numeric literals: 42, 3.14
 
 Implemented as a recursive descent parser with proper operator precedence:
@@ -47,6 +47,43 @@ def evaluate_condition(expression: str, context: dict[str, Any]) -> bool:
     return _evaluate_expression(substituted.strip())
 
 
+def _escape_string_value(value: str) -> str:
+    """Escape a string value for safe embedding in single-quoted literal.
+
+    Escapes backslashes and single quotes so the value can be safely
+    wrapped in single quotes without breaking tokenization.
+
+    Args:
+        value: Raw string value from context
+
+    Returns:
+        Escaped string safe for embedding in 'quotes'
+    """
+    # Escape backslashes first (so we don't double-escape the quote escapes)
+    value = value.replace("\\", "\\\\")
+    # Escape single quotes
+    value = value.replace("'", "\\'")
+    return value
+
+
+def _unescape_string_value(value: str) -> str:
+    """Unescape a string value after extracting from quoted literal.
+
+    Reverses the escaping done by _escape_string_value.
+
+    Args:
+        value: Escaped string from tokenizer (quotes already stripped)
+
+    Returns:
+        Original unescaped string value
+    """
+    # Unescape in reverse order: quotes first, then backslashes
+    value = value.replace("\\'", "'")
+    value = value.replace('\\"', '"')
+    value = value.replace("\\\\", "\\")
+    return value
+
+
 def _substitute_variables(expression: str, context: dict[str, Any]) -> str:
     """Replace {{variable}} references with their values."""
     pattern = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
@@ -58,7 +95,9 @@ def _substitute_variables(expression: str, context: dict[str, Any]) -> str:
             raise ExpressionError(f"Undefined variable: {var_path}")
         # Convert to string representation for comparison
         if isinstance(value, str):
-            return f"'{value}'"
+            # Escape special characters before wrapping in quotes
+            escaped = _escape_string_value(value)
+            return f"'{escaped}'"
         if isinstance(value, bool):
             return "true" if value else "false"
         return str(value)
@@ -143,6 +182,11 @@ def _tokenize(expression: str) -> list[str]:
     Token types: string literals ('...'/\"...\"), operators (== != < > >= <=),
     keywords (and or not), parentheses, numbers, and bare identifiers.
 
+    Supports escape sequences within string literals:
+    - \\' for literal single quote
+    - \\" for literal double quote
+    - \\\\ for literal backslash
+
     Args:
         expression: Substituted expression string (variables already replaced)
 
@@ -164,12 +208,19 @@ def _tokenize(expression: str) -> list[str]:
             i += 1
             continue
 
-        # String literals (single or double quoted)
+        # String literals (single or double quoted) with escape sequence support
         if ch in ("'", '"'):
             quote = ch
             j = i + 1
-            while j < n and expression[j] != quote:
-                j += 1
+            while j < n:
+                if expression[j] == '\\' and j + 1 < n:
+                    # Skip escaped character (handles \', \", \\)
+                    j += 2
+                elif expression[j] == quote:
+                    # Found unescaped closing quote
+                    break
+                else:
+                    j += 1
             if j >= n:
                 raise ExpressionError(
                     f"Unterminated string literal starting at position {i}"
@@ -321,19 +372,9 @@ class _Parser:
             op = self._consume()
             right_val = self._parse_atom()
 
-            # Strip quotes from string literals for comparison
-            left_cmp = (
-                left_val[1:-1]
-                if (left_val.startswith("'") and left_val.endswith("'"))
-                or (left_val.startswith('"') and left_val.endswith('"'))
-                else left_val
-            )
-            right_cmp = (
-                right_val[1:-1]
-                if (right_val.startswith("'") and right_val.endswith("'"))
-                or (right_val.startswith('"') and right_val.endswith('"'))
-                else right_val
-            )
+            # Strip quotes and unescape for comparison
+            left_cmp = self._extract_string_value(left_val)
+            right_cmp = self._extract_string_value(right_val)
 
             # Numeric-first comparison
             left_num = _try_numeric(left_cmp)
@@ -369,14 +410,27 @@ class _Parser:
                     return left_cmp <= right_cmp
 
         # No comparison operator - interpret as boolean via truthiness
-        # Strip quotes for truthiness check
-        stripped = (
-            left_val[1:-1]
-            if (left_val.startswith("'") and left_val.endswith("'"))
-            or (left_val.startswith('"') and left_val.endswith('"'))
-            else left_val
-        )
+        stripped = self._extract_string_value(left_val)
         return _is_truthy(stripped)
+
+    def _extract_string_value(self, token: str) -> str:
+        """Extract and unescape string value from a token.
+
+        Handles quoted strings (strips quotes and unescapes) and bare values.
+
+        Args:
+            token: Raw token from tokenizer
+
+        Returns:
+            Unescaped string value for comparison
+        """
+        if (token.startswith("'") and token.endswith("'")) or (
+            token.startswith('"') and token.endswith('"')
+        ):
+            # Strip quotes and unescape
+            inner = token[1:-1]
+            return _unescape_string_value(inner)
+        return token
 
     def _parse_atom(self) -> str:
         """Parse atom: '(' expression ')' | literal | identifier.
