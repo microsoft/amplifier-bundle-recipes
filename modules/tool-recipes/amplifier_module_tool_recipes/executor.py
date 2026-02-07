@@ -16,7 +16,6 @@ from amplifier_foundation import ProviderPreference
 from amplifier_foundation import resolve_model_pattern
 from .models import BackoffConfig
 from .models import OrchestratorConfig
-from .models import ProviderPreferenceConfig
 from .models import RateLimitingConfig
 from .models import Recipe
 from .models import RecursionConfig
@@ -198,7 +197,7 @@ class RateLimiter:
         await self._apply_backoff()
         elapsed_ms = (asyncio.get_event_loop().time() - start) * 1000
         self.stats["total_acquisitions"] += 1
-        self.stats["total_wait_time_ms"] += elapsed_ms
+        self.stats["total_wait_time_ms"] += int(elapsed_ms)
 
     def release(self) -> None:
         """Release slot after LLM call completes."""
@@ -502,8 +501,8 @@ class RecipeExecutor:
                         context["_skipped_steps"] = skipped_steps
                         continue
 
-                # Handle foreach loops
-                if step.foreach:
+                # Handle foreach loops and while loops
+                if step.foreach or step.while_condition:
                     try:
                         await self._execute_loop(
                             step,
@@ -769,8 +768,8 @@ class RecipeExecutor:
                             context["_skipped_steps"] = skipped_steps
                             continue
 
-                    # Handle foreach loops
-                    if step.foreach:
+                    # Handle foreach loops and while loops
+                    if step.foreach or step.while_condition:
                         try:
                             await self._execute_loop(
                                 step,
@@ -875,12 +874,20 @@ class RecipeExecutor:
                     )
 
                     # Set pending approval AFTER saving state (this loads, modifies, saves)
+                    # Resolve template variables in approval prompt before display
+                    raw_approval_prompt = (
+                        stage.approval.prompt
+                        or f"Approve completion of stage '{stage.name}'?"
+                    )
+                    resolved_approval_prompt = self.substitute_variables(
+                        raw_approval_prompt, context
+                    )
+
                     self.session_manager.set_pending_approval(
                         session_id=session_id,
                         project_path=project_path,
                         stage_name=stage.name,
-                        prompt=stage.approval.prompt
-                        or f"Approve completion of stage '{stage.name}'?",
+                        prompt=resolved_approval_prompt,
                         timeout=stage.approval.timeout,
                         default=stage.approval.default,
                     )
@@ -889,8 +896,7 @@ class RecipeExecutor:
                     raise ApprovalGatePausedError(
                         session_id=session_id,
                         stage_name=stage.name,
-                        approval_prompt=stage.approval.prompt
-                        or f"Approve completion of stage '{stage.name}'?",
+                        approval_prompt=resolved_approval_prompt,
                     )
 
                 # No approval needed - save progress and continue
@@ -1322,6 +1328,20 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             SkipRemainingError: If on_error='skip_remaining' and iteration fails
             CancellationRequestedError: If cancellation requested
         """
+        # Route to while-loop if step has while_condition
+        if step.while_condition:
+            await self._execute_while_loop(
+                step,
+                context,
+                project_path,
+                recursion_state,
+                recipe_path,
+                rate_limiter,
+                orchestrator_config,
+                session_id,
+            )
+            return
+
         # Resolve foreach variable (step.foreach is guaranteed non-None by caller)
         assert step.foreach is not None
         items = self._resolve_foreach_variable(step.foreach, context)
@@ -1589,6 +1609,204 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
         return list(results)
 
+    async def _execute_while_loop(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        project_path: Path,
+        recursion_state: RecursionState,
+        recipe_path: Path | None = None,
+        rate_limiter: RateLimiter | None = None,
+        orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Execute a step with while-loop iteration (convergence-based workflow).
+
+        Evaluates while_condition each iteration, executes the step body (or
+        while_steps multi-step body), applies update_context mutations, checks
+        break_when, and injects loop metadata (_loop_index, _loop_iteration).
+
+        Safety: respects max_while_iterations, cancellation checks between
+        iterations, and session checkpointing for resumability.
+
+        Args:
+            step: Step with while_condition field set
+            context: Current context variables (mutated in place)
+            project_path: Current project directory
+            recursion_state: Recursion tracking state
+            recipe_path: Optional path to recipe file (for sub-recipe resolution)
+            rate_limiter: Optional rate limiter for pacing
+            orchestrator_config: Optional orchestrator config for spawned sessions
+            session_id: Session identifier for cancellation checks
+
+        Raises:
+            ValueError: If while_condition evaluation fails or limits exceeded
+            SkipRemainingError: If on_error='skip_remaining' and body fails
+            CancellationRequestedError: If cancellation requested between iterations
+        """
+        results = []
+        iteration = 0
+
+        try:
+            while True:
+                # Safety limit check
+                if iteration >= step.max_while_iterations:
+                    break
+
+                # Check for cancellation before each iteration
+                if session_id and project_path:
+                    self._check_coordinator_cancellation(session_id, project_path)
+                    self._check_cancellation(
+                        session_id, project_path, current_step=f"{step.id}[{iteration}]"
+                    )
+
+                # Evaluate while_condition with variable substitution
+                assert step.while_condition is not None
+                resolved_condition = self.substitute_variables(
+                    step.while_condition, context
+                )
+                condition_result = evaluate_condition(resolved_condition, context)
+                if not condition_result:
+                    break
+
+                # Inject loop metadata before each iteration body
+                context["_loop_index"] = iteration
+                context["_loop_iteration"] = iteration + 1
+
+                try:
+                    if step.while_steps:
+                        # Multi-step body: execute each sub-step in sequence
+                        last_result = None
+                        for sub_step_data in step.while_steps:
+                            step_data = dict(sub_step_data)
+                            # Key remapping (same as Recipe._parse_step)
+                            if "as" in step_data:
+                                step_data["as_var"] = step_data.pop("as")
+                            if "context" in step_data:
+                                step_data["step_context"] = step_data.pop("context")
+                            sub_step = Step(**step_data)
+                            errors = sub_step.validate()
+                            if errors:
+                                raise ValueError(
+                                    f"While sub-step '{sub_step.id}' "
+                                    f"validation failed: {'; '.join(errors)}"
+                                )
+
+                            if sub_step.type == "recipe":
+                                sub_result = await self._execute_recipe_step(
+                                    sub_step,
+                                    context,
+                                    project_path,
+                                    recursion_state,
+                                    recipe_path,
+                                    rate_limiter,
+                                    orchestrator_config,
+                                    parent_session_id=session_id,
+                                )
+                            elif sub_step.type == "bash":
+                                bash_result = await self._execute_bash_step(
+                                    sub_step, context, project_path
+                                )
+                                if sub_step.output_exit_code:
+                                    context[sub_step.output_exit_code] = str(
+                                        bash_result.exit_code
+                                    )
+                                sub_result = bash_result.stdout
+                            else:
+                                recursion_state.increment_steps()
+                                sub_result = await self.execute_step_with_retry(
+                                    sub_step,
+                                    context,
+                                    rate_limiter,
+                                    orchestrator_config,
+                                    session_id=session_id,
+                                    project_path=project_path,
+                                )
+
+                            sub_result = self._process_step_result(sub_result, sub_step)
+                            if sub_step.output:
+                                context[sub_step.output] = sub_result
+                            last_result = sub_result
+
+                        results.append(last_result)
+                    else:
+                        # Single-step body: dispatch based on step type
+                        if step.type == "recipe":
+                            result = await self._execute_recipe_step(
+                                step,
+                                context,
+                                project_path,
+                                recursion_state,
+                                recipe_path,
+                                rate_limiter,
+                                orchestrator_config,
+                                parent_session_id=session_id,
+                            )
+                        elif step.type == "bash":
+                            bash_result = await self._execute_bash_step(
+                                step, context, project_path
+                            )
+                            if step.output_exit_code:
+                                context[step.output_exit_code] = str(
+                                    bash_result.exit_code
+                                )
+                            result = bash_result.stdout
+                        else:
+                            recursion_state.increment_steps()
+                            result = await self.execute_step_with_retry(
+                                step,
+                                context,
+                                rate_limiter,
+                                orchestrator_config,
+                                session_id=session_id,
+                                project_path=project_path,
+                            )
+
+                        result = self._process_step_result(result, step)
+                        results.append(result)
+
+                except SkipRemainingError:
+                    raise
+                except CancellationRequestedError:
+                    raise
+                except Exception as e:
+                    raise ValueError(
+                        f"Step '{step.id}' iteration {iteration} failed: {e}"
+                    ) from e
+
+                # Apply update_context mutations after each iteration body
+                if step.update_context:
+                    for key, value in step.update_context.items():
+                        resolved_value = self.substitute_variables(value, context)
+                        context[key] = resolved_value
+
+                # Evaluate break_when after each iteration
+                if step.break_when:
+                    try:
+                        resolved_break = self.substitute_variables(
+                            step.break_when, context
+                        )
+                        if evaluate_condition(resolved_break, context):
+                            break
+                    except ExpressionError as e:
+                        self._show_progress(
+                            f"Step '{step.id}': break_when expression error: {e}",
+                            level="warning",
+                        )
+
+                iteration += 1
+
+        finally:
+            # Clean up loop metadata from context after loop exits by any path
+            context.pop("_loop_index", None)
+            context.pop("_loop_iteration", None)
+
+        # Store results
+        if step.collect:
+            context[step.collect] = results
+        elif step.output and results:
+            context[step.output] = results[-1]
+
     async def _execute_recipe_step(
         self,
         step: Step,
@@ -1788,6 +2006,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                             f"Check that the bash command outputs clean JSON or add 'parse_json: true'."
                         )
                 # Use json.dumps for dict/list to produce valid JSON, not Python repr
+                if isinstance(value, bool):
+                    return "true" if value else "false"
                 if isinstance(value, (dict, list)):
                     return json.dumps(value)
                 return str(value)
@@ -1801,6 +2021,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
             # Use json.dumps for dict/list to produce valid JSON, not Python repr
             value = context[var_ref]
+            if isinstance(value, bool):
+                return "true" if value else "false"
             if isinstance(value, (dict, list)):
                 return json.dumps(value)
             return str(value)
