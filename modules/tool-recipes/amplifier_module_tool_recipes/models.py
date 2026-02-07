@@ -1,10 +1,8 @@
 """Recipe data models and YAML parsing."""
 
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 
@@ -211,7 +209,9 @@ class ProviderPreferenceConfig:
         """Validate preference configuration."""
         errors = []
         if not self.provider:
-            errors.append("provider_preferences entry missing required 'provider' field")
+            errors.append(
+                "provider_preferences entry missing required 'provider' field"
+            )
         return errors
 
 
@@ -262,6 +262,21 @@ class Step:
 
     # JSON parsing control
     parse_json: bool = False  # Default: preserve output as-is, only parse clean JSON
+
+    # While-loop fields (convergence-based workflows)
+    while_condition: str | None = (
+        None  # Expression evaluated each iteration; loop continues while truthy
+    )
+    max_while_iterations: int = 100  # Safety limit for while loops (1-1000)
+    break_when: str | None = (
+        None  # Expression checked after each iteration; breaks loop if truthy
+    )
+    update_context: dict[str, str] | None = (
+        None  # Context mutations applied after each iteration
+    )
+    while_steps: list[dict[str, Any]] | None = (
+        None  # Multi-step loop body (list of step dicts)
+    )
 
     # Per-step recursion override (for recipe steps only)
     recursion: RecursionConfig | None = None
@@ -425,6 +440,38 @@ class Step:
             if self.max_iterations <= 0:
                 errors.append(f"Step '{self.id}': max_iterations must be positive")
 
+        # While-loop validation
+        if self.while_condition and self.foreach:
+            errors.append(
+                f"Step '{self.id}': 'while_condition' and 'foreach' are mutually exclusive"
+            )
+        if self.while_condition is not None and "{{" not in self.while_condition:
+            errors.append(
+                f"Step '{self.id}': while_condition must contain a variable reference"
+                " (e.g., '{{x}}')"
+            )
+        if self.max_while_iterations < 1 or self.max_while_iterations > 1000:
+            errors.append(
+                f"Step '{self.id}': max_while_iterations must be between 1 and 1000"
+            )
+        if self.break_when and not self.foreach and not self.while_condition:
+            errors.append(
+                f"Step '{self.id}': 'break_when' requires 'foreach' or 'while_condition'"
+            )
+        if self.update_context:
+            reserved_keys = {"recipe", "session", "step"}
+            for key in self.update_context:
+                if not key.replace("_", "").isalnum():
+                    errors.append(
+                        f"Step '{self.id}': update_context key '{key}' must be a valid identifier"
+                    )
+                if key in reserved_keys:
+                    errors.append(
+                        f"Step '{self.id}': update_context key '{key}' is reserved"
+                    )
+        if self.while_steps and not self.while_condition:
+            errors.append(f"Step '{self.id}': 'while_steps' requires 'while_condition'")
+
         # Parallel validation
         if self.parallel and not self.foreach:
             errors.append(f"Step '{self.id}': parallel requires foreach")
@@ -466,7 +513,9 @@ class Step:
                 for i, pref in enumerate(self.provider_preferences):
                     pref_errors = pref.validate()
                     for err in pref_errors:
-                        errors.append(f"Step '{self.id}': provider_preferences[{i}]: {err}")
+                        errors.append(
+                            f"Step '{self.id}': provider_preferences[{i}]: {err}"
+                        )
 
         return errors
 
