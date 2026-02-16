@@ -365,7 +365,7 @@ Example:
             if mention_resolver is None:
                 return None
             return mention_resolver.resolve(path_str)
-        return Path(path_str)
+        return Path(path_str).expanduser()
 
     async def _execute_recipe(self, input: dict[str, Any]) -> ToolResult:
         """Execute recipe from YAML file."""
