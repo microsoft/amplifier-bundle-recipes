@@ -296,12 +296,16 @@ class Step:
         if not self.id:
             errors.append("Step missing required field: id")
 
+        # Compound container steps (foreach/while with nested sub-steps)
+        # don't need agent/prompt — the sub-steps carry those.
+        is_compound = bool(self.while_steps and (self.foreach or self.while_condition))
+
         # Type-specific validation
         if self.type == "agent":
-            # Agent steps require agent and prompt
-            if not self.agent:
+            # Agent steps require agent and prompt (unless compound container)
+            if not is_compound and not self.agent:
                 errors.append(f"Step '{self.id}': agent steps require 'agent' field")
-            if not self.prompt:
+            if not is_compound and not self.prompt:
                 errors.append(f"Step '{self.id}': agent steps require 'prompt' field")
             # Agent steps cannot have recipe-specific fields
             if self.recipe:
@@ -469,8 +473,10 @@ class Step:
                     errors.append(
                         f"Step '{self.id}': update_context key '{key}' is reserved"
                     )
-        if self.while_steps and not self.while_condition:
-            errors.append(f"Step '{self.id}': 'while_steps' requires 'while_condition'")
+        if self.while_steps and not self.while_condition and not self.foreach:
+            errors.append(
+                f"Step '{self.id}': 'steps' requires 'while_condition' or 'foreach'"
+            )
 
         # Parallel validation
         if self.parallel and not self.foreach:
@@ -576,6 +582,13 @@ class Recipe:
         # Map 'context' to 'step_context' (context at step level is for sub-recipes)
         if "context" in step_data_copy:
             step_data_copy["step_context"] = step_data_copy.pop("context")
+
+        # Map 'steps' to 'while_steps' for compound steps (foreach or while bodies).
+        # In YAML, 'steps' is the natural key for nested step bodies in both
+        # foreach and while_condition blocks. Internally we store them as
+        # 'while_steps' (list of raw dicts parsed on-the-fly by the executor).
+        if "steps" in step_data_copy:
+            step_data_copy["while_steps"] = step_data_copy.pop("steps")
 
         # Parse step-level recursion config if present
         if "recursion" in step_data_copy and isinstance(
