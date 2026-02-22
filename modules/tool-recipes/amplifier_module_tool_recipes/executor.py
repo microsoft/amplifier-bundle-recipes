@@ -1575,9 +1575,24 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             context[loop_var] = item
 
             try:
-                # Execute based on step type (agent, recipe, or bash)
-                if step.type == "recipe":
-                    result = await self._execute_recipe_step(
+                if step.while_steps:
+                    # Multi-step foreach body: execute each sub-step per iteration.
+                    # Mirrors the while-loop multi-step handling in _execute_while_loop.
+                    last_result = await self._execute_sub_steps(
+                        step.while_steps,
+                        context,
+                        project_path,
+                        recursion_state,
+                        recipe_path,
+                        rate_limiter,
+                        orchestrator_config,
+                        session_id,
+                        parent_step_id=step.id,
+                    )
+                    results.append(last_result)
+                else:
+                    # Single-step body: execute the step itself per iteration
+                    result = await self._execute_single_step_body(
                         step,
                         context,
                         project_path,
@@ -1585,32 +1600,12 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         recipe_path,
                         rate_limiter,
                         orchestrator_config,
-                        parent_session_id=session_id,
-                    )
-                elif step.type == "bash":
-                    # Bash steps don't count against agent recursion limits
-                    bash_result = await self._execute_bash_step(
-                        step, context, project_path
-                    )
-                    # Store exit code if requested
-                    if step.output_exit_code:
-                        context[step.output_exit_code] = str(bash_result.exit_code)
-                    result = bash_result.stdout
-                else:
-                    # Agent step - track for recursion limits
-                    recursion_state.increment_steps()
-                    result = await self.execute_step_with_retry(
-                        step,
-                        context,
-                        rate_limiter,
-                        orchestrator_config,
-                        session_id=session_id,
-                        project_path=project_path,
+                        session_id,
                     )
 
-                # Process result: unwrap spawn() output and optionally parse JSON
-                result = self._process_step_result(result, step)
-                results.append(result)
+                    # Process result: unwrap spawn() output and optionally parse JSON
+                    result = self._process_step_result(result, step)
+                    results.append(result)
             except SkipRemainingError:
                 # Propagate skip_remaining
                 raise
@@ -1626,6 +1621,126 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     del context[loop_var]
 
         return results
+
+    async def _execute_single_step_body(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        project_path: Path,
+        recursion_state: RecursionState,
+        recipe_path: Path | None = None,
+        rate_limiter: RateLimiter | None = None,
+        orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
+    ) -> Any:
+        """Execute a single step body (agent, recipe, or bash).
+
+        Shared helper used by both sequential and parallel loop executors
+        for the single-step-per-iteration case.
+        """
+        if step.type == "recipe":
+            return await self._execute_recipe_step(
+                step,
+                context,
+                project_path,
+                recursion_state,
+                recipe_path,
+                rate_limiter,
+                orchestrator_config,
+                parent_session_id=session_id,
+            )
+        elif step.type == "bash":
+            bash_result = await self._execute_bash_step(step, context, project_path)
+            if step.output_exit_code:
+                context[step.output_exit_code] = str(bash_result.exit_code)
+            return bash_result.stdout
+        else:
+            # Agent step - track for recursion limits
+            recursion_state.increment_steps()
+            return await self.execute_step_with_retry(
+                step,
+                context,
+                rate_limiter,
+                orchestrator_config,
+                session_id=session_id,
+                project_path=project_path,
+            )
+
+    async def _execute_sub_steps(
+        self,
+        sub_steps_data: list[dict[str, Any]],
+        context: dict[str, Any],
+        project_path: Path,
+        recursion_state: RecursionState,
+        recipe_path: Path | None = None,
+        rate_limiter: RateLimiter | None = None,
+        orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
+        parent_step_id: str = "",
+    ) -> Any:
+        """Execute a list of sub-step dicts in sequence.
+
+        Used as the multi-step body for both foreach and while-loop compound
+        steps.  Each sub-step dict is parsed, validated and dispatched.
+        Sub-steps that are themselves loops (foreach / while_condition) are
+        routed through ``_execute_loop`` so nesting works to arbitrary depth.
+
+        Returns the result of the last executed sub-step.
+        """
+        from .models import Recipe  # local to avoid circular at module level
+
+        last_result: Any = None
+        for sub_step_data in sub_steps_data:
+            sub_step = Recipe._parse_step(sub_step_data)
+            errors = sub_step.validate()
+            if errors:
+                raise ValueError(
+                    f"Sub-step '{sub_step.id}' (in '{parent_step_id}') "
+                    f"validation failed: {'; '.join(errors)}"
+                )
+
+            # Evaluate condition on sub-step (skip if false)
+            if sub_step.condition:
+                resolved_cond = self.substitute_variables(sub_step.condition, context)
+                from .expression_evaluator import evaluate_condition
+
+                if not evaluate_condition(resolved_cond, context):
+                    continue
+
+            # Route loops through the main loop executor for proper nesting
+            if sub_step.foreach or sub_step.while_condition:
+                await self._execute_loop(
+                    sub_step,
+                    context,
+                    project_path,
+                    recursion_state,
+                    recipe_path,
+                    rate_limiter,
+                    orchestrator_config,
+                    session_id,
+                )
+                # The loop stores its own results in context via output/collect
+                if sub_step.output:
+                    last_result = context.get(sub_step.output)
+                elif sub_step.collect:
+                    last_result = context.get(sub_step.collect)
+            else:
+                sub_result = await self._execute_single_step_body(
+                    sub_step,
+                    context,
+                    project_path,
+                    recursion_state,
+                    recipe_path,
+                    rate_limiter,
+                    orchestrator_config,
+                    session_id,
+                )
+                sub_result = self._process_step_result(sub_result, sub_step)
+                if sub_step.output:
+                    context[sub_step.output] = sub_result
+                last_result = sub_result
+
+        return last_result
 
     async def _execute_loop_parallel(
         self,
@@ -1835,85 +1950,30 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 try:
                     if step.while_steps:
                         # Multi-step body: execute each sub-step in sequence
-                        last_result = None
-                        for sub_step_data in step.while_steps:
-                            sub_step = Recipe._parse_step(sub_step_data)
-                            errors = sub_step.validate()
-                            if errors:
-                                raise ValueError(
-                                    f"While sub-step '{sub_step.id}' "
-                                    f"validation failed: {'; '.join(errors)}"
-                                )
-
-                            if sub_step.type == "recipe":
-                                sub_result = await self._execute_recipe_step(
-                                    sub_step,
-                                    context,
-                                    project_path,
-                                    recursion_state,
-                                    recipe_path,
-                                    rate_limiter,
-                                    orchestrator_config,
-                                    parent_session_id=session_id,
-                                )
-                            elif sub_step.type == "bash":
-                                bash_result = await self._execute_bash_step(
-                                    sub_step, context, project_path
-                                )
-                                if sub_step.output_exit_code:
-                                    context[sub_step.output_exit_code] = str(
-                                        bash_result.exit_code
-                                    )
-                                sub_result = bash_result.stdout
-                            else:
-                                recursion_state.increment_steps()
-                                sub_result = await self.execute_step_with_retry(
-                                    sub_step,
-                                    context,
-                                    rate_limiter,
-                                    orchestrator_config,
-                                    session_id=session_id,
-                                    project_path=project_path,
-                                )
-
-                            sub_result = self._process_step_result(sub_result, sub_step)
-                            if sub_step.output:
-                                context[sub_step.output] = sub_result
-                            last_result = sub_result
-
+                        last_result = await self._execute_sub_steps(
+                            step.while_steps,
+                            context,
+                            project_path,
+                            recursion_state,
+                            recipe_path,
+                            rate_limiter,
+                            orchestrator_config,
+                            session_id,
+                            parent_step_id=step.id,
+                        )
                         results.append(last_result)
                     else:
                         # Single-step body: dispatch based on step type
-                        if step.type == "recipe":
-                            result = await self._execute_recipe_step(
-                                step,
-                                context,
-                                project_path,
-                                recursion_state,
-                                recipe_path,
-                                rate_limiter,
-                                orchestrator_config,
-                                parent_session_id=session_id,
-                            )
-                        elif step.type == "bash":
-                            bash_result = await self._execute_bash_step(
-                                step, context, project_path
-                            )
-                            if step.output_exit_code:
-                                context[step.output_exit_code] = str(
-                                    bash_result.exit_code
-                                )
-                            result = bash_result.stdout
-                        else:
-                            recursion_state.increment_steps()
-                            result = await self.execute_step_with_retry(
-                                step,
-                                context,
-                                rate_limiter,
-                                orchestrator_config,
-                                session_id=session_id,
-                                project_path=project_path,
-                            )
+                        result = await self._execute_single_step_body(
+                            step,
+                            context,
+                            project_path,
+                            recursion_state,
+                            recipe_path,
+                            rate_limiter,
+                            orchestrator_config,
+                            session_id,
+                        )
 
                         result = self._process_step_result(result, step)
                         results.append(result)
