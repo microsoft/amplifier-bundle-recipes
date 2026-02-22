@@ -259,7 +259,7 @@ Example:
   List sessions: {{"operation": "list"}}
   Validate recipe: {{"operation": "validate", "recipe_path": "@recipes:examples/my-recipe.yaml"}}
   List approvals: {{"operation": "approvals"}}
-  Approve stage: {{"operation": "approve", "session_id": "...", "stage_name": "planning"}}
+  Approve stage: {{"operation": "approve", "session_id": "...", "stage_name": "planning", "message": "merge"}}
   Deny stage: {{"operation": "deny", "session_id": "...", "stage_name": "planning", "reason": "needs revision"}}
   Cancel recipe: {{"operation": "cancel", "session_id": "...", "immediate": false}}"""
 
@@ -301,6 +301,10 @@ Example:
                 "reason": {
                     "type": "string",
                     "description": "Reason for denial (optional for 'deny' operation)",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Optional message from the user when approving (e.g., 'merge', 'pr'). Made available to subsequent steps as {{_approval_message}}.",
                 },
                 "immediate": {
                     "type": "boolean",
@@ -636,6 +640,7 @@ Example:
         """Approve a stage to continue execution."""
         session_id = input.get("session_id")
         stage_name = input.get("stage_name")
+        message = input.get("message", "")
 
         if not session_id:
             return ToolResult(
@@ -683,12 +688,19 @@ Example:
                 reason="Approved by user",
             )
 
+            # Store the approval message in session state so the executor
+            # can inject it into the recipe context on resume
+            state = self.session_manager.load_state(session_id, project_path)
+            state["_approval_message"] = message
+            self.session_manager.save_state(session_id, project_path, state)
+
             return ToolResult(
                 success=True,
                 output={
                     "status": "approved",
                     "session_id": session_id,
                     "stage_name": stage_name,
+                    "approval_message": message,
                     "message": f"Stage '{stage_name}' approved. Use 'resume' operation to continue execution.",
                 },
             )

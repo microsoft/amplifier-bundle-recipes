@@ -802,6 +802,9 @@ class RecipeExecutor:
                     self.session_manager.clear_pending_approval(
                         session_id, project_path
                     )
+                    # Inject approval message into context for subsequent steps
+                    state = self.session_manager.load_state(session_id, project_path)
+                    context["_approval_message"] = state.get("_approval_message", "")
         else:
             current_stage_index = 0
             current_step_in_stage = 0
@@ -1031,6 +1034,7 @@ class RecipeExecutor:
                     )
 
                 # No approval needed - save progress and continue
+                context.setdefault("_approval_message", "")
                 self._save_staged_state(
                     session_id,
                     project_path,

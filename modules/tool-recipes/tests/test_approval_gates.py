@@ -10,8 +10,10 @@ Tests cover:
 
 import datetime
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from amplifier_module_tool_recipes import RecipesTool
 from amplifier_module_tool_recipes.executor import ApprovalGatePausedError
 from amplifier_module_tool_recipes.models import ApprovalConfig
 from amplifier_module_tool_recipes.models import Recipe
@@ -111,7 +113,9 @@ class TestStage:
         stage = Stage(
             name="implementation",
             steps=[Step(id="code", agent="developer", prompt="Write code")],
-            approval=ApprovalConfig(required=True, prompt="Approve implementation plan?"),
+            approval=ApprovalConfig(
+                required=True, prompt="Approve implementation plan?"
+            ),
         )
         errors = stage.validate()
         assert errors == []
@@ -184,7 +188,9 @@ class TestStage:
         stage = Stage(
             name="test",
             steps=[Step(id="s1", agent="a", prompt="p")],
-            approval=ApprovalConfig(required=True, prompt=""),  # Invalid: required but no prompt
+            approval=ApprovalConfig(
+                required=True, prompt=""
+            ),  # Invalid: required but no prompt
         )
         errors = stage.validate()
         assert any("prompt is required" in e for e in errors)
@@ -408,18 +414,28 @@ class TestSessionManagerApprovals:
     ):
         """Default approval status should be NOT_REQUIRED."""
         session_id = session_manager.create_session(sample_recipe, temp_dir)
-        status = session_manager.get_stage_approval_status(session_id, temp_dir, "planning")
+        status = session_manager.get_stage_approval_status(
+            session_id, temp_dir, "planning"
+        )
         assert status == ApprovalStatus.NOT_REQUIRED
 
-    def test_set_and_get_approval_status(self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path):
+    def test_set_and_get_approval_status(
+        self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path
+    ):
         """Should be able to set and get approval status."""
         session_id = session_manager.create_session(sample_recipe, temp_dir)
 
         session_manager.set_stage_approval_status(
-            session_id, temp_dir, "planning", ApprovalStatus.APPROVED, reason="Looks good"
+            session_id,
+            temp_dir,
+            "planning",
+            ApprovalStatus.APPROVED,
+            reason="Looks good",
         )
 
-        status = session_manager.get_stage_approval_status(session_id, temp_dir, "planning")
+        status = session_manager.get_stage_approval_status(
+            session_id, temp_dir, "planning"
+        )
         assert status == ApprovalStatus.APPROVED
 
     def test_set_approval_status_records_history(
@@ -429,7 +445,11 @@ class TestSessionManagerApprovals:
         session_id = session_manager.create_session(sample_recipe, temp_dir)
 
         session_manager.set_stage_approval_status(
-            session_id, temp_dir, "planning", ApprovalStatus.DENIED, reason="Needs revision"
+            session_id,
+            temp_dir,
+            "planning",
+            ApprovalStatus.DENIED,
+            reason="Needs revision",
         )
 
         state = session_manager.load_state(session_id, temp_dir)
@@ -440,12 +460,19 @@ class TestSessionManagerApprovals:
         assert state["approval_history"][0]["reason"] == "Needs revision"
         assert "timestamp" in state["approval_history"][0]
 
-    def test_set_pending_approval(self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path):
+    def test_set_pending_approval(
+        self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path
+    ):
         """Should be able to set pending approval."""
         session_id = session_manager.create_session(sample_recipe, temp_dir)
 
         session_manager.set_pending_approval(
-            session_id, temp_dir, "planning", "Approve the plan?", timeout=600, default="deny"
+            session_id,
+            temp_dir,
+            "planning",
+            "Approve the plan?",
+            timeout=600,
+            default="deny",
         )
 
         pending = session_manager.get_pending_approval(session_id, temp_dir)
@@ -464,17 +491,23 @@ class TestSessionManagerApprovals:
         pending = session_manager.get_pending_approval(session_id, temp_dir)
         assert pending is None
 
-    def test_clear_pending_approval(self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path):
+    def test_clear_pending_approval(
+        self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path
+    ):
         """clear_pending_approval should remove pending approval data."""
         session_id = session_manager.create_session(sample_recipe, temp_dir)
 
-        session_manager.set_pending_approval(session_id, temp_dir, "planning", "Approve?", 600, "deny")
+        session_manager.set_pending_approval(
+            session_id, temp_dir, "planning", "Approve?", 600, "deny"
+        )
         assert session_manager.get_pending_approval(session_id, temp_dir) is not None
 
         session_manager.clear_pending_approval(session_id, temp_dir)
         assert session_manager.get_pending_approval(session_id, temp_dir) is None
 
-    def test_list_pending_approvals(self, session_manager: SessionManager, temp_dir: Path):
+    def test_list_pending_approvals(
+        self, session_manager: SessionManager, temp_dir: Path
+    ):
         """list_pending_approvals should find sessions with pending approvals."""
         recipe1 = Recipe(
             name="recipe1",
@@ -494,13 +527,17 @@ class TestSessionManagerApprovals:
         session_manager.create_session(recipe2, temp_dir)
 
         # Set pending approval on session1 only
-        session_manager.set_pending_approval(session1, temp_dir, "s1", "Approve?", 600, "deny")
+        session_manager.set_pending_approval(
+            session1, temp_dir, "s1", "Approve?", 600, "deny"
+        )
 
         pending = session_manager.list_pending_approvals(temp_dir)
         assert len(pending) == 1
         assert pending[0]["session_id"] == session1
 
-    def test_list_pending_approvals_empty(self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path):
+    def test_list_pending_approvals_empty(
+        self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path
+    ):
         """list_pending_approvals should return empty list when no pending."""
         session_manager.create_session(sample_recipe, temp_dir)
         pending = session_manager.list_pending_approvals(temp_dir)
@@ -528,39 +565,56 @@ class TestApprovalTimeout:
             description="Test recipe",
             version="1.0.0",
             stages=[
-                Stage(name="planning", steps=[Step(id="plan", agent="planner", prompt="Plan")]),
+                Stage(
+                    name="planning",
+                    steps=[Step(id="plan", agent="planner", prompt="Plan")],
+                ),
             ],
         )
 
-    def test_check_timeout_no_pending(self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path):
+    def test_check_timeout_no_pending(
+        self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path
+    ):
         """check_approval_timeout returns None when no pending approval."""
         session_id = session_manager.create_session(sample_recipe, temp_dir)
         result = session_manager.check_approval_timeout(session_id, temp_dir)
         assert result is None
 
-    def test_check_timeout_not_expired(self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path):
+    def test_check_timeout_not_expired(
+        self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path
+    ):
         """check_approval_timeout returns None when timeout not reached."""
         session_id = session_manager.create_session(sample_recipe, temp_dir)
-        session_manager.set_pending_approval(session_id, temp_dir, "planning", "Approve?", 3600, "deny")
+        session_manager.set_pending_approval(
+            session_id, temp_dir, "planning", "Approve?", 3600, "deny"
+        )
 
         result = session_manager.check_approval_timeout(session_id, temp_dir)
         assert result is None
 
-    def test_check_timeout_expired_deny(self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path):
+    def test_check_timeout_expired_deny(
+        self, session_manager: SessionManager, sample_recipe: Recipe, temp_dir: Path
+    ):
         """check_approval_timeout should apply TIMEOUT status when expired with deny default."""
         session_id = session_manager.create_session(sample_recipe, temp_dir)
-        session_manager.set_pending_approval(session_id, temp_dir, "planning", "Approve?", 1, "deny")
+        session_manager.set_pending_approval(
+            session_id, temp_dir, "planning", "Approve?", 1, "deny"
+        )
 
         # Manually set requested_at to past
         state = session_manager.load_state(session_id, temp_dir)
-        state["pending_approval_requested_at"] = (datetime.datetime.now() - datetime.timedelta(seconds=10)).isoformat()
+        state["pending_approval_requested_at"] = (
+            datetime.datetime.now() - datetime.timedelta(seconds=10)
+        ).isoformat()
         session_manager.save_state(session_id, temp_dir, state)
 
         result = session_manager.check_approval_timeout(session_id, temp_dir)
         assert result == ApprovalStatus.TIMEOUT
 
         # Verify status was set
-        status = session_manager.get_stage_approval_status(session_id, temp_dir, "planning")
+        status = session_manager.get_stage_approval_status(
+            session_id, temp_dir, "planning"
+        )
         assert status == ApprovalStatus.TIMEOUT
 
         # Verify pending was cleared
@@ -571,18 +625,24 @@ class TestApprovalTimeout:
     ):
         """check_approval_timeout should auto-approve when expired with approve default."""
         session_id = session_manager.create_session(sample_recipe, temp_dir)
-        session_manager.set_pending_approval(session_id, temp_dir, "planning", "Approve?", 1, "approve")
+        session_manager.set_pending_approval(
+            session_id, temp_dir, "planning", "Approve?", 1, "approve"
+        )
 
         # Manually set requested_at to past
         state = session_manager.load_state(session_id, temp_dir)
-        state["pending_approval_requested_at"] = (datetime.datetime.now() - datetime.timedelta(seconds=10)).isoformat()
+        state["pending_approval_requested_at"] = (
+            datetime.datetime.now() - datetime.timedelta(seconds=10)
+        ).isoformat()
         session_manager.save_state(session_id, temp_dir, state)
 
         result = session_manager.check_approval_timeout(session_id, temp_dir)
         assert result == ApprovalStatus.APPROVED
 
         # Verify status was set
-        status = session_manager.get_stage_approval_status(session_id, temp_dir, "planning")
+        status = session_manager.get_stage_approval_status(
+            session_id, temp_dir, "planning"
+        )
         assert status == ApprovalStatus.APPROVED
 
     def test_check_timeout_zero_never_expires(
@@ -590,11 +650,15 @@ class TestApprovalTimeout:
     ):
         """Zero timeout (wait forever) should never expire."""
         session_id = session_manager.create_session(sample_recipe, temp_dir)
-        session_manager.set_pending_approval(session_id, temp_dir, "planning", "Approve?", 0, "deny")
+        session_manager.set_pending_approval(
+            session_id, temp_dir, "planning", "Approve?", 0, "deny"
+        )
 
         # Even with old timestamp, should not timeout
         state = session_manager.load_state(session_id, temp_dir)
-        state["pending_approval_requested_at"] = (datetime.datetime.now() - datetime.timedelta(days=365)).isoformat()
+        state["pending_approval_requested_at"] = (
+            datetime.datetime.now() - datetime.timedelta(days=365)
+        ).isoformat()
         session_manager.save_state(session_id, temp_dir, state)
 
         result = session_manager.check_approval_timeout(session_id, temp_dir)
@@ -628,7 +692,9 @@ class TestApprovalGatePausedError:
             approval_prompt="Do you approve?",
         )
         assert "planning" in str(error)
-        assert "paused" in str(error).lower() or "awaiting approval" in str(error).lower()
+        assert (
+            "paused" in str(error).lower() or "awaiting approval" in str(error).lower()
+        )
 
     def test_exception_can_be_caught(self):
         """Exception should be catchable."""
@@ -674,3 +740,141 @@ class TestApprovalStatus:
         """Invalid status string should raise ValueError."""
         with pytest.raises(ValueError):
             ApprovalStatus("invalid")
+
+
+# =============================================================================
+# Approval Message Context Tests
+# =============================================================================
+
+
+class TestApprovalMessageContext:
+    """Tests for _approval_message flowing through approval gates into recipe context."""
+
+    @pytest.fixture
+    def session_manager(self, temp_dir: Path) -> SessionManager:
+        """Create session manager with temp directory."""
+        return SessionManager(base_dir=temp_dir, auto_cleanup_days=7)
+
+    @pytest.fixture
+    def sample_recipe(self) -> Recipe:
+        """Create a sample staged recipe."""
+        return Recipe(
+            name="test-recipe",
+            description="Test recipe",
+            version="1.0.0",
+            stages=[
+                Stage(
+                    name="planning",
+                    steps=[Step(id="plan", agent="planner", prompt="Plan")],
+                    approval=ApprovalConfig(required=True, prompt="Approve?"),
+                ),
+                Stage(
+                    name="execution",
+                    steps=[
+                        Step(
+                            id="execute",
+                            agent="executor",
+                            prompt="Do {{_approval_message}}",
+                        )
+                    ],
+                ),
+            ],
+        )
+
+    @pytest.fixture
+    def recipes_tool(
+        self, session_manager: SessionManager, temp_dir: Path
+    ) -> RecipesTool:
+        """Create a RecipesTool with mocked coordinator pointing at temp_dir."""
+        mock_coordinator = MagicMock()
+        mock_coordinator.get_capability.return_value = str(temp_dir)
+        mock_executor = MagicMock()
+        return RecipesTool(
+            executor=mock_executor,
+            session_manager=session_manager,
+            coordinator=mock_coordinator,
+            config={},
+        )
+
+    def test_input_schema_includes_message(
+        self,
+        recipes_tool: RecipesTool,
+    ):
+        """The tool's input_schema should include a 'message' property for approve operations."""
+        schema = recipes_tool.input_schema
+        assert "message" in schema["properties"]
+        assert schema["properties"]["message"]["type"] == "string"
+
+    @pytest.mark.asyncio
+    async def test_approve_stage_stores_message_in_state(
+        self,
+        recipes_tool: RecipesTool,
+        session_manager: SessionManager,
+        sample_recipe: Recipe,
+        temp_dir: Path,
+    ):
+        """_approve_stage should store the user's message in session state as _approval_message."""
+        session_id = session_manager.create_session(sample_recipe, temp_dir)
+
+        # Set up a pending approval (as the executor would)
+        session_manager.set_pending_approval(
+            session_id, temp_dir, "planning", "Approve?", 600, "deny"
+        )
+
+        # Call _approve_stage with a message
+        result = await recipes_tool._approve_stage(
+            {"session_id": session_id, "stage_name": "planning", "message": "merge"}
+        )
+        assert result.success is True
+
+        # Verify _approval_message was stored in session state
+        state = session_manager.load_state(session_id, temp_dir)
+        assert "_approval_message" in state
+        assert state["_approval_message"] == "merge"
+
+    @pytest.mark.asyncio
+    async def test_approve_stage_defaults_message_to_empty(
+        self,
+        recipes_tool: RecipesTool,
+        session_manager: SessionManager,
+        sample_recipe: Recipe,
+        temp_dir: Path,
+    ):
+        """_approve_stage without message should store empty string as _approval_message."""
+        session_id = session_manager.create_session(sample_recipe, temp_dir)
+
+        session_manager.set_pending_approval(
+            session_id, temp_dir, "planning", "Approve?", 600, "deny"
+        )
+
+        # Call _approve_stage WITHOUT a message
+        result = await recipes_tool._approve_stage(
+            {"session_id": session_id, "stage_name": "planning"}
+        )
+        assert result.success is True
+
+        # Verify _approval_message was stored as empty string
+        state = session_manager.load_state(session_id, temp_dir)
+        assert "_approval_message" in state
+        assert state["_approval_message"] == ""
+
+    @pytest.mark.asyncio
+    async def test_approval_message_in_tool_result(
+        self,
+        recipes_tool: RecipesTool,
+        session_manager: SessionManager,
+        sample_recipe: Recipe,
+        temp_dir: Path,
+    ):
+        """_approve_stage should include the message in the ToolResult output dict."""
+        session_id = session_manager.create_session(sample_recipe, temp_dir)
+
+        session_manager.set_pending_approval(
+            session_id, temp_dir, "planning", "Approve?", 600, "deny"
+        )
+
+        result = await recipes_tool._approve_stage(
+            {"session_id": session_id, "stage_name": "planning", "message": "pr"}
+        )
+        assert result.success is True
+        assert result.output["approval_message"] == "pr"
