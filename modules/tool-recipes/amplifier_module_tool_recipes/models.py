@@ -449,11 +449,14 @@ class Step:
             errors.append(
                 f"Step '{self.id}': 'while_condition' and 'foreach' are mutually exclusive"
             )
+        # while_condition must contain a variable reference OR be the literal
+        # "true" (used with break_when for "always enter, check after" loops).
         if self.while_condition is not None and "{{" not in self.while_condition:
-            errors.append(
-                f"Step '{self.id}': while_condition must contain a variable reference"
-                " (e.g., '{{x}}')"
-            )
+            if self.while_condition.strip().lower() != "true":
+                errors.append(
+                    f"Step '{self.id}': while_condition must contain a variable reference"
+                    " (e.g., '{{x}}') or be literal 'true' (with break_when)"
+                )
         if self.max_while_iterations < 1 or self.max_while_iterations > 1000:
             errors.append(
                 f"Step '{self.id}': max_while_iterations must be between 1 and 1000"
