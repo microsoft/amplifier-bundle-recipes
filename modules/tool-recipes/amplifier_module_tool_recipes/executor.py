@@ -1248,7 +1248,7 @@ class RecipeExecutor:
 
         # Strategy 2: Extract from markdown code block
         json_match = re.search(
-            r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", output_stripped, re.DOTALL
+            r"```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```", output_stripped, re.DOTALL
         )
         if json_match:
             try:
@@ -1256,17 +1256,35 @@ class RecipeExecutor:
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        # Strategy 3: Find JSON embedded in text
+        # Strategy 3: Find JSON embedded in text (position-ordered, skip trivial)
+        # Scan for [ and { in document order so the first real JSON wins,
+        # regardless of whether it is an array or object.  Skip trivially
+        # empty structures ({} / []) that commonly appear in prose so that a
+        # meaningful structure later in the text is preferred.
         decoder = json.JSONDecoder()
-        for start_char in ["{", "["]:
-            idx = output_stripped.find(start_char)
-            while idx != -1:
-                try:
-                    parsed, end_idx = decoder.raw_decode(output_stripped, idx)
+        first_parsed = None
+        idx = 0
+        while idx < len(output_stripped):
+            # Jump to the next potential JSON start character
+            idx_bracket = output_stripped.find("[", idx)
+            idx_brace = output_stripped.find("{", idx)
+            candidates = [i for i in (idx_bracket, idx_brace) if i != -1]
+            if not candidates:
+                break
+            next_idx = min(candidates)
+            try:
+                parsed, end_idx = decoder.raw_decode(output_stripped, next_idx)
+                if first_parsed is None:
+                    first_parsed = parsed
+                # Return first non-trivial JSON found
+                if parsed not in ({}, []):
                     return parsed
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                idx = output_stripped.find(start_char, idx + 1)
+            except (json.JSONDecodeError, ValueError):
+                pass
+            idx = next_idx + 1
+        # Only trivial JSON found ({} or []) – return it rather than raw text
+        if first_parsed is not None:
+            return first_parsed
 
         # All strategies failed - return as-is
         return output
@@ -1362,10 +1380,10 @@ class RecipeExecutor:
 
 **CRITICAL: JSON OUTPUT REQUIRED**
 
-Your response MUST end with a valid JSON object. The recipe system will parse your final JSON output.
+Your response MUST end with valid JSON (object or array as required by the prompt above). The recipe system will parse your final JSON output.
 
 Requirements:
-1. Your response MUST contain a JSON code block or raw JSON object
+1. Your response MUST contain a JSON code block or raw JSON
 2. The JSON must be valid (proper quotes, no trailing commas, etc.)
 3. If you include explanation, put the JSON block LAST in your response
 4. Use ```json fences or return raw JSON - both work
@@ -1373,6 +1391,11 @@ Requirements:
 Example valid endings:
 ```json
 {"key": "value", "count": 5}
+```
+
+Or a JSON array:
+```json
+[{"id": 1, "name": "first"}, {"id": 2, "name": "second"}]
 ```
 
 Or raw JSON at the end:
