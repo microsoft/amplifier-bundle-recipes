@@ -1449,8 +1449,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 ProviderPreference(provider=step.provider, model="")
             ]
 
-        # Spawn sub-session with agent via capability
-        result = await spawn_fn(
+        # Spawn sub-session with agent via capability (with step timeout)
+        spawn_coro = spawn_fn(
             agent_name=step.agent,
             instruction=instruction,
             parent_session=parent_session,
@@ -1459,6 +1459,12 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             orchestrator_config=orchestrator_dict,
             provider_preferences=provider_preferences,
         )
+        try:
+            result = await asyncio.wait_for(spawn_coro, timeout=step.timeout)
+        except asyncio.TimeoutError:
+            raise ValueError(
+                f"Step '{step.id}': agent '{step.agent}' timed out after {step.timeout}s"
+            ) from None
 
         return result
 
