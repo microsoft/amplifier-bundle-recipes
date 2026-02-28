@@ -3,12 +3,15 @@
 import asyncio
 import datetime
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
@@ -1414,6 +1417,39 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
         # Build provider preferences from step configuration
         provider_preferences = None
+
+        # Resolve model_role via routing matrix (takes priority over legacy fields,
+        # but provider_preferences on the step is more explicit and wins)
+        if step.model_role and not step.provider_preferences:
+            routing_state = (
+                self.coordinator.session_state.get("routing_matrix")
+                if hasattr(self.coordinator, "session_state")
+                else None
+            )
+            if routing_state:
+                try:
+                    from amplifier_hooks_routing.resolver import resolve_model_role
+
+                    roles = (
+                        [step.model_role]
+                        if isinstance(step.model_role, str)
+                        else step.model_role
+                    )
+                    matrix = routing_state.get("roles", {})
+                    providers = self.coordinator.get("providers") or {}
+                    resolved = await resolve_model_role(roles, matrix, providers)
+                    if resolved:
+                        provider_preferences = [
+                            ProviderPreference(
+                                provider=r["provider"], model=r["model"]
+                            )
+                            for r in resolved
+                        ]
+                except ImportError:
+                    logger.warning(
+                        "model_role '%s' specified but amplifier_hooks_routing not available",
+                        step.model_role,
+                    )
 
         if step.provider_preferences:
             # New: Use explicit provider_preferences list with fallback order
