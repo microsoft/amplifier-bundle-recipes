@@ -288,6 +288,9 @@ class Step:
     # Provider/model selection with fallback list (preferred over provider/model)
     provider_preferences: list[ProviderPreferenceConfig] | None = None
 
+    # Semantic role for routing matrix resolution
+    model_role: str | None = None
+
     def validate(self) -> list[str]:
         """Validate step structure and constraints."""
         errors = []
@@ -525,6 +528,23 @@ class Step:
                         errors.append(
                             f"Step '{self.id}': provider_preferences[{i}]: {err}"
                         )
+
+        # model_role validation
+        if self.model_role:
+            if self.type != "agent":
+                errors.append(
+                    f"Step '{self.id}': 'model_role' is only valid for agent steps"
+                )
+            if self.provider_preferences:
+                errors.append(
+                    f"Step '{self.id}': cannot use both 'model_role' and "
+                    "'provider_preferences' - choose one approach"
+                )
+            if self.provider or self.model:
+                errors.append(
+                    f"Step '{self.id}': cannot use both 'model_role' and "
+                    "'provider'/'model' - choose one approach"
+                )
 
         return errors
 
