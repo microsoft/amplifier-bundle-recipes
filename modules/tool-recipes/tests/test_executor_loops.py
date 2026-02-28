@@ -46,7 +46,9 @@ class TestExecutorLoops:
     """Tests for foreach loop execution."""
 
     @pytest.mark.asyncio
-    async def test_foreach_iterates_over_list(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_foreach_iterates_over_list(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Step iterates over each item in list."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["result_a", "result_b", "result_c"]
@@ -76,7 +78,9 @@ class TestExecutorLoops:
         assert result["results"] == ["result_a", "result_b", "result_c"]
 
     @pytest.mark.asyncio
-    async def test_empty_list_skips_step(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_empty_list_skips_step(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Empty foreach list skips step without error."""
         mock_spawn = mock_coordinator.get_capability.return_value
 
@@ -107,7 +111,9 @@ class TestExecutorLoops:
         assert "loop-step" in result["_skipped_steps"]
 
     @pytest.mark.asyncio
-    async def test_collect_aggregates_results(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_collect_aggregates_results(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Collect variable contains all iteration results."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["analysis_1", "analysis_2"]
@@ -136,7 +142,9 @@ class TestExecutorLoops:
         assert result["analyses"] == ["analysis_1", "analysis_2"]
 
     @pytest.mark.asyncio
-    async def test_as_changes_loop_variable_name(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_as_changes_loop_variable_name(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Custom 'as' name is used for loop variable."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["done"]
@@ -166,7 +174,9 @@ class TestExecutorLoops:
         assert mock_spawn.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_max_iterations_enforced(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_max_iterations_enforced(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Exceeding max_iterations fails recipe."""
         executor = RecipeExecutor(mock_coordinator, mock_session_manager)
 
@@ -190,7 +200,9 @@ class TestExecutorLoops:
             await executor.execute_recipe(recipe, {}, temp_dir)
 
     @pytest.mark.asyncio
-    async def test_non_list_foreach_fails(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_non_list_foreach_fails(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Non-list foreach variable fails with clear error."""
         executor = RecipeExecutor(mock_coordinator, mock_session_manager)
 
@@ -213,7 +225,9 @@ class TestExecutorLoops:
             await executor.execute_recipe(recipe, {}, temp_dir)
 
     @pytest.mark.asyncio
-    async def test_undefined_foreach_variable_fails(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_undefined_foreach_variable_fails(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Undefined foreach variable fails with clear error."""
         executor = RecipeExecutor(mock_coordinator, mock_session_manager)
 
@@ -236,7 +250,9 @@ class TestExecutorLoops:
             await executor.execute_recipe(recipe, {}, temp_dir)
 
     @pytest.mark.asyncio
-    async def test_loop_variable_scoped_to_step(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_loop_variable_scoped_to_step(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Loop variable not available after loop completes."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["loop_result", "final_result"]
@@ -273,7 +289,9 @@ class TestExecutorLoops:
         assert "results" in result
 
     @pytest.mark.asyncio
-    async def test_iteration_failure_stops_loop(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_iteration_failure_stops_loop(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Any iteration failure immediately fails the recipe (fail-fast)."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # First call succeeds, second fails
@@ -304,7 +322,9 @@ class TestExecutorLoops:
         assert mock_spawn.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_output_without_collect_returns_last(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_output_without_collect_returns_last(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Without collect, output stores last iteration result."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["first", "second", "last"]
@@ -333,7 +353,9 @@ class TestExecutorLoops:
         assert result["result"] == "last"
 
     @pytest.mark.asyncio
-    async def test_nested_variable_in_foreach(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_nested_variable_in_foreach(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Nested variable reference in foreach works."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["result_a", "result_b"]
@@ -454,7 +476,9 @@ class TestParallelExecution:
     """Tests for parallel foreach execution."""
 
     @pytest.mark.asyncio
-    async def test_parallel_foreach_executes_all_items(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_parallel_foreach_executes_all_items(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """parallel=True executes all iterations concurrently."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["result_a", "result_b", "result_c"]
@@ -486,7 +510,9 @@ class TestParallelExecution:
         assert result["results"] == ["result_a", "result_b", "result_c"]
 
     @pytest.mark.asyncio
-    async def test_parallel_foreach_preserves_order(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_parallel_foreach_preserves_order(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Parallel execution preserves result order matching input order."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # Simulate varying response times by using simple returns
@@ -517,7 +543,9 @@ class TestParallelExecution:
         assert result["ordered_results"] == ["first", "second", "third"]
 
     @pytest.mark.asyncio
-    async def test_parallel_foreach_fail_fast(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_parallel_foreach_fail_fast(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Any parallel iteration failure fails the entire step."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # Second iteration fails
@@ -550,7 +578,9 @@ class TestParallelExecution:
             await executor.execute_recipe(recipe, {}, temp_dir)
 
     @pytest.mark.asyncio
-    async def test_parallel_foreach_empty_list_skips(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_parallel_foreach_empty_list_skips(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Empty list skips parallel step without error."""
         mock_spawn = mock_coordinator.get_capability.return_value
 
@@ -580,7 +610,9 @@ class TestParallelExecution:
         assert "parallel-loop" in result.get("_skipped_steps", [])
 
     @pytest.mark.asyncio
-    async def test_parallel_foreach_with_custom_as_var(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_parallel_foreach_with_custom_as_var(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Parallel execution respects custom 'as' variable name."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["r1", "r2"]
@@ -610,7 +642,9 @@ class TestParallelExecution:
         assert result["analyses"] == ["r1", "r2"]
 
     @pytest.mark.asyncio
-    async def test_parallel_vs_sequential_same_results(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_parallel_vs_sequential_same_results(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Parallel and sequential execution produce identical result structure."""
         mock_spawn = mock_coordinator.get_capability.return_value
 

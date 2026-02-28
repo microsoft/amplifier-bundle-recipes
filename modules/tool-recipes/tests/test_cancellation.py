@@ -1,6 +1,5 @@
 """Tests for recipe cancellation functionality."""
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,7 +19,9 @@ class TestCancellationStatus:
     def test_all_statuses_exist(self):
         """All expected statuses are defined."""
         assert CancellationStatus.NONE.value == "none"
-        assert CancellationStatus.REQUESTED.value == "requested"  # Graceful cancellation
+        assert (
+            CancellationStatus.REQUESTED.value == "requested"
+        )  # Graceful cancellation
         assert CancellationStatus.IMMEDIATE.value == "immediate"
         assert CancellationStatus.CANCELLED.value == "cancelled"
 
@@ -35,7 +36,9 @@ class TestCancellationStatus:
 class TestSessionManagerCancellation:
     """Tests for SessionManager cancellation methods."""
 
-    def test_request_graceful_cancellation(self, session_manager: SessionManager, temp_dir: Path):
+    def test_request_graceful_cancellation(
+        self, session_manager: SessionManager, temp_dir: Path
+    ):
         """Request graceful cancellation sets correct status."""
         recipe = Recipe(
             name="test",
@@ -52,7 +55,9 @@ class TestSessionManagerCancellation:
         assert session_manager.is_cancellation_requested(session_id, temp_dir)
         assert not session_manager.is_immediate_cancellation(session_id, temp_dir)
 
-    def test_request_immediate_cancellation(self, session_manager: SessionManager, temp_dir: Path):
+    def test_request_immediate_cancellation(
+        self, session_manager: SessionManager, temp_dir: Path
+    ):
         """Request immediate cancellation sets correct status."""
         recipe = Recipe(
             name="test",
@@ -114,11 +119,17 @@ class TestSessionManagerCancellation:
         self, session_manager: SessionManager, temp_dir: Path
     ):
         """Nonexistent session returns NONE status without error."""
-        status = session_manager.get_cancellation_status("nonexistent-session", temp_dir)
+        status = session_manager.get_cancellation_status(
+            "nonexistent-session", temp_dir
+        )
         assert status == CancellationStatus.NONE
-        assert not session_manager.is_cancellation_requested("nonexistent-session", temp_dir)
+        assert not session_manager.is_cancellation_requested(
+            "nonexistent-session", temp_dir
+        )
 
-    def test_upgrade_graceful_to_immediate(self, session_manager: SessionManager, temp_dir: Path):
+    def test_upgrade_graceful_to_immediate(
+        self, session_manager: SessionManager, temp_dir: Path
+    ):
         """Can upgrade from graceful to immediate cancellation."""
         recipe = Recipe(
             name="test",
@@ -290,7 +301,9 @@ class TestExecutorCancellation:
             iteration_count += 1
             if iteration_count == 2:
                 # Cancel after second iteration
-                real_session_manager.request_cancellation(session_id, temp_dir, immediate=False)
+                real_session_manager.request_cancellation(
+                    session_id, temp_dir, immediate=False
+                )
             return f"result-{iteration_count}"
 
         mock_coordinator.get_capability.return_value = AsyncMock(side_effect=mock_spawn)
@@ -395,7 +408,9 @@ class TestCoordinatorCancellationIntegration:
 
         mock_session_manager.is_cancellation_requested.side_effect = check_cancellation
 
-        executor = RecipeExecutor(mock_coordinator_with_cancellation, mock_session_manager)
+        executor = RecipeExecutor(
+            mock_coordinator_with_cancellation, mock_session_manager
+        )
 
         recipe = Recipe(
             name="test",
@@ -471,9 +486,11 @@ steps:
 
         with pytest.raises(CancellationRequestedError):
             await executor.execute_recipe(
-                parent_recipe, {}, temp_dir,
+                parent_recipe,
+                {},
+                temp_dir,
                 session_id=session_id,
-                recipe_path=temp_dir / "parent.yaml"
+                recipe_path=temp_dir / "parent.yaml",
             )
 
         # Spawn should never be called since cancellation was pre-requested

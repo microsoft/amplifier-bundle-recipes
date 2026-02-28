@@ -105,7 +105,7 @@ steps:
         recipe = Recipe.from_yaml(recipe_file)
         executor = RecipeExecutor(coordinator, session_manager)
 
-        context = await executor.execute_recipe(
+        await executor.execute_recipe(
             recipe=recipe,
             context_vars={},
             project_path=temp_project,
