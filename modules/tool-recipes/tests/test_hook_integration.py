@@ -53,12 +53,17 @@ class TestHookEventEmission:
         coordinator.get_capability = MagicMock(return_value=mock_spawn)
         coordinator.session = MagicMock()
         coordinator.config = {"agents": {}}
+        # No cancellation token — prevents MagicMock auto-attr from triggering false cancellation
+        coordinator.cancellation = None
 
         return coordinator
 
     @pytest.mark.asyncio
     async def test_executor_emits_lifecycle_events(
-        self, coordinator: MagicMock, session_manager: SessionManager, temp_project: Path
+        self,
+        coordinator: MagicMock,
+        session_manager: SessionManager,
+        temp_project: Path,
     ):
         """Verify recipe executor emits all lifecycle events correctly."""
         # Capture events
@@ -100,7 +105,7 @@ steps:
         recipe = Recipe.from_yaml(recipe_file)
         executor = RecipeExecutor(coordinator, session_manager)
 
-        context = await executor.execute_recipe(
+        await executor.execute_recipe(
             recipe=recipe,
             context_vars={},
             project_path=temp_project,
@@ -112,23 +117,31 @@ steps:
 
         # Verify events were emitted
         event_names = [event for event, data in events_captured]
-        
+
         assert "recipe:start" in event_names, "recipe:start event not emitted"
         assert "recipe:step" in event_names, "recipe:step event not emitted"
         assert "recipe:complete" in event_names, "recipe:complete event not emitted"
 
         # Verify recipe:step emitted for each step
-        step_events = [data for event, data in events_captured if event == "recipe:step"]
-        assert len(step_events) >= 2, f"Expected at least 2 step events, got {len(step_events)}"
+        step_events = [
+            data for event, data in events_captured if event == "recipe:step"
+        ]
+        assert len(step_events) >= 2, (
+            f"Expected at least 2 step events, got {len(step_events)}"
+        )
 
         # Verify event data structure
-        start_event = next(data for event, data in events_captured if event == "recipe:start")
+        start_event = next(
+            data for event, data in events_captured if event == "recipe:start"
+        )
         assert "name" in start_event, "recipe:start missing 'name'"
         assert "total_steps" in start_event, "recipe:start missing 'total_steps'"
         assert "steps" in start_event, "recipe:start missing 'steps'"
         assert start_event["name"] == "test-hook-emission"
 
-        complete_event = next(data for event, data in events_captured if event == "recipe:complete")
+        complete_event = next(
+            data for event, data in events_captured if event == "recipe:complete"
+        )
         assert "status" in complete_event, "recipe:complete missing 'status'"
         assert complete_event["status"] == "completed"
 
@@ -141,6 +154,7 @@ steps:
         coordinator = MagicMock()
         coordinator.hooks = None  # No hooks available
         coordinator.display_system = None
+        coordinator.cancellation = None  # No cancellation token
 
         async def mock_spawn(**kwargs):
             return {"output": "Mock result"}
@@ -180,8 +194,11 @@ steps:
 
     @pytest.mark.asyncio
     async def test_hook_emit_uses_correct_api(
-        self, hooks_registry: HookRegistry, coordinator: MagicMock,
-        session_manager: SessionManager, temp_project: Path
+        self,
+        hooks_registry: HookRegistry,
+        coordinator: MagicMock,
+        session_manager: SessionManager,
+        temp_project: Path,
     ):
         """Verify that emit() method (not fire()) is called on HookRegistry.
 
@@ -231,8 +248,10 @@ steps:
         await asyncio.sleep(0.1)
 
         # Verify emit() was called (proving fire() is not being called)
-        assert len(emit_called) > 0, "HookRegistry.emit() was never called - fix may not be working"
-        
+        assert len(emit_called) > 0, (
+            "HookRegistry.emit() was never called - fix may not be working"
+        )
+
         # Verify it would fail with fire()
         assert not hasattr(hooks_registry, "fire"), (
             "HookRegistry should not have fire() method - this test validates the bug fix"

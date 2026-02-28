@@ -1,8 +1,10 @@
 """Tests for recipe validation logic."""
 
 from amplifier_module_tool_recipes.models import Recipe
+from amplifier_module_tool_recipes.models import Stage
 from amplifier_module_tool_recipes.models import Step
 from amplifier_module_tool_recipes.validator import ValidationResult
+from amplifier_module_tool_recipes.validator import check_agent_availability
 from amplifier_module_tool_recipes.validator import check_step_dependencies
 from amplifier_module_tool_recipes.validator import check_variable_references
 from amplifier_module_tool_recipes.validator import extract_variables
@@ -24,7 +26,9 @@ class TestExtractVariables:
 
     def test_extract_nested_variable(self):
         """Extract nested variable references."""
-        variables = extract_variables("Recipe: {{recipe.name}}, Session: {{session.id}}")
+        variables = extract_variables(
+            "Recipe: {{recipe.name}}, Session: {{session.id}}"
+        )
         assert variables == {"recipe.name", "session.id"}
 
     def test_extract_no_variables(self):
@@ -108,7 +112,9 @@ class TestCheckVariableReferences:
             description="test",
             version="1.0.0",
             steps=[
-                Step(id="s1", agent="a", prompt="Use {{second_result}}"),  # not defined yet
+                Step(
+                    id="s1", agent="a", prompt="Use {{second_result}}"
+                ),  # not defined yet
                 Step(id="s2", agent="b", prompt="Second step", output="second_result"),
             ],
         )
@@ -136,7 +142,11 @@ class TestCheckVariableReferences:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="First step", output="structure"),
-                Step(id="s2", agent="b", prompt="Use {{structure.provider_file}} and {{structure.provider_class}}"),
+                Step(
+                    id="s2",
+                    agent="b",
+                    prompt="Use {{structure.provider_file}} and {{structure.provider_class}}",
+                ),
             ],
         )
         errors = check_variable_references(recipe)
@@ -153,7 +163,10 @@ class TestCheckVariableReferences:
                 Step(
                     id="s2",
                     recipe="some-recipe.yaml",
-                    step_context={"file": "{{config.main_file}}", "class": "{{config.provider_class}}"},
+                    step_context={
+                        "file": "{{config.main_file}}",
+                        "class": "{{config.provider_class}}",
+                    },
                     depends_on=["s1"],
                 ),
             ],
@@ -169,7 +182,12 @@ class TestCheckVariableReferences:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="Get path", output="paths"),
-                Step(id="s2", recipe="{{paths.recipe_dir}}/sub-recipe.yaml", agent="b", prompt="Run"),
+                Step(
+                    id="s2",
+                    recipe="{{paths.recipe_dir}}/sub-recipe.yaml",
+                    agent="b",
+                    prompt="Run",
+                ),
             ],
         )
         errors = check_variable_references(recipe)
@@ -255,7 +273,9 @@ class TestValidateRecipe:
         # But should have warning about unavailable agent
         assert any("unavailable-agent" in w for w in result.warnings)
 
-    def test_agent_availability_no_warning_for_available(self, sample_recipe: Recipe, mock_coordinator):
+    def test_agent_availability_no_warning_for_available(
+        self, sample_recipe: Recipe, mock_coordinator
+    ):
         """Available agent should not produce warning."""
         # sample_recipe has "test-agent" which is in mock_coordinator
         result = validate_recipe(sample_recipe, mock_coordinator)
@@ -292,3 +312,419 @@ class TestValidationResult:
         result = ValidationResult(is_valid=True, errors=[], warnings=["Some warning"])
         assert result.is_valid
         assert len(result.warnings) == 1
+
+
+def _staged_recipe(stages: list[Stage], **kwargs) -> Recipe:
+    """Helper to build a staged recipe with standard test metadata."""
+    return Recipe(
+        name="staged-test",
+        description="Staged recipe test",
+        version="1.0.0",
+        stages=stages,
+        **kwargs,
+    )
+
+
+class TestStagedRecipeVariableReferences:
+    """Tests for variable reference validation in staged recipes."""
+
+    def test_staged_recipe_undefined_variable_detected(self):
+        """Staged recipe with undefined variable should produce 1 error containing 'undefined'."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[Step(id="s1", agent="a", prompt="Use {{undefined}}")],
+                ),
+            ]
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "undefined" in errors[0].lower()
+
+    def test_staged_recipe_valid_context_variable(self):
+        """Staged recipe with defined context variable should have no errors."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[Step(id="s1", agent="a", prompt="Use {{input}}")],
+                ),
+            ],
+            context={"input": "value"},
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_staged_recipe_step_output_available_across_stages(self):
+        """Step output from stage 1 should be available in stage 2."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[
+                        Step(
+                            id="s1",
+                            agent="a",
+                            prompt="First step",
+                            output="first_result",
+                        )
+                    ],
+                ),
+                Stage(
+                    name="stage-2",
+                    steps=[Step(id="s2", agent="b", prompt="Use {{first_result}}")],
+                ),
+            ]
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_flat_recipe_still_validates(self):
+        """Flat recipe variable validation should still work (regression check)."""
+        recipe = Recipe(
+            name="flat-test",
+            description="Flat recipe test",
+            version="1.0.0",
+            steps=[Step(id="s1", agent="a", prompt="Use {{missing}}")],
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+
+
+class TestStagedRecipeAgentAvailability:
+    """Tests for agent availability checking in staged recipes."""
+
+    def test_staged_recipe_unavailable_agent_warned(self, mock_coordinator):
+        """Staged recipe with agent 'nonexistent-agent' should produce 1 warning containing 'nonexistent-agent'."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[
+                        Step(
+                            id="s1",
+                            agent="nonexistent-agent",
+                            prompt="Do something",
+                        )
+                    ],
+                ),
+            ]
+        )
+        warnings = check_agent_availability(recipe, mock_coordinator)
+        assert len(warnings) == 1
+        assert "nonexistent-agent" in warnings[0]
+
+    def test_staged_recipe_available_agent_no_warning(self, mock_coordinator):
+        """Staged recipe with agent 'test-agent' should have no warnings."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[Step(id="s1", agent="test-agent", prompt="Do something")],
+                ),
+            ]
+        )
+        warnings = check_agent_availability(recipe, mock_coordinator)
+        assert warnings == []
+
+
+class TestStagedRecipeStepDependencies:
+    """Tests for step dependency validation in staged recipes."""
+
+    def test_staged_recipe_unknown_dependency_detected(self):
+        """Step with depends_on=['nonexistent'] should produce error containing 'nonexistent'."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[
+                        Step(
+                            id="s1",
+                            agent="a",
+                            prompt="Do something",
+                            depends_on=["nonexistent"],
+                        )
+                    ],
+                ),
+            ]
+        )
+        errors = check_step_dependencies(recipe)
+        assert len(errors) >= 1
+        assert any("nonexistent" in e for e in errors)
+
+    def test_staged_recipe_later_dependency_detected(self):
+        """Step s1 depending on later step s2 should produce error containing 'later'."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[
+                        Step(id="s1", agent="a", prompt="First", depends_on=["s2"]),
+                        Step(id="s2", agent="b", prompt="Second"),
+                    ],
+                ),
+            ]
+        )
+        errors = check_step_dependencies(recipe)
+        assert len(errors) >= 1
+        assert any("later" in e.lower() for e in errors)
+
+    def test_staged_recipe_self_dependency_detected(self):
+        """Step s1 depending on itself should produce error containing 'itself'."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[
+                        Step(id="s1", agent="a", prompt="Self", depends_on=["s1"]),
+                    ],
+                ),
+            ]
+        )
+        errors = check_step_dependencies(recipe)
+        assert len(errors) >= 1
+        assert any("itself" in e.lower() for e in errors)
+
+    def test_staged_recipe_valid_dependencies(self):
+        """Step s2 depending on earlier step s1 should have no errors."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[
+                        Step(id="s1", agent="a", prompt="First"),
+                        Step(id="s2", agent="b", prompt="Second", depends_on=["s1"]),
+                    ],
+                ),
+            ]
+        )
+        errors = check_step_dependencies(recipe)
+        assert errors == []
+
+    def test_staged_recipe_cross_stage_dependency(self):
+        """Step in stage 2 can depend on step in stage 1 (earlier in flat order), no errors."""
+        recipe = _staged_recipe(
+            [
+                Stage(
+                    name="stage-1",
+                    steps=[Step(id="s1", agent="a", prompt="First")],
+                ),
+                Stage(
+                    name="stage-2",
+                    steps=[
+                        Step(id="s2", agent="b", prompt="Second", depends_on=["s1"]),
+                    ],
+                ),
+            ]
+        )
+        errors = check_step_dependencies(recipe)
+        assert errors == []
+
+
+class TestDeeperDotPathValidation:
+    """Tests for deeper dot-path validation in check_variable_references."""
+
+    def test_valid_nested_context_key(self):
+        """{{requirements.character_design}} with matching nested context is valid, no errors."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.character_design}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_missing_nested_context_key(self):
+        """{{requirements.nonexistent}} with context that lacks 'nonexistent' key produces 1 error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.nonexistent}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "nonexistent" in errors[0]
+        assert "requirements" in errors[0]
+
+    def test_valid_three_level_dot_path(self):
+        """{{requirements.character_design.detail_level}} traverses 3 levels, valid if exists."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.character_design.detail_level}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_missing_three_level_dot_path(self):
+        """{{requirements.character_design.missing_key}} 3 levels deep, missing -> 1 error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.character_design.missing_key}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "missing_key" in errors[0]
+
+    def test_traverse_into_leaf_produces_error(self):
+        """{{requirements.character_design.detail_level.foo}} traverses into a leaf -> 1 error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.character_design.detail_level.foo}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "detail_level" in errors[0]
+        assert "not a mapping" in errors[0] or "not a dict" in errors[0]
+
+    def test_step_output_skips_deeper_validation(self):
+        """{{step_1_output.field}} where step_1_output is a step output -> no deeper check."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="First step",
+                    output="step_1_output",
+                ),
+                Step(
+                    id="s2",
+                    agent="b",
+                    prompt="Use {{step_1_output.field}}",
+                ),
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_reserved_namespace_skips_deeper_validation(self):
+        """{{recipe.name}} uses reserved namespace -> no deeper traversal, no errors."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="s1", agent="a", prompt="Recipe: {{recipe.name}}")],
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_totally_unknown_top_level_still_errors(self):
+        """{{totally_unknown.anything}} with unknown top-level -> 1 error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{totally_unknown.anything}}",
+                )
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "totally_unknown" in errors[0]
+
+    def test_context_value_not_a_dict_skips_deeper_validation(self):
+        """{{simple_string.something}} where context value is a plain string -> no error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{simple_string.something}}",
+                )
+            ],
+            context={"simple_string": "just a string"},
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_deeper_validation_in_command_field(self):
+        """Deeper dot-path validation also works in bash command fields."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    type="bash",
+                    command="echo {{config.nonexistent}}",
+                )
+            ],
+            context={"config": {"database": "postgres"}},
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "nonexistent" in errors[0]

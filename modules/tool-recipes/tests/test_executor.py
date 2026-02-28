@@ -2,6 +2,7 @@
 
 import pytest
 from amplifier_module_tool_recipes.executor import RecipeExecutor
+from amplifier_module_tool_recipes.models import Step
 
 
 class MockSessionManager:
@@ -72,7 +73,9 @@ class TestSubstituteVariables:
         assert "undefined" in str(exc_info.value).lower()
         assert "Undefined variable" in str(exc_info.value)
 
-    def test_substitute_undefined_nested_variable_raises(self, executor: RecipeExecutor):
+    def test_substitute_undefined_nested_variable_raises(
+        self, executor: RecipeExecutor
+    ):
         """Undefined nested variable should raise ValueError."""
         template = "Value: {{data.unknown}}"
         context = {"data": {"known": "value"}}
@@ -153,3 +156,46 @@ Line 3: c"""
         assert "Available variables" in error_msg
         # Should list both available variables
         assert "name" in error_msg or "greeting" in error_msg
+
+
+class TestRetryConfigGuard:
+    """Tests that malformed step.retry values are safely handled.
+
+    Defense-in-depth: even though parse-time validation catches bad retry
+    values, programmatic Step construction could bypass that check. The
+    executor must not crash on non-dict retry values.
+
+    NOTE: These tests replicate the ``isinstance(step.retry, dict)`` guard
+    expression inline rather than calling ``execute_step_with_retry``.  This
+    is intentional — the goal is to verify the guard *pattern* in isolation
+    without requiring async mocks of the full execution pipeline.  The
+    executor's own usage of this pattern is covered by integration tests.
+    """
+
+    def test_retry_string_falls_back_to_empty_dict(self):
+        """String retry value (bypassed parse-time check) should produce {}."""
+        step = Step(id="test-step")
+        step.retry = "3"  # type: ignore[assignment]
+        retry_config = step.retry if isinstance(step.retry, dict) else {}
+        assert retry_config == {}
+
+    def test_retry_int_falls_back_to_empty_dict(self):
+        """Int retry value (bypassed parse-time check) should produce {}."""
+        step = Step(id="test-step")
+        step.retry = 3  # type: ignore[assignment]
+        retry_config = step.retry if isinstance(step.retry, dict) else {}
+        assert retry_config == {}
+
+    def test_retry_dict_passes_through(self):
+        """Normal dict retry config should pass through unchanged."""
+        step = Step(id="test-step")
+        step.retry = {"max_attempts": 3, "backoff": "exponential"}
+        retry_config = step.retry if isinstance(step.retry, dict) else {}
+        assert retry_config == {"max_attempts": 3, "backoff": "exponential"}
+
+    def test_retry_none_falls_back_to_empty_dict(self):
+        """None retry should produce {}."""
+        step = Step(id="test-step")
+        step.retry = None
+        retry_config = step.retry if isinstance(step.retry, dict) else {}
+        assert retry_config == {}

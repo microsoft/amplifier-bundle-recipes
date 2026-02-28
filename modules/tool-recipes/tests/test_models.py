@@ -92,6 +92,41 @@ class TestStep:
         errors = step.validate()
         assert any("backoff" in e.lower() for e in errors)
 
+    def test_parse_step_retry_string_raises(self):
+        """_parse_step with retry: '3' should raise ValueError."""
+        step_data = {"id": "s1", "agent": "a", "prompt": "p", "retry": "3"}
+        with pytest.raises(ValueError, match="retry must be a mapping"):
+            Recipe._parse_step(step_data)
+
+    def test_parse_step_retry_int_raises(self):
+        """_parse_step with retry: 3 should raise ValueError."""
+        step_data = {"id": "s1", "agent": "a", "prompt": "p", "retry": 3}
+        with pytest.raises(ValueError, match="retry must be a mapping"):
+            Recipe._parse_step(step_data)
+
+    def test_parse_step_retry_dict_passes(self):
+        """_parse_step with retry as dict should pass."""
+        step_data = {
+            "id": "s1",
+            "agent": "a",
+            "prompt": "p",
+            "retry": {"max_attempts": 3},
+        }
+        step = Recipe._parse_step(step_data)
+        assert step.retry == {"max_attempts": 3}
+
+    def test_parse_step_retry_none_passes(self):
+        """_parse_step with retry: None should pass."""
+        step_data = {"id": "s1", "agent": "a", "prompt": "p", "retry": None}
+        step = Recipe._parse_step(step_data)
+        assert step.retry is None
+
+    def test_parse_step_retry_absent_passes(self):
+        """_parse_step with no retry field should pass."""
+        step_data = {"id": "s1", "agent": "a", "prompt": "p"}
+        step = Recipe._parse_step(step_data)
+        assert step.retry is None
+
 
 class TestRecipe:
     """Tests for Recipe dataclass."""

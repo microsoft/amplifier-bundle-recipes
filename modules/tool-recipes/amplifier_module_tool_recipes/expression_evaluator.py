@@ -213,7 +213,7 @@ def _tokenize(expression: str) -> list[str]:
             quote = ch
             j = i + 1
             while j < n:
-                if expression[j] == '\\' and j + 1 < n:
+                if expression[j] == "\\" and j + 1 < n:
                     # Skip escaped character (handles \', \", \\)
                     j += 2
                 elif expression[j] == quote:
@@ -417,6 +417,8 @@ class _Parser:
         """Extract and unescape string value from a token.
 
         Handles quoted strings (strips quotes and unescapes) and bare values.
+        Normalizes bare boolean literals (TRUE/True/FALSE/False) to lowercase
+        so comparisons with substituted boolean variables are case-insensitive.
 
         Args:
             token: Raw token from tokenizer
@@ -430,6 +432,9 @@ class _Parser:
             # Strip quotes and unescape
             inner = token[1:-1]
             return _unescape_string_value(inner)
+        # Normalize bare boolean literals to lowercase for case-insensitive comparison
+        if token.lower() in ("true", "false"):
+            return token.lower()
         return token
 
     def _parse_atom(self) -> str:
@@ -465,7 +470,9 @@ class _Parser:
             raise ExpressionError(f"Unexpected keyword '{token}' where value expected")
 
         if token in (")", "==", "!=", "<", ">", ">=", "<="):
-            raise ExpressionError(f"Unexpected operator '{token}' where value expected")
+            raise ExpressionError(
+                f"Invalid expression: unexpected operator '{token}' where value expected"
+            )
 
         # Bare identifier / number / boolean literal
         self._consume()

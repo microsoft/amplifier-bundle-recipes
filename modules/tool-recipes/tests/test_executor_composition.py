@@ -19,6 +19,9 @@ def mock_coordinator():
     coordinator.config = {"agents": {}}
     # get_capability returns an AsyncMock that tests can configure
     coordinator.get_capability.return_value = AsyncMock()
+    # Disable hooks and cancellation so MagicMock auto-attrs don't interfere
+    coordinator.hooks = None
+    coordinator.cancellation = None
     return coordinator
 
 
@@ -50,7 +53,9 @@ class TestBasicComposition:
     """Tests for basic recipe composition functionality."""
 
     @pytest.mark.asyncio
-    async def test_basic_composition(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_basic_composition(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Sub-recipe executes and returns context."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # Set up mock to return results for sub-recipe steps
@@ -106,7 +111,9 @@ steps:
         assert result["sub_output"]["result2"] == "sub_result_2"
 
     @pytest.mark.asyncio
-    async def test_context_passing(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_context_passing(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Only explicitly passed context is available in sub-recipe."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["processed_value"]
@@ -154,7 +161,9 @@ steps:
         assert "hello_from_parent" in instruction
 
     @pytest.mark.asyncio
-    async def test_context_isolation(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_context_isolation(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Parent context variables are NOT automatically inherited by sub-recipe."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # Sub-recipe tries to use parent_only_var which should NOT be available
@@ -204,7 +213,9 @@ steps:
         assert "another_parent_var" not in result["output"]
 
     @pytest.mark.asyncio
-    async def test_output_contains_sub_context(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_output_contains_sub_context(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Step output contains entire sub-recipe's final context."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["res1", "res2", "res3"]
@@ -264,7 +275,9 @@ class TestRecursionLimits:
     """Tests for recursion protection."""
 
     @pytest.mark.asyncio
-    async def test_depth_limit_enforced(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_depth_limit_enforced(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Exceeding max_depth raises error."""
         # Create a self-referential recipe structure that would exceed depth
         # We'll create recipe-a -> recipe-b -> recipe-a (cycle at depth 3 with limit 2)
@@ -306,7 +319,9 @@ steps:
             await executor.execute_recipe(recipe_a, {}, temp_dir)
 
     @pytest.mark.asyncio
-    async def test_total_steps_limit_enforced(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_total_steps_limit_enforced(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Exceeding max_total_steps raises error."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # Create recipe that would run more than max_total_steps
@@ -365,7 +380,9 @@ steps:
             await executor.execute_recipe(parent_recipe, {}, temp_dir)
 
     @pytest.mark.asyncio
-    async def test_step_level_recursion_override(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_step_level_recursion_override(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Per-step recursion config overrides recipe defaults."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # Deep sub-recipe that would fail with default depth=5
@@ -396,7 +413,9 @@ steps:
                     recipe="deep-sub.yaml",
                     step_context={},
                     output="result",
-                    recursion=RecursionConfig(max_depth=5),  # Override allows deeper nesting
+                    recursion=RecursionConfig(
+                        max_depth=5
+                    ),  # Override allows deeper nesting
                 ),
             ],
             context={},
@@ -414,7 +433,9 @@ class TestErrorHandling:
     """Tests for error handling in composition."""
 
     @pytest.mark.asyncio
-    async def test_sub_recipe_failure_propagates(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_sub_recipe_failure_propagates(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Error in sub-recipe propagates up and raises."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # Sub-recipe that will fail
@@ -461,7 +482,9 @@ class TestCompositionWithLoops:
     """Tests for recipe composition with foreach loops."""
 
     @pytest.mark.asyncio
-    async def test_composition_with_foreach(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_composition_with_foreach(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Recipe step works in foreach loop."""
         mock_spawn = mock_coordinator.get_capability.return_value
         sub_recipe_yaml = """
@@ -509,7 +532,9 @@ steps:
         assert len(result["all_results"]) == 3
 
     @pytest.mark.asyncio
-    async def test_composition_with_condition(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_composition_with_condition(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Recipe step respects conditions."""
         mock_spawn = mock_coordinator.get_capability.return_value
         sub_recipe_yaml = """
@@ -551,7 +576,9 @@ steps:
         assert "conditional-call" in result["_skipped_steps"]
 
     @pytest.mark.asyncio
-    async def test_composition_with_parallel(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_composition_with_parallel(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Recipe step works with parallel: true in foreach."""
         mock_spawn = mock_coordinator.get_capability.return_value
         sub_recipe_yaml = """

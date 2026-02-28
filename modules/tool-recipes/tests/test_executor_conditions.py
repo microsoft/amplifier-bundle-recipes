@@ -19,6 +19,9 @@ def mock_coordinator():
     coordinator.config = {"agents": {}}
     # get_capability returns an AsyncMock that tests can configure
     coordinator.get_capability.return_value = AsyncMock()
+    # Disable hooks and cancellation so MagicMock auto-attrs don't interfere
+    coordinator.hooks = None
+    coordinator.cancellation = None
     return coordinator
 
 
@@ -82,7 +85,9 @@ class TestExecutorConditions:
     """Tests for condition evaluation in executor."""
 
     @pytest.mark.asyncio
-    async def test_condition_true_executes_step(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_condition_true_executes_step(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Step executes when condition evaluates to true."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # Mock spawn to return category='simple'
@@ -96,7 +101,13 @@ class TestExecutorConditions:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="p", output="category"),
-                Step(id="s2", agent="a", prompt="p", condition="{{category}} == 'simple'", output="result"),
+                Step(
+                    id="s2",
+                    agent="a",
+                    prompt="p",
+                    condition="{{category}} == 'simple'",
+                    output="result",
+                ),
             ],
             context={},
         )
@@ -109,7 +120,9 @@ class TestExecutorConditions:
         assert result["result"] == "simple result"
 
     @pytest.mark.asyncio
-    async def test_condition_false_skips_step(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_condition_false_skips_step(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Step is skipped when condition evaluates to false."""
         mock_spawn = mock_coordinator.get_capability.return_value
         # Mock spawn to return category='complex'
@@ -123,9 +136,19 @@ class TestExecutorConditions:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="p", output="category"),
-                Step(id="simple", agent="a", prompt="p", condition="{{category}} == 'simple'", output="simple_result"),
                 Step(
-                    id="complex", agent="a", prompt="p", condition="{{category}} == 'complex'", output="complex_result"
+                    id="simple",
+                    agent="a",
+                    prompt="p",
+                    condition="{{category}} == 'simple'",
+                    output="simple_result",
+                ),
+                Step(
+                    id="complex",
+                    agent="a",
+                    prompt="p",
+                    condition="{{category}} == 'complex'",
+                    output="complex_result",
                 ),
             ],
             context={},
@@ -140,7 +163,9 @@ class TestExecutorConditions:
         assert "simple_result" not in result
 
     @pytest.mark.asyncio
-    async def test_skipped_steps_tracked(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_skipped_steps_tracked(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Skipped step IDs are tracked in context."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["no", "final"]
@@ -153,7 +178,12 @@ class TestExecutorConditions:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="p", output="flag"),
-                Step(id="conditional", agent="a", prompt="p", condition="{{flag}} == 'yes'"),
+                Step(
+                    id="conditional",
+                    agent="a",
+                    prompt="p",
+                    condition="{{flag}} == 'yes'",
+                ),
                 Step(id="final", agent="a", prompt="p", output="final"),
             ],
             context={},
@@ -166,7 +196,9 @@ class TestExecutorConditions:
         assert "conditional" in result["_skipped_steps"]
 
     @pytest.mark.asyncio
-    async def test_no_condition_always_executes(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_no_condition_always_executes(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Steps without condition always execute."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["result1", "result2"]
@@ -191,7 +223,9 @@ class TestExecutorConditions:
         assert result["r2"] == "result2"
 
     @pytest.mark.asyncio
-    async def test_undefined_variable_in_condition_raises(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_undefined_variable_in_condition_raises(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Undefined variable in condition raises ValueError."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["value"]
@@ -204,7 +238,9 @@ class TestExecutorConditions:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="p", output="defined"),
-                Step(id="s2", agent="a", prompt="p", condition="{{undefined}} == 'value'"),
+                Step(
+                    id="s2", agent="a", prompt="p", condition="{{undefined}} == 'value'"
+                ),
             ],
             context={},
         )
@@ -213,7 +249,9 @@ class TestExecutorConditions:
             await executor.execute_recipe(recipe, {}, temp_dir)
 
     @pytest.mark.asyncio
-    async def test_condition_with_and_operator(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_condition_with_and_operator(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Condition with 'and' operator works correctly."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["yes", "yes", "both_yes"]
@@ -244,7 +282,9 @@ class TestExecutorConditions:
         assert result["result"] == "both_yes"
 
     @pytest.mark.asyncio
-    async def test_condition_with_or_operator(self, mock_coordinator, mock_session_manager, temp_dir):
+    async def test_condition_with_or_operator(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
         """Condition with 'or' operator works correctly."""
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.side_effect = ["no", "yes", "one_yes"]
