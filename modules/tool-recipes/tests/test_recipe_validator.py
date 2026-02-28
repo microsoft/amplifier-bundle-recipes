@@ -1,8 +1,11 @@
 """Tests for recipe validation logic."""
 
+from amplifier_module_tool_recipes.models import ApprovalConfig
 from amplifier_module_tool_recipes.models import Recipe
+from amplifier_module_tool_recipes.models import Stage
 from amplifier_module_tool_recipes.models import Step
 from amplifier_module_tool_recipes.validator import ValidationResult
+from amplifier_module_tool_recipes.validator import check_agent_availability
 from amplifier_module_tool_recipes.validator import check_step_dependencies
 from amplifier_module_tool_recipes.validator import check_variable_references
 from amplifier_module_tool_recipes.validator import extract_variables
@@ -24,7 +27,9 @@ class TestExtractVariables:
 
     def test_extract_nested_variable(self):
         """Extract nested variable references."""
-        variables = extract_variables("Recipe: {{recipe.name}}, Session: {{session.id}}")
+        variables = extract_variables(
+            "Recipe: {{recipe.name}}, Session: {{session.id}}"
+        )
         assert variables == {"recipe.name", "session.id"}
 
     def test_extract_no_variables(self):
@@ -108,7 +113,9 @@ class TestCheckVariableReferences:
             description="test",
             version="1.0.0",
             steps=[
-                Step(id="s1", agent="a", prompt="Use {{second_result}}"),  # not defined yet
+                Step(
+                    id="s1", agent="a", prompt="Use {{second_result}}"
+                ),  # not defined yet
                 Step(id="s2", agent="b", prompt="Second step", output="second_result"),
             ],
         )
@@ -136,7 +143,11 @@ class TestCheckVariableReferences:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="First step", output="structure"),
-                Step(id="s2", agent="b", prompt="Use {{structure.provider_file}} and {{structure.provider_class}}"),
+                Step(
+                    id="s2",
+                    agent="b",
+                    prompt="Use {{structure.provider_file}} and {{structure.provider_class}}",
+                ),
             ],
         )
         errors = check_variable_references(recipe)
@@ -153,7 +164,10 @@ class TestCheckVariableReferences:
                 Step(
                     id="s2",
                     recipe="some-recipe.yaml",
-                    step_context={"file": "{{config.main_file}}", "class": "{{config.provider_class}}"},
+                    step_context={
+                        "file": "{{config.main_file}}",
+                        "class": "{{config.provider_class}}",
+                    },
                     depends_on=["s1"],
                 ),
             ],
@@ -169,7 +183,12 @@ class TestCheckVariableReferences:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="Get path", output="paths"),
-                Step(id="s2", recipe="{{paths.recipe_dir}}/sub-recipe.yaml", agent="b", prompt="Run"),
+                Step(
+                    id="s2",
+                    recipe="{{paths.recipe_dir}}/sub-recipe.yaml",
+                    agent="b",
+                    prompt="Run",
+                ),
             ],
         )
         errors = check_variable_references(recipe)
@@ -255,7 +274,9 @@ class TestValidateRecipe:
         # But should have warning about unavailable agent
         assert any("unavailable-agent" in w for w in result.warnings)
 
-    def test_agent_availability_no_warning_for_available(self, sample_recipe: Recipe, mock_coordinator):
+    def test_agent_availability_no_warning_for_available(
+        self, sample_recipe: Recipe, mock_coordinator
+    ):
         """Available agent should not produce warning."""
         # sample_recipe has "test-agent" which is in mock_coordinator
         result = validate_recipe(sample_recipe, mock_coordinator)
@@ -292,3 +313,106 @@ class TestValidationResult:
         result = ValidationResult(is_valid=True, errors=[], warnings=["Some warning"])
         assert result.is_valid
         assert len(result.warnings) == 1
+
+
+class TestStagedRecipeValidation:
+    """Tests for staged recipe semantic validation.
+
+    Staged recipes store steps in recipe.stages[].steps, not recipe.steps.
+    The validator must use recipe.get_all_steps() to find them.
+    """
+
+    def _make_staged_recipe(
+        self, stages: list[Stage], context: dict | None = None
+    ) -> Recipe:
+        """Helper to create a staged recipe."""
+        return Recipe(
+            name="staged-test",
+            description="A staged recipe for testing",
+            version="1.0.0",
+            stages=stages,
+            context=context or {},
+        )
+
+    def test_check_variable_references_staged_recipe(self):
+        """Undefined variable in a staged recipe step must produce an error."""
+        recipe = self._make_staged_recipe(
+            stages=[
+                Stage(
+                    name="phase-1",
+                    steps=[
+                        Step(id="s1", agent="a", prompt="Use {{undefined_var}}"),
+                    ],
+                    approval=ApprovalConfig(required=True, prompt="Continue?"),
+                ),
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "undefined_var" in errors[0]
+
+    def test_check_agent_availability_staged_recipe(self, mock_coordinator):
+        """Unavailable agent in a staged recipe step must produce a warning."""
+        recipe = self._make_staged_recipe(
+            stages=[
+                Stage(
+                    name="phase-1",
+                    steps=[
+                        Step(id="s1", agent="nonexistent-agent", prompt="Do something"),
+                    ],
+                    approval=ApprovalConfig(required=True, prompt="Continue?"),
+                ),
+            ],
+        )
+        warnings = check_agent_availability(recipe, mock_coordinator)
+        assert len(warnings) == 1
+        assert "nonexistent-agent" in warnings[0]
+
+    def test_check_step_dependencies_staged_recipe(self):
+        """Forward dependency across stages must produce an error."""
+        recipe = self._make_staged_recipe(
+            stages=[
+                Stage(
+                    name="phase-1",
+                    steps=[
+                        Step(id="s1", agent="a", prompt="First", depends_on=["s2"]),
+                    ],
+                    approval=ApprovalConfig(required=True, prompt="Continue?"),
+                ),
+                Stage(
+                    name="phase-2",
+                    steps=[
+                        Step(id="s2", agent="b", prompt="Second"),
+                    ],
+                ),
+            ],
+        )
+        errors = check_step_dependencies(recipe)
+        assert any("later" in e.lower() for e in errors)
+
+
+class TestRetryTypeValidation:
+    """Tests for retry field type safety in Step.validate()."""
+
+    def test_step_validate_retry_non_dict(self):
+        """Step with retry as a string must produce a validation error, not crash."""
+        step = Step(id="bad", agent="a", prompt="test", retry="exponential")  # type: ignore[arg-type]
+        errors = step.validate()
+        assert any("retry must be a mapping" in e for e in errors)
+
+    def test_step_validate_retry_int(self):
+        """Step with retry as an integer must produce a validation error, not crash."""
+        step = Step(id="bad", agent="a", prompt="test", retry=3)  # type: ignore[arg-type]
+        errors = step.validate()
+        assert any("retry must be a mapping" in e for e in errors)
+
+    def test_step_validate_retry_valid_dict(self):
+        """Step with retry as a proper dict should validate normally."""
+        step = Step(
+            id="good",
+            agent="a",
+            prompt="test",
+            retry={"max_attempts": 3, "backoff": "exponential"},
+        )
+        errors = step.validate()
+        assert not any("retry" in e.lower() for e in errors)

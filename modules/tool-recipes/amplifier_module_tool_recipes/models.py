@@ -420,17 +420,22 @@ class Step:
 
         # Retry validation
         if self.retry:
-            max_attempts = self.retry.get("max_attempts", 1)
-            if not isinstance(max_attempts, int) or max_attempts <= 0:
+            if not isinstance(self.retry, dict):
                 errors.append(
-                    f"Step '{self.id}': retry.max_attempts must be positive integer"
+                    f"Step '{self.id}': retry must be a mapping, got {type(self.retry).__name__}"
                 )
+            else:
+                max_attempts = self.retry.get("max_attempts", 1)
+                if not isinstance(max_attempts, int) or max_attempts <= 0:
+                    errors.append(
+                        f"Step '{self.id}': retry.max_attempts must be positive integer"
+                    )
 
-            backoff = self.retry.get("backoff", "exponential")
-            if backoff not in ("exponential", "linear"):
-                errors.append(
-                    f"Step '{self.id}': retry.backoff must be 'exponential' or 'linear'"
-                )
+                backoff = self.retry.get("backoff", "exponential")
+                if backoff not in ("exponential", "linear"):
+                    errors.append(
+                        f"Step '{self.id}': retry.backoff must be 'exponential' or 'linear'"
+                    )
 
         # Loop validation
         if self.foreach:

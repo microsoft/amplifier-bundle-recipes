@@ -1160,7 +1160,7 @@ class RecipeExecutor:
             SkipRemainingError if on_error='skip_remaining'
             CancellationRequestedError if cancellation requested
         """
-        retry_config = step.retry or {}
+        retry_config = step.retry if isinstance(step.retry, dict) else {}
         max_attempts = retry_config.get("max_attempts", 1)
         backoff = retry_config.get("backoff", "exponential")
         delay = retry_config.get("initial_delay", 5)

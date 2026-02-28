@@ -66,7 +66,7 @@ def check_variable_references(recipe: Recipe) -> list[str]:
     # Build set of available variables step by step
     available = set(recipe.context.keys()) | reserved
 
-    for step in recipe.steps:
+    for step in recipe.get_all_steps():
         # For foreach loops, the loop variable is available within the step
         step_local_vars = set()
         if step.foreach:
@@ -219,7 +219,7 @@ def check_agent_availability(recipe: Recipe, coordinator: Any) -> list[str]:
         if not isinstance(available_agents, list | set | dict):
             return warnings
 
-        for step in recipe.steps:
+        for step in recipe.get_all_steps():
             if step.agent not in available_agents:
                 warnings.append(
                     f"Step '{step.id}': Agent '{step.agent}' may not be available. "
@@ -237,10 +237,11 @@ def check_step_dependencies(recipe: Recipe) -> list[str]:
     """Check step dependencies are valid and acyclic."""
     errors = []
 
-    step_ids = {step.id for step in recipe.steps}
+    all_steps = recipe.get_all_steps()
+    step_ids = {step.id for step in all_steps}
 
     # Check each step's dependencies
-    for i, step in enumerate(recipe.steps):
+    for i, step in enumerate(all_steps):
         for dep_id in step.depends_on:
             # Check dependency exists
             if dep_id not in step_ids:
@@ -250,7 +251,7 @@ def check_step_dependencies(recipe: Recipe) -> list[str]:
             # Check dependency appears before this step
             dep_step = recipe.get_step(dep_id)
             if dep_step:
-                dep_index = recipe.steps.index(dep_step)
+                dep_index = all_steps.index(dep_step)
                 if dep_index >= i:
                     errors.append(
                         f"Step '{step.id}': depends_on '{dep_id}' but '{dep_id}' "
