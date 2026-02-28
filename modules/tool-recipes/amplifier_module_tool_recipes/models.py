@@ -633,6 +633,13 @@ class Recipe:
                     for p in prefs_data
                 ]
 
+        # Validate retry field type (must be dict if present)
+        if "retry" in step_data_copy and step_data_copy["retry"] is not None:
+            if not isinstance(step_data_copy["retry"], dict):
+                raise ValueError(
+                    f"retry must be a mapping, got {type(step_data_copy['retry']).__name__}"
+                )
+
         return Step(**step_data_copy)
 
     @classmethod

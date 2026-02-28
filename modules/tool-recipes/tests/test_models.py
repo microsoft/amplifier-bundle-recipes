@@ -466,3 +466,47 @@ stages:
         # Full validation passes
         errors = recipe.validate()
         assert errors == [], f"Validation errors: {errors}"
+
+
+class TestParseStepRetryGuard:
+    """Tests for retry type guard in Recipe._parse_step().
+
+    The retry field must be a dict (mapping) if provided. Strings, ints, and
+    other non-dict types should be rejected at parse time with a clear error.
+    """
+
+    def test_parse_step_retry_string_raises(self):
+        """_parse_step with retry as a string should raise ValueError."""
+        with pytest.raises(ValueError, match="retry must be a mapping"):
+            Recipe._parse_step(
+                {"id": "bad", "agent": "a", "prompt": "test", "retry": "3 attempts"}
+            )
+
+    def test_parse_step_retry_int_raises(self):
+        """_parse_step with retry as an int should raise ValueError."""
+        with pytest.raises(ValueError, match="retry must be a mapping"):
+            Recipe._parse_step(
+                {"id": "bad", "agent": "a", "prompt": "test", "retry": 3}
+            )
+
+    def test_parse_step_retry_valid_dict_succeeds(self):
+        """_parse_step with retry as a proper dict should succeed."""
+        step = Recipe._parse_step(
+            {"id": "ok", "agent": "a", "prompt": "test", "retry": {"max_attempts": 3}}
+        )
+        assert step.id == "ok"
+        assert step.retry == {"max_attempts": 3}
+
+    def test_parse_step_no_retry_succeeds(self):
+        """_parse_step without a retry field should succeed."""
+        step = Recipe._parse_step({"id": "ok", "agent": "a", "prompt": "test"})
+        assert step.id == "ok"
+        assert step.retry is None
+
+    def test_parse_step_retry_none_succeeds(self):
+        """_parse_step with retry=None should succeed."""
+        step = Recipe._parse_step(
+            {"id": "ok", "agent": "a", "prompt": "test", "retry": None}
+        )
+        assert step.id == "ok"
+        assert step.retry is None
