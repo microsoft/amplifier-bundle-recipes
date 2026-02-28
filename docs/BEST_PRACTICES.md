@@ -1003,32 +1003,65 @@ Recipe steps can specify which provider and model to use, enabling cost/capabili
 
 ### The Model Selection Strategy
 
-**Match model capability to task complexity:**
+**Prefer class-based routing** — specify *what kind* of model you need, not *which specific model*:
 
-| Task Type | Model Tier | Example Models | Why |
-|-----------|------------|----------------|-----|
-| Simple classification, yes/no | Fast/Cheap | `claude-haiku`, `gpt-4o-mini` | No deep reasoning needed |
-| Quick summaries, formatting | Fast/Cheap | `claude-haiku` | Speed over depth |
-| Code implementation, analysis | Balanced | `claude-sonnet-*`, `gpt-4o` | Good speed/capability tradeoff |
-| Codebase exploration | Balanced | `claude-sonnet-*` | Thorough but routine |
-| Architecture, strategy | Powerful | `claude-opus-*`, `gpt-5*` | Best reasoning, worth the cost |
-| Security analysis | Powerful | `claude-opus-*` | Critical decisions need best model |
-| Complex design decisions | Powerful | `claude-opus-*` | Strategic thinking |
+| Task Type | Model Class | Resolves To | Why |
+|-----------|-------------|-------------|-----|
+| Simple classification, yes/no | `class: fast` | Haiku, GPT-4o-mini, Flash | No deep reasoning needed |
+| Quick summaries, formatting | `class: fast` | Haiku, Flash | Speed over depth |
+| Architecture, strategy | `class: reasoning` | Opus, o3, thinking models | Best reasoning, worth the cost |
+| Security analysis | `class: reasoning` | Opus, o3 | Critical decisions need best model |
+| Image analysis | `class: vision` | Models with vision cap | Needs visual understanding |
 
-### Using Provider and Model Fields
+For balanced/general-purpose tasks (code implementation, exploration), use explicit `provider_preferences`
+with specific models — there is no "standard" class since these tasks map well to the default model.
+
+### Using Class-Based Routing (Recommended)
 
 ```yaml
 steps:
-  # Fast/cheap for simple classification
+  # Fast class for simple classification
   - id: "classify-severity"
     agent: "foundation:zen-architect"
-    provider: "anthropic"
-    model: "claude-haiku"
+    provider_preferences:
+      - class: fast
     prompt: |
       Classify the severity as exactly one word: none, low, medium, high, critical
     output: "severity"
 
-  # Balanced for implementation work
+  # Reasoning class for strategic decisions
+  - id: "design-architecture"
+    agent: "foundation:zen-architect"
+    provider_preferences:
+      - class: reasoning
+    prompt: |
+      Design the optimal architecture considering all tradeoffs...
+    output: "architecture"
+
+  # Class + explicit fallbacks for maximum resilience
+  - id: "analyze-code"
+    agent: "foundation:zen-architect"
+    provider_preferences:
+      - class: reasoning
+      - provider: anthropic
+        model: claude-sonnet-*
+      - provider: openai
+        model: gpt-4o
+    prompt: |
+      Analyze the code structure and identify issues...
+    output: "analysis"
+```
+
+**Why class-based?** Your recipes become provider-agnostic. When a team adds or removes providers,
+model routing automatically adapts — no recipe edits needed.
+
+### Using Provider and Model Fields (Explicit Control)
+
+For cases where you need a specific model or provider:
+
+```yaml
+steps:
+  # Pin to a specific provider/model
   - id: "analyze-code"
     agent: "foundation:zen-architect"
     provider: "anthropic"
@@ -1036,15 +1069,6 @@ steps:
     prompt: |
       Analyze the code structure and identify issues...
     output: "analysis"
-
-  # Powerful for strategic decisions
-  - id: "design-architecture"
-    agent: "foundation:zen-architect"
-    provider: "anthropic"
-    model: "claude-opus-*"
-    prompt: |
-      Design the optimal architecture considering all tradeoffs...
-    output: "architecture"
 ```
 
 ### Glob Pattern Matching
@@ -1064,38 +1088,38 @@ Model names support fnmatch-style glob patterns for flexible version matching:
 
 ```yaml
 name: "code-review-optimized"
-description: "Code review with model selection for cost/capability optimization"
+description: "Code review with class-based model selection"
 
 steps:
-  # Haiku: Simple structure analysis (fast, cheap)
+  # Fast class: Simple structure analysis
   - id: "quick-scan"
     agent: "foundation:explorer"
-    provider: "anthropic"
-    model: "claude-haiku"
+    provider_preferences:
+      - class: fast
     prompt: "List the functions and classes in {{file_path}}"
     output: "structure"
 
-  # Sonnet: Thorough code analysis (balanced)
+  # Reasoning class: Thorough code analysis
   - id: "analyze-issues"
     agent: "foundation:zen-architect"
-    provider: "anthropic"
-    model: "claude-sonnet-*"
+    provider_preferences:
+      - class: reasoning
     prompt: "Identify code issues in {{file_path}}: {{structure}}"
     output: "issues"
 
-  # Haiku: Simple classification (fast, cheap)
+  # Fast class: Simple classification
   - id: "classify-severity"
     agent: "foundation:zen-architect"
-    provider: "anthropic"
-    model: "claude-haiku"
+    provider_preferences:
+      - class: fast
     prompt: "Respond with one word - severity level: none, low, medium, high, critical"
     output: "severity"
 
-  # Opus: Strategic recommendations (best reasoning)
+  # Reasoning class: Strategic recommendations
   - id: "design-improvements"
     agent: "foundation:zen-architect"
-    provider: "anthropic"
-    model: "claude-opus-*"
+    provider_preferences:
+      - class: reasoning
     condition: "{{severity}} != 'none'"
     prompt: "Design concrete improvements for {{file_path}} addressing: {{issues}}"
     output: "improvements"
@@ -1103,6 +1127,7 @@ steps:
 
 ### Fallback Behavior
 
+- **Class resolves to no models**: Falls through to next preference entry, or session default
 - **Provider not configured**: Falls back to default provider (warning logged)
 - **Model pattern has no matches**: Uses provider's default model
 - **No provider/model specified**: Uses session's configured provider
@@ -1111,29 +1136,33 @@ steps:
 
 ❌ **Using expensive models for simple tasks:**
 ```yaml
-# Bad: Opus for yes/no question
+# Bad: Reasoning class for yes/no question
 - id: "is-python"
-  model: "claude-opus-*"
+  provider_preferences:
+    - class: reasoning
   prompt: "Is this file Python? Answer yes or no."
 ```
 
 ❌ **Using cheap models for critical decisions:**
 ```yaml
-# Bad: Haiku for security analysis
+# Bad: Fast class for security analysis
 - id: "security-audit"
-  model: "claude-haiku"
+  provider_preferences:
+    - class: fast
   prompt: "Identify all security vulnerabilities..."
 ```
 
-✅ **Match model to task:**
+✅ **Match model class to task:**
 ```yaml
-# Good: Haiku for classification, Opus for security
+# Good: Fast for classification, Reasoning for security
 - id: "is-python"
-  model: "claude-haiku"
+  provider_preferences:
+    - class: fast
   prompt: "Is this file Python? Answer yes or no."
 
 - id: "security-audit"
-  model: "claude-opus-*"
+  provider_preferences:
+    - class: reasoning
   prompt: "Identify all security vulnerabilities..."
 ```
 

@@ -159,6 +159,7 @@ stages:
         agent: "foundation:zen-architect"
         mode: "ANALYZE"
         provider_preferences:
+          - class: reasoning
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
@@ -219,6 +220,7 @@ stages:
         agent: "foundation:zen-architect"
         mode: "ANALYZE"
         provider_preferences:
+          - class: reasoning
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
@@ -336,6 +338,7 @@ stages:
       - id: "generate-scaffold"
         agent: "foundation:modular-builder"
         provider_preferences:
+          - class: reasoning
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
@@ -378,6 +381,7 @@ stages:
         agent: "foundation:zen-architect"
         mode: "ARCHITECT"
         provider_preferences:
+          - class: reasoning
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
@@ -485,6 +489,7 @@ stages:
         condition: "{{harness_status.runnable}} != 'true'"
         agent: "foundation:bug-hunter"
         provider_preferences:
+          - class: reasoning
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
@@ -616,6 +621,7 @@ stages:
         agent: "foundation:zen-architect"
         mode: "REVIEW"
         provider_preferences:
+          - class: reasoning
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
@@ -656,6 +662,7 @@ stages:
         agent: "foundation:zen-architect"
         mode: "REVIEW"
         provider_preferences:
+          - class: reasoning
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
