@@ -56,6 +56,64 @@ def validate_recipe(recipe: Recipe, coordinator: Any = None) -> ValidationResult
     )
 
 
+def _validate_dot_path(
+    var: str,
+    step_id: str,
+    recipe_context: dict[str, Any],
+    reserved: set[str],
+    available: set[str],
+    step_local_vars: set[str],
+) -> str | None:
+    """Validate a dot-path variable reference against known context.
+
+    Returns an error message string if invalid, or None if valid/skipped.
+    """
+    parts = var.split(".")
+    prefix = parts[0]
+
+    # Skip reserved namespaces (recipe, session, step) — runtime-only
+    if prefix in reserved:
+        return None
+
+    # Skip step outputs — runtime-only, can't validate nested keys
+    if prefix in available and prefix not in recipe_context:
+        return None
+
+    # Skip loop variables
+    if prefix in step_local_vars:
+        return None
+
+    # If prefix not in available at all, the existing prefix check handles it
+    if prefix not in available:
+        return None  # Let the caller's existing logic handle unknown prefix
+
+    # Prefix is in recipe context — attempt deeper validation
+    value = recipe_context.get(prefix)
+    if not isinstance(value, dict):
+        return None  # Context value isn't a dict, can't traverse deeper — skip
+
+    # Traverse remaining parts
+    current = value
+    for i, part in enumerate(parts[1:], start=1):
+        if not isinstance(current, dict):
+            return (
+                f"Step '{step_id}': Variable {{{{{var}}}}} — "
+                f"key '{parts[i - 1]}' is not a dict "
+                f"(cannot access '{part}' on type {type(current).__name__})"
+            )
+        if part not in current:
+            parent_path = ".".join(parts[:i]) if i > 1 else parts[0]
+            available_keys = ", ".join(sorted(current.keys()))
+            return (
+                f"Step '{step_id}': Variable {{{{{var}}}}} — "
+                f"key '{part}' not found in '{parent_path}'. "
+                f"Available keys: {available_keys}"
+            )
+        current = current[part]
+
+    return None  # Valid
+
+
 def check_variable_references(recipe: Recipe) -> list[str]:
     """Check all {{variable}} references are defined or will be defined."""
     errors = []
@@ -81,10 +139,26 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                 if "." in var:
                     prefix = var.split(".")[0]
                     # Check if prefix is in reserved (recipe/session/step) OR available (step outputs)
-                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                    if (
+                        prefix not in reserved
+                        and prefix not in available
+                        and prefix not in step_local_vars
+                    ):
                         errors.append(
                             f"Step '{step.id}': Variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                         )
+                    else:
+                        # Deeper validation for known context dicts
+                        dot_error = _validate_dot_path(
+                            var,
+                            step.id,
+                            recipe.context,
+                            reserved,
+                            available,
+                            step_local_vars,
+                        )
+                        if dot_error:
+                            errors.append(dot_error)
                 elif var not in available and var not in step_local_vars:
                     errors.append(
                         f"Step '{step.id}': Variable {{{{{var}}}}} is not defined. "
@@ -97,10 +171,26 @@ def check_variable_references(recipe: Recipe) -> list[str]:
             for var in command_vars:
                 if "." in var:
                     prefix = var.split(".")[0]
-                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                    if (
+                        prefix not in reserved
+                        and prefix not in available
+                        and prefix not in step_local_vars
+                    ):
                         errors.append(
                             f"Step '{step.id}': Command variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                         )
+                    else:
+                        # Deeper validation for known context dicts
+                        dot_error = _validate_dot_path(
+                            var,
+                            step.id,
+                            recipe.context,
+                            reserved,
+                            available,
+                            step_local_vars,
+                        )
+                        if dot_error:
+                            errors.append(dot_error)
                 elif var not in available and var not in step_local_vars:
                     errors.append(
                         f"Step '{step.id}': Command variable {{{{{var}}}}} is not defined. "
@@ -113,10 +203,26 @@ def check_variable_references(recipe: Recipe) -> list[str]:
             for var in cwd_vars:
                 if "." in var:
                     prefix = var.split(".")[0]
-                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                    if (
+                        prefix not in reserved
+                        and prefix not in available
+                        and prefix not in step_local_vars
+                    ):
                         errors.append(
                             f"Step '{step.id}': cwd variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                         )
+                    else:
+                        # Deeper validation for known context dicts
+                        dot_error = _validate_dot_path(
+                            var,
+                            step.id,
+                            recipe.context,
+                            reserved,
+                            available,
+                            step_local_vars,
+                        )
+                        if dot_error:
+                            errors.append(dot_error)
                 elif var not in available and var not in step_local_vars:
                     errors.append(
                         f"Step '{step.id}': cwd variable {{{{{var}}}}} is not defined. "
@@ -131,10 +237,26 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                     for var in env_vars:
                         if "." in var:
                             prefix = var.split(".")[0]
-                            if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                            if (
+                                prefix not in reserved
+                                and prefix not in available
+                                and prefix not in step_local_vars
+                            ):
                                 errors.append(
                                     f"Step '{step.id}': env['{env_key}'] variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                                 )
+                            else:
+                                # Deeper validation for known context dicts
+                                dot_error = _validate_dot_path(
+                                    var,
+                                    step.id,
+                                    recipe.context,
+                                    reserved,
+                                    available,
+                                    step_local_vars,
+                                )
+                                if dot_error:
+                                    errors.append(dot_error)
                         elif var not in available and var not in step_local_vars:
                             errors.append(
                                 f"Step '{step.id}': env['{env_key}'] variable {{{{{var}}}}} is not defined. "
@@ -150,10 +272,26 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                         if "." in var:
                             prefix = var.split(".")[0]
                             # Check if prefix is in reserved (recipe/session/step) OR available (step outputs)
-                            if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                            if (
+                                prefix not in reserved
+                                and prefix not in available
+                                and prefix not in step_local_vars
+                            ):
                                 errors.append(
                                     f"Step '{step.id}': Context key '{key}' variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                                 )
+                            else:
+                                # Deeper validation for known context dicts
+                                dot_error = _validate_dot_path(
+                                    var,
+                                    step.id,
+                                    recipe.context,
+                                    reserved,
+                                    available,
+                                    step_local_vars,
+                                )
+                                if dot_error:
+                                    errors.append(dot_error)
                         elif var not in available and var not in step_local_vars:
                             errors.append(
                                 f"Step '{step.id}': Context key '{key}' variable {{{{{var}}}}} is not defined. "
@@ -167,10 +305,26 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                 if "." in var:
                     prefix = var.split(".")[0]
                     # Check if prefix is in reserved (recipe/session/step) OR available (step outputs)
-                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                    if (
+                        prefix not in reserved
+                        and prefix not in available
+                        and prefix not in step_local_vars
+                    ):
                         errors.append(
                             f"Step '{step.id}': Recipe path variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                         )
+                    else:
+                        # Deeper validation for known context dicts
+                        dot_error = _validate_dot_path(
+                            var,
+                            step.id,
+                            recipe.context,
+                            reserved,
+                            available,
+                            step_local_vars,
+                        )
+                        if dot_error:
+                            errors.append(dot_error)
                 elif var not in available and var not in step_local_vars:
                     errors.append(
                         f"Step '{step.id}': Recipe path variable {{{{{var}}}}} is not defined. "
@@ -190,7 +344,7 @@ def check_variable_references(recipe: Recipe) -> list[str]:
 
 def extract_variables(template: str) -> set[str]:
     """Extract all {{variable}} references from template string."""
-    pattern = r"\{\{(\w+(?:\.\w+)?)\}\}"
+    pattern = r"\{\{(\w+(?:\.\w+)*)\}\}"
     matches = re.findall(pattern, template)
     return set(matches)
 
@@ -245,7 +399,9 @@ def check_step_dependencies(recipe: Recipe) -> list[str]:
         for dep_id in step.depends_on:
             # Check dependency exists
             if dep_id not in step_ids:
-                errors.append(f"Step '{step.id}': depends_on references unknown step '{dep_id}'")
+                errors.append(
+                    f"Step '{step.id}': depends_on references unknown step '{dep_id}'"
+                )
                 continue
 
             # Check dependency appears before this step
