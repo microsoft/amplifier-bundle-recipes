@@ -66,7 +66,7 @@ def check_variable_references(recipe: Recipe) -> list[str]:
     # Build set of available variables step by step
     available = set(recipe.context.keys()) | reserved
 
-    for step in recipe.steps:
+    for step in recipe.get_all_steps():
         # For foreach loops, the loop variable is available within the step
         step_local_vars = set()
         if step.foreach:
@@ -81,7 +81,11 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                 if "." in var:
                     prefix = var.split(".")[0]
                     # Check if prefix is in reserved (recipe/session/step) OR available (step outputs)
-                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                    if (
+                        prefix not in reserved
+                        and prefix not in available
+                        and prefix not in step_local_vars
+                    ):
                         errors.append(
                             f"Step '{step.id}': Variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                         )
@@ -97,7 +101,11 @@ def check_variable_references(recipe: Recipe) -> list[str]:
             for var in command_vars:
                 if "." in var:
                     prefix = var.split(".")[0]
-                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                    if (
+                        prefix not in reserved
+                        and prefix not in available
+                        and prefix not in step_local_vars
+                    ):
                         errors.append(
                             f"Step '{step.id}': Command variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                         )
@@ -113,7 +121,11 @@ def check_variable_references(recipe: Recipe) -> list[str]:
             for var in cwd_vars:
                 if "." in var:
                     prefix = var.split(".")[0]
-                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                    if (
+                        prefix not in reserved
+                        and prefix not in available
+                        and prefix not in step_local_vars
+                    ):
                         errors.append(
                             f"Step '{step.id}': cwd variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                         )
@@ -131,7 +143,11 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                     for var in env_vars:
                         if "." in var:
                             prefix = var.split(".")[0]
-                            if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                            if (
+                                prefix not in reserved
+                                and prefix not in available
+                                and prefix not in step_local_vars
+                            ):
                                 errors.append(
                                     f"Step '{step.id}': env['{env_key}'] variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                                 )
@@ -150,7 +166,11 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                         if "." in var:
                             prefix = var.split(".")[0]
                             # Check if prefix is in reserved (recipe/session/step) OR available (step outputs)
-                            if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                            if (
+                                prefix not in reserved
+                                and prefix not in available
+                                and prefix not in step_local_vars
+                            ):
                                 errors.append(
                                     f"Step '{step.id}': Context key '{key}' variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                                 )
@@ -167,7 +187,11 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                 if "." in var:
                     prefix = var.split(".")[0]
                     # Check if prefix is in reserved (recipe/session/step) OR available (step outputs)
-                    if prefix not in reserved and prefix not in available and prefix not in step_local_vars:
+                    if (
+                        prefix not in reserved
+                        and prefix not in available
+                        and prefix not in step_local_vars
+                    ):
                         errors.append(
                             f"Step '{step.id}': Recipe path variable {{{{{var}}}}} references unknown namespace '{prefix}'"
                         )
@@ -244,7 +268,9 @@ def check_step_dependencies(recipe: Recipe) -> list[str]:
         for dep_id in step.depends_on:
             # Check dependency exists
             if dep_id not in step_ids:
-                errors.append(f"Step '{step.id}': depends_on references unknown step '{dep_id}'")
+                errors.append(
+                    f"Step '{step.id}': depends_on references unknown step '{dep_id}'"
+                )
                 continue
 
             # Check dependency appears before this step

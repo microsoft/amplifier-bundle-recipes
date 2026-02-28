@@ -1,6 +1,7 @@
 """Tests for recipe validation logic."""
 
 from amplifier_module_tool_recipes.models import Recipe
+from amplifier_module_tool_recipes.models import Stage
 from amplifier_module_tool_recipes.models import Step
 from amplifier_module_tool_recipes.validator import ValidationResult
 from amplifier_module_tool_recipes.validator import check_step_dependencies
@@ -24,7 +25,9 @@ class TestExtractVariables:
 
     def test_extract_nested_variable(self):
         """Extract nested variable references."""
-        variables = extract_variables("Recipe: {{recipe.name}}, Session: {{session.id}}")
+        variables = extract_variables(
+            "Recipe: {{recipe.name}}, Session: {{session.id}}"
+        )
         assert variables == {"recipe.name", "session.id"}
 
     def test_extract_no_variables(self):
@@ -108,7 +111,9 @@ class TestCheckVariableReferences:
             description="test",
             version="1.0.0",
             steps=[
-                Step(id="s1", agent="a", prompt="Use {{second_result}}"),  # not defined yet
+                Step(
+                    id="s1", agent="a", prompt="Use {{second_result}}"
+                ),  # not defined yet
                 Step(id="s2", agent="b", prompt="Second step", output="second_result"),
             ],
         )
@@ -136,7 +141,11 @@ class TestCheckVariableReferences:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="First step", output="structure"),
-                Step(id="s2", agent="b", prompt="Use {{structure.provider_file}} and {{structure.provider_class}}"),
+                Step(
+                    id="s2",
+                    agent="b",
+                    prompt="Use {{structure.provider_file}} and {{structure.provider_class}}",
+                ),
             ],
         )
         errors = check_variable_references(recipe)
@@ -153,7 +162,10 @@ class TestCheckVariableReferences:
                 Step(
                     id="s2",
                     recipe="some-recipe.yaml",
-                    step_context={"file": "{{config.main_file}}", "class": "{{config.provider_class}}"},
+                    step_context={
+                        "file": "{{config.main_file}}",
+                        "class": "{{config.provider_class}}",
+                    },
                     depends_on=["s1"],
                 ),
             ],
@@ -169,7 +181,12 @@ class TestCheckVariableReferences:
             version="1.0.0",
             steps=[
                 Step(id="s1", agent="a", prompt="Get path", output="paths"),
-                Step(id="s2", recipe="{{paths.recipe_dir}}/sub-recipe.yaml", agent="b", prompt="Run"),
+                Step(
+                    id="s2",
+                    recipe="{{paths.recipe_dir}}/sub-recipe.yaml",
+                    agent="b",
+                    prompt="Run",
+                ),
             ],
         )
         errors = check_variable_references(recipe)
@@ -255,7 +272,9 @@ class TestValidateRecipe:
         # But should have warning about unavailable agent
         assert any("unavailable-agent" in w for w in result.warnings)
 
-    def test_agent_availability_no_warning_for_available(self, sample_recipe: Recipe, mock_coordinator):
+    def test_agent_availability_no_warning_for_available(
+        self, sample_recipe: Recipe, mock_coordinator
+    ):
         """Available agent should not produce warning."""
         # sample_recipe has "test-agent" which is in mock_coordinator
         result = validate_recipe(sample_recipe, mock_coordinator)
@@ -292,3 +311,79 @@ class TestValidationResult:
         result = ValidationResult(is_valid=True, errors=[], warnings=["Some warning"])
         assert result.is_valid
         assert len(result.warnings) == 1
+
+
+class TestStagedRecipeVariableReferences:
+    """Tests for variable reference validation in staged recipes."""
+
+    def test_staged_recipe_undefined_variable_detected(self):
+        """Staged recipe with undefined variable should produce 1 error containing 'undefined'."""
+        recipe = Recipe(
+            name="staged-test",
+            description="Staged recipe test",
+            version="1.0.0",
+            stages=[
+                Stage(
+                    name="stage-1",
+                    steps=[Step(id="s1", agent="a", prompt="Use {{undefined}}")],
+                ),
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "undefined" in errors[0].lower()
+
+    def test_staged_recipe_valid_context_variable(self):
+        """Staged recipe with defined context variable should have no errors."""
+        recipe = Recipe(
+            name="staged-test",
+            description="Staged recipe test",
+            version="1.0.0",
+            context={"input": "value"},
+            stages=[
+                Stage(
+                    name="stage-1",
+                    steps=[Step(id="s1", agent="a", prompt="Use {{input}}")],
+                ),
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_staged_recipe_step_output_available_across_stages(self):
+        """Step output from stage 1 should be available in stage 2."""
+        recipe = Recipe(
+            name="staged-test",
+            description="Staged recipe test",
+            version="1.0.0",
+            stages=[
+                Stage(
+                    name="stage-1",
+                    steps=[
+                        Step(
+                            id="s1",
+                            agent="a",
+                            prompt="First step",
+                            output="first_result",
+                        )
+                    ],
+                ),
+                Stage(
+                    name="stage-2",
+                    steps=[Step(id="s2", agent="b", prompt="Use {{first_result}}")],
+                ),
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_flat_recipe_still_validates(self):
+        """Flat recipe variable validation should still work (regression check)."""
+        recipe = Recipe(
+            name="flat-test",
+            description="Flat recipe test",
+            version="1.0.0",
+            steps=[Step(id="s1", agent="a", prompt="Use {{missing}}")],
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
