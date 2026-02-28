@@ -520,3 +520,211 @@ class TestStagedRecipeStepDependencies:
         )
         errors = check_step_dependencies(recipe)
         assert errors == []
+
+
+class TestDeeperDotPathValidation:
+    """Tests for deeper dot-path validation in check_variable_references."""
+
+    def test_valid_nested_context_key(self):
+        """{{requirements.character_design}} with matching nested context is valid, no errors."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.character_design}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_missing_nested_context_key(self):
+        """{{requirements.nonexistent}} with context that lacks 'nonexistent' key produces 1 error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.nonexistent}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "nonexistent" in errors[0]
+        assert "requirements" in errors[0]
+
+    def test_valid_three_level_dot_path(self):
+        """{{requirements.character_design.detail_level}} traverses 3 levels, valid if exists."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.character_design.detail_level}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_missing_three_level_dot_path(self):
+        """{{requirements.character_design.missing_key}} 3 levels deep, missing -> 1 error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.character_design.missing_key}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "missing_key" in errors[0]
+
+    def test_traverse_into_leaf_produces_error(self):
+        """{{requirements.character_design.detail_level.foo}} traverses into a leaf -> 1 error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{requirements.character_design.detail_level.foo}}",
+                )
+            ],
+            context={
+                "requirements": {
+                    "character_design": {"detail_level": "high"},
+                }
+            },
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "detail_level" in errors[0]
+        assert "not a mapping" in errors[0] or "not a dict" in errors[0]
+
+    def test_step_output_skips_deeper_validation(self):
+        """{{step_1_output.field}} where step_1_output is a step output -> no deeper check."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="First step",
+                    output="step_1_output",
+                ),
+                Step(
+                    id="s2",
+                    agent="b",
+                    prompt="Use {{step_1_output.field}}",
+                ),
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_reserved_namespace_skips_deeper_validation(self):
+        """{{recipe.name}} uses reserved namespace -> no deeper traversal, no errors."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="s1", agent="a", prompt="Recipe: {{recipe.name}}")],
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_totally_unknown_top_level_still_errors(self):
+        """{{totally_unknown.anything}} with unknown top-level -> 1 error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{totally_unknown.anything}}",
+                )
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "totally_unknown" in errors[0]
+
+    def test_context_value_not_a_dict_skips_deeper_validation(self):
+        """{{simple_string.something}} where context value is a plain string -> no error."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Use {{simple_string.something}}",
+                )
+            ],
+            context={"simple_string": "just a string"},
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_deeper_validation_in_command_field(self):
+        """Deeper dot-path validation also works in bash command fields."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    type="bash",
+                    command="echo {{config.nonexistent}}",
+                )
+            ],
+            context={"config": {"database": "postgres"}},
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "nonexistent" in errors[0]

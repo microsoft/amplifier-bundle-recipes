@@ -2,6 +2,7 @@
 
 import pytest
 from amplifier_module_tool_recipes.executor import RecipeExecutor
+from amplifier_module_tool_recipes.models import Step
 
 
 class MockSessionManager:
@@ -72,7 +73,9 @@ class TestSubstituteVariables:
         assert "undefined" in str(exc_info.value).lower()
         assert "Undefined variable" in str(exc_info.value)
 
-    def test_substitute_undefined_nested_variable_raises(self, executor: RecipeExecutor):
+    def test_substitute_undefined_nested_variable_raises(
+        self, executor: RecipeExecutor
+    ):
         """Undefined nested variable should raise ValueError."""
         template = "Value: {{data.unknown}}"
         context = {"data": {"known": "value"}}
@@ -153,9 +156,6 @@ Line 3: c"""
         assert "Available variables" in error_msg
         # Should list both available variables
         assert "name" in error_msg or "greeting" in error_msg
-
-
-from amplifier_module_tool_recipes.models import Step
 
 
 class TestRetryConfigGuard:
