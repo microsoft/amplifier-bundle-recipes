@@ -75,7 +75,13 @@ def _validate_dot_path(
 
     value = recipe_context.get(prefix)
     if not isinstance(value, dict):
-        return None  # Context value isn't a dict, can't traverse deeper — skip
+        # Prefix exists in context but is not a dict — dot-access is invalid
+        next_key = parts[1] if len(parts) > 1 else "?"
+        return (
+            f"Step '{step_id}': Variable {{{{{var}}}}} — "
+            f"key '{prefix}' is not a dict "
+            f"(cannot access '{next_key}' on type {type(value).__name__})"
+        )
 
     # Traverse remaining parts
     current = value

@@ -546,6 +546,36 @@ class TestDeeperDotPathValidation:
         errors = check_variable_references(recipe)
         assert errors == []
 
+    def test_dot_access_on_non_dict_context_value(self):
+        """{{name.bar}} where name is a string → 1 error (not a dict)."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="s1", agent="a", prompt="Bad: {{name.bar}}")],
+            context={"name": "hello"},
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "name" in errors[0]
+        assert "not a dict" in errors[0]
+        assert "str" in errors[0]
+
+    def test_dot_access_on_int_context_value(self):
+        """{{count.sub}} where count is an int → 1 error (not a dict)."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="s1", agent="a", prompt="Bad: {{count.sub}}")],
+            context={"count": 42},
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "count" in errors[0]
+        assert "not a dict" in errors[0]
+        assert "int" in errors[0]
+
     def test_deeper_validation_in_command_field(self):
         """Deeper dot-path validation also works in command field."""
         recipe = Recipe(
