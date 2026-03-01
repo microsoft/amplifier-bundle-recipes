@@ -510,3 +510,17 @@ class TestParseStepRetryGuard:
         )
         assert step.id == "ok"
         assert step.retry is None
+
+    def test_parse_step_retry_bool_raises(self):
+        """_parse_step with retry as a bool (YAML `retry: true`) should raise."""
+        with pytest.raises(ValueError, match="retry must be a mapping"):
+            Recipe._parse_step(
+                {"id": "bad", "agent": "a", "prompt": "test", "retry": True}
+            )
+
+    def test_parse_step_retry_list_raises(self):
+        """_parse_step with retry as a list should raise."""
+        with pytest.raises(ValueError, match="retry must be a mapping"):
+            Recipe._parse_step(
+                {"id": "bad", "agent": "a", "prompt": "test", "retry": [1, 2]}
+            )

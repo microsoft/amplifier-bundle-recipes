@@ -547,7 +547,7 @@ class TestDeeperDotPathValidation:
         assert errors == []
 
     def test_deeper_validation_in_command_field(self):
-        """Deeper dot-path validation also works in command (bash step)."""
+        """Deeper dot-path validation also works in command field."""
         recipe = Recipe(
             name="test",
             description="test",
@@ -556,8 +556,93 @@ class TestDeeperDotPathValidation:
                 Step(
                     id="s1",
                     command="echo {{requirements.nonexistent}}",
-                    agent="bash",
-                    prompt="run it",
+                    # Note: agent + prompt still required by Step dataclass;
+                    # check_variable_references doesn't call Step.validate().
+                    agent="a",
+                    prompt="placeholder",
+                )
+            ],
+            context=self.NESTED_CONTEXT,
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "nonexistent" in errors[0]
+
+    def test_deeper_validation_in_cwd_field(self):
+        """Deeper dot-path validation also works in cwd field."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="go",
+                    command="ls",
+                    cwd="/tmp/{{requirements.nonexistent}}",
+                )
+            ],
+            context=self.NESTED_CONTEXT,
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "nonexistent" in errors[0]
+
+    def test_deeper_validation_in_env_field(self):
+        """Deeper dot-path validation also works in env field."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="go",
+                    command="echo $MY_VAR",
+                    env={"MY_VAR": "{{requirements.nonexistent}}"},
+                )
+            ],
+            context=self.NESTED_CONTEXT,
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "nonexistent" in errors[0]
+
+    def test_deeper_validation_in_step_context_field(self):
+        """Deeper dot-path validation also works in step_context field."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    recipe="sub-recipe.yaml",
+                    agent="a",
+                    prompt="run",
+                    step_context={"key": "{{requirements.nonexistent}}"},
+                )
+            ],
+            context=self.NESTED_CONTEXT,
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "nonexistent" in errors[0]
+
+    def test_deeper_validation_in_recipe_path_field(self):
+        """Deeper dot-path validation also works in recipe path field."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    recipe="{{requirements.nonexistent}}/sub.yaml",
+                    agent="a",
+                    prompt="run",
                 )
             ],
             context=self.NESTED_CONTEXT,
