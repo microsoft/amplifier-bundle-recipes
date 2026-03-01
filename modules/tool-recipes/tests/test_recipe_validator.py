@@ -680,3 +680,37 @@ class TestDeeperDotPathValidation:
         errors = check_variable_references(recipe)
         assert len(errors) == 1
         assert "nonexistent" in errors[0]
+
+    def test_loop_variable_dot_path_skipped(self):
+        """{{item.name}} inside a foreach loop → 0 errors (loop var, skip deeper)."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="Process {{item.name}}",
+                    foreach="{{tasks}}",
+                ),
+            ],
+            context={"tasks": [{"name": "a"}, {"name": "b"}]},
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_dot_access_on_list_context_value(self):
+        """{{items.0}} where items is a list → 1 error (not a dict, shows 'list')."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="s1", agent="a", prompt="Bad: {{items.0}}")],
+            context={"items": ["a", "b"]},
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "items" in errors[0]
+        assert "not a dict" in errors[0]
+        assert "list" in errors[0]

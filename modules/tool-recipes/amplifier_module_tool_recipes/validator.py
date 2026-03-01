@@ -75,12 +75,13 @@ def _validate_dot_path(
 
     value = recipe_context.get(prefix)
     if not isinstance(value, dict):
-        # Prefix exists in context but is not a dict — dot-access is invalid
-        next_key = parts[1] if len(parts) > 1 else "?"
+        # Prefix exists in context but is not a dict — dot-access is invalid.
+        # parts[1] is always safe: this function is only called for dot-paths
+        # (caller checks "." in var), so len(parts) >= 2.
         return (
             f"Step '{step_id}': Variable {{{{{var}}}}} — "
             f"key '{prefix}' is not a dict "
-            f"(cannot access '{next_key}' on type {type(value).__name__})"
+            f"(cannot access '{parts[1]}' on type {type(value).__name__})"
         )
 
     # Traverse remaining parts
@@ -141,7 +142,9 @@ def _check_var_ref(
         if prefix in reserved:
             return None
 
-        # Step outputs — runtime-only, can't validate nested keys
+        # Step outputs — runtime-only, can't validate nested keys.
+        # (Must come after the reserved check above; a context key that
+        #  shadows a reserved name is already handled.)
         if prefix in available and prefix not in recipe_context:
             return None
 
