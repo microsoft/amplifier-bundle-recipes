@@ -865,21 +865,34 @@ steps:
 
 #### `provider_preferences` (optional, agent steps only)
 
-**Type:** list of `{provider, model}` objects
-**Purpose:** Specify an ordered list of provider/model preferences with automatic fallback.
+**Type:** list of `{class}` or `{provider, model}` objects
+**Purpose:** Specify an ordered list of model class and/or provider/model preferences with automatic fallback.
 
 **How it works:**
-- The system tries each provider in order until one is available
-- First available provider is promoted to priority 0 (highest) for this step
-- If no providers in the list are available, falls back to session default
-- Each entry can include a model glob pattern that gets resolved
+- The system tries each entry in order until one is available
+- **Class entries** (`class: reasoning`) resolve to the best available model matching that capability class
+- **Provider entries** (`provider: anthropic, model: ...`) try a specific provider/model combination
+- First available match is promoted to priority 0 (highest) for this step
+- If no entries in the list are available, falls back to session default
+- Each provider entry can include a model glob pattern that gets resolved
 
 **This is the preferred approach** for production recipes that need resilience across different provider configurations.
 
 **Example:**
 ```yaml
-# Fallback chain: try Anthropic first, then OpenAI, then Azure
+# Class-based with explicit fallbacks
 - id: "analyze"
+  agent: "foundation:zen-architect"
+  provider_preferences:
+    - class: reasoning               # Try best reasoning model first
+    - provider: anthropic             # Explicit fallback chain
+      model: claude-sonnet-*
+    - provider: openai
+      model: gpt-4o
+  prompt: "Analyze the architecture"
+
+# Provider-only fallback chain (legacy style, still supported)
+- id: "analyze-legacy"
   agent: "foundation:zen-architect"
   provider_preferences:
     - provider: anthropic
@@ -891,49 +904,63 @@ steps:
   prompt: "Analyze the architecture"
 ```
 
-**Entry fields:**
+**Entry types:**
+
+Class entry (provider-agnostic):
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `class` | string | Yes | Model class: `"reasoning"`, `"fast"`, `"vision"`, `"research"` |
+
+Provider entry (explicit):
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `provider` | string | Yes | Provider ID (e.g., "anthropic", "openai") |
 | `model` | string | No | Model name or glob pattern (e.g., "claude-haiku-*") |
 
-**When to use `provider_preferences` vs `provider`/`model`:**
+**Available model classes:**
+
+| Class | Matches Models With | Typical Use |
+|-------|---------------------|-------------|
+| `reasoning` | `reasoning` or `thinking` capability | Architecture, security, complex analysis |
+| `fast` | `fast` capability | File ops, classification, simple tasks |
+| `vision` | `vision` capability | Image analysis |
+| `research` | `deep_research` capability | Research tasks |
+
+**When to use which approach:**
 
 | Use Case | Recommended Approach |
 |----------|---------------------|
+| Provider-agnostic, portable recipes | `class:` entries |
+| Multi-provider fallback | `class:` + `provider` entries |
+| Pinned to specific model version | `provider` + `model` entries |
 | Single provider, simple use | `provider` + `model` (legacy) |
-| Multi-provider fallback | `provider_preferences` |
-| Production recipes | `provider_preferences` |
-| CI/CD pipelines | `provider_preferences` |
 
 **Validation:**
 - Cannot be used together with `provider` or `model` fields (mutual exclusivity)
 - Only valid for agent steps (`type: "agent"` or default)
 - List cannot be empty
-- Each entry must have a `provider` field
+- Each entry must have either a `class` key or a `provider` key
 
 **Examples with different fallback strategies:**
 
 ```yaml
-# Cost optimization: try cheap models first
+# Class-based: best reasoning model from any provider
+- id: "complex-design"
+  agent: "foundation:zen-architect"
+  provider_preferences:
+    - class: reasoning
+  prompt: "Design a complex distributed system"
+
+# Class-based with fallback: fast model preferred, explicit backup
 - id: "quick-check"
   agent: "foundation:explorer"
   provider_preferences:
+    - class: fast
     - provider: anthropic
       model: claude-haiku-*
     - provider: openai
       model: gpt-4o-mini
   prompt: "Quick survey of the codebase"
-
-# Quality optimization: prefer best reasoning models
-- id: "complex-design"
-  agent: "foundation:zen-architect"
-  provider_preferences:
-    - provider: anthropic
-      model: claude-opus-*
-    - provider: openai
-      model: gpt-4o
-  prompt: "Design a complex distributed system"
 
 # Provider-only fallback (use each provider's default model)
 - id: "flexible-task"

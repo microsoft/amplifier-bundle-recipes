@@ -194,23 +194,42 @@ class ProviderPreferenceConfig:
     Used in provider_preferences list to specify fallback order.
     The system tries each provider in order until one is available.
 
+    Supports two modes:
+    - Explicit provider/model: specify provider and optional model pattern
+    - Class-based: specify class_name for class-based routing
+
     Example YAML:
         provider_preferences:
           - provider: anthropic
             model: claude-haiku-*
-          - provider: openai
-            model: gpt-4o-mini
+          - class: fast
+          - class: premium
+            required: true
     """
 
-    provider: str  # Provider ID (e.g., "anthropic", "openai")
+    provider: str = ""  # Provider ID (e.g., "anthropic", "openai")
     model: str = ""  # Model name or glob pattern (e.g., "claude-haiku-*")
+    class_name: str = ""  # Model class (e.g., "fast", "premium", "balanced")
+    required: bool = False  # If True, class is mandatory (no fallback)
 
     def validate(self) -> list[str]:
         """Validate preference configuration."""
         errors = []
-        if not self.provider:
+        has_provider = bool(self.provider)
+        has_class = bool(self.class_name)
+
+        if not has_provider and not has_class:
             errors.append(
-                "provider_preferences entry missing required 'provider' field"
+                "provider_preferences entry must have either 'provider' or 'class' field"
+            )
+        elif has_provider and has_class:
+            errors.append(
+                "provider_preferences entry cannot have both 'provider' and 'class' - "
+                "they are mutually exclusive"
+            )
+        elif has_class and self.model:
+            errors.append(
+                "provider_preferences entry with 'class' cannot specify 'model'"
             )
         return errors
 
@@ -628,10 +647,17 @@ class Recipe:
         if "provider_preferences" in step_data_copy:
             prefs_data = step_data_copy["provider_preferences"]
             if isinstance(prefs_data, list):
-                step_data_copy["provider_preferences"] = [
-                    ProviderPreferenceConfig(**p) if isinstance(p, dict) else p
-                    for p in prefs_data
-                ]
+                parsed_prefs = []
+                for p in prefs_data:
+                    if isinstance(p, dict):
+                        # Remap 'class' (Python keyword) to 'class_name' field
+                        if "class" in p:
+                            p = dict(p)  # copy to avoid mutating original
+                            p["class_name"] = p.pop("class")
+                        parsed_prefs.append(ProviderPreferenceConfig(**p))
+                    else:
+                        parsed_prefs.append(p)
+                step_data_copy["provider_preferences"] = parsed_prefs
 
         # Validate retry field type (must be dict if present)
         retry = step_data_copy.get("retry")

@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
+from amplifier_foundation import ClassPreference
 from amplifier_foundation import ProviderPreference
 from amplifier_foundation import resolve_model_pattern
 from .models import BackoffConfig
@@ -1455,18 +1456,26 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             # New: Use explicit provider_preferences list with fallback order
             provider_preferences = []
             for pref in step.provider_preferences:
-                # Resolve model pattern if it's a glob
-                resolved_model = pref.model
-                if pref.model:
-                    model_resolution = await resolve_model_pattern(
-                        model_hint=pref.model,
-                        provider_name=pref.provider,
-                        coordinator=self.coordinator,
+                if pref.class_name:
+                    # Class-based preference: construct ClassPreference
+                    provider_preferences.append(
+                        ClassPreference(
+                            class_name=pref.class_name, required=pref.required
+                        )
                     )
-                    resolved_model = model_resolution.resolved_model
-                provider_preferences.append(
-                    ProviderPreference(provider=pref.provider, model=resolved_model)
-                )
+                else:
+                    # Explicit provider/model preference
+                    resolved_model = pref.model
+                    if pref.model:
+                        model_resolution = await resolve_model_pattern(
+                            model_hint=pref.model,
+                            provider_name=pref.provider,
+                            coordinator=self.coordinator,
+                        )
+                        resolved_model = model_resolution.resolved_model
+                    provider_preferences.append(
+                        ProviderPreference(provider=pref.provider, model=resolved_model)
+                    )
         elif step.provider and step.model:
             # Legacy: Single provider + model fields
             resolved_model = step.model
