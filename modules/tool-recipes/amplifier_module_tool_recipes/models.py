@@ -194,42 +194,24 @@ class ProviderPreferenceConfig:
     Used in provider_preferences list to specify fallback order.
     The system tries each provider in order until one is available.
 
-    Supports two modes:
-    - Explicit provider/model: specify provider and optional model pattern
-    - Class-based: specify class_name for class-based routing
+    Specify provider and optional model pattern for each preference.
 
     Example YAML:
         provider_preferences:
           - provider: anthropic
             model: claude-haiku-*
-          - class: fast
-          - class: premium
-            required: true
+          - provider: openai
     """
 
     provider: str = ""  # Provider ID (e.g., "anthropic", "openai")
     model: str = ""  # Model name or glob pattern (e.g., "claude-haiku-*")
-    class_name: str = ""  # Model class (e.g., "fast", "premium", "balanced")
-    required: bool = False  # If True, class is mandatory (no fallback)
 
     def validate(self) -> list[str]:
         """Validate preference configuration."""
         errors = []
-        has_provider = bool(self.provider)
-        has_class = bool(self.class_name)
-
-        if not has_provider and not has_class:
+        if not self.provider:
             errors.append(
-                "provider_preferences entry must have either 'provider' or 'class' field"
-            )
-        elif has_provider and has_class:
-            errors.append(
-                "provider_preferences entry cannot have both 'provider' and 'class' - "
-                "they are mutually exclusive"
-            )
-        elif has_class and self.model:
-            errors.append(
-                "provider_preferences entry with 'class' cannot specify 'model'"
+                "provider_preferences entry must have 'provider' field"
             )
         return errors
 
@@ -650,10 +632,6 @@ class Recipe:
                 parsed_prefs = []
                 for p in prefs_data:
                     if isinstance(p, dict):
-                        # Remap 'class' (Python keyword) to 'class_name' field
-                        if "class" in p:
-                            p = dict(p)  # copy to avoid mutating original
-                            p["class_name"] = p.pop("class")
                         parsed_prefs.append(ProviderPreferenceConfig(**p))
                     else:
                         parsed_prefs.append(p)
