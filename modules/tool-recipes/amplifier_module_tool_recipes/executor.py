@@ -255,7 +255,11 @@ class RecipeExecutor:
         event_data: dict[str, Any] | None = None,
     ) -> None:
         """
-        Show progress message to user via display system.
+        Show progress message to user and emit structured hook events.
+
+        Displays a text message via the coordinator's display system (for CLI/terminal)
+        and, when event_name and event_data are provided, emits a structured hook event
+        (for UI integration and hooks-logging).
 
         Args:
             message: Progress message to display
@@ -1440,9 +1444,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     resolved = await resolve_model_role(roles, matrix, providers)
                     if resolved:
                         provider_preferences = [
-                            ProviderPreference(
-                                provider=r["provider"], model=r["model"]
-                            )
+                            ProviderPreference(provider=r["provider"], model=r["model"])
                             for r in resolved
                         ]
                 except ImportError:
