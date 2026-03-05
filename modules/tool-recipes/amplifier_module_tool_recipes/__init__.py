@@ -193,7 +193,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
 
     # Declare observable lifecycle events for this module
     # (hooks-logging will auto-discover and log these)
-    obs_events = coordinator.get_capability("observability.events") or []
+    obs_events = list(coordinator.get_capability("observability.events") or [])
     obs_events.extend(
         [
             "recipe:start",
