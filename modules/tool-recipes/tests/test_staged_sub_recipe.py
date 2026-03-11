@@ -678,3 +678,117 @@ class TestApprovalForwarding:
             assert all("pending_child_approval" not in c[0][2] for c in parent_saves), (
                 "pending_child_approval not cleared from parent state"
             )
+
+
+# =============================================================================
+# _approve_stage / _deny_stage Forwarding Wiring Tests
+# =============================================================================
+
+
+class TestApproveStageForwardsToChild:
+    """Tests that _approve_stage and _deny_stage wire into the forwarding helpers."""
+
+    @pytest.mark.asyncio
+    async def test_approve_stage_calls_forward_approval_when_pending_child_approval(
+        self,
+    ):
+        """When _approve_stage is called on a session with pending_child_approval,
+        _forward_approval is called with correct session_id, project_path, and message.
+        """
+        import tempfile
+        from unittest.mock import patch
+
+        tool = _make_recipes_tool()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            # Mock _get_working_dir to return tmp_path
+            tool.coordinator.get_capability.return_value = str(tmp_path)
+
+            # Session exists
+            tool.session_manager.session_exists.return_value = True
+
+            # Pending approval exists for "planning" stage
+            tool.session_manager.get_pending_approval.return_value = {
+                "stage_name": "planning",
+                "approval_prompt": "Approve?",
+            }
+
+            # State includes pending_child_approval
+            tool.session_manager.load_state.return_value = {
+                "session_id": "parent-session",
+                "_approval_message": "",
+                "pending_child_approval": {
+                    "child_session_id": "child-session",
+                    "child_stage_name": "review",
+                    "parent_step_id": "call-sub",
+                },
+            }
+
+            with patch.object(tool, "_forward_approval") as mock_forward:
+                result = await tool._approve_stage(
+                    {
+                        "session_id": "parent-session",
+                        "stage_name": "planning",
+                        "message": "go ahead",
+                    }
+                )
+
+            assert result.success is True
+            mock_forward.assert_called_once_with(
+                session_id="parent-session",
+                project_path=tmp_path,
+                message="go ahead",
+            )
+
+    @pytest.mark.asyncio
+    async def test_deny_stage_calls_forward_denial_when_pending_child_approval(self):
+        """When _deny_stage is called on a session with pending_child_approval,
+        _forward_denial is called with correct session_id, project_path, and reason.
+        """
+        import tempfile
+        from unittest.mock import patch
+
+        tool = _make_recipes_tool()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            # Mock _get_working_dir to return tmp_path
+            tool.coordinator.get_capability.return_value = str(tmp_path)
+
+            # Session exists
+            tool.session_manager.session_exists.return_value = True
+
+            # Pending approval exists for "planning" stage
+            tool.session_manager.get_pending_approval.return_value = {
+                "stage_name": "planning",
+                "approval_prompt": "Approve?",
+            }
+
+            # State includes pending_child_approval
+            tool.session_manager.load_state.return_value = {
+                "session_id": "parent-session",
+                "pending_child_approval": {
+                    "child_session_id": "child-session",
+                    "child_stage_name": "review",
+                    "parent_step_id": "call-sub",
+                },
+            }
+
+            with patch.object(tool, "_forward_denial") as mock_forward:
+                result = await tool._deny_stage(
+                    {
+                        "session_id": "parent-session",
+                        "stage_name": "planning",
+                        "reason": "No thanks",
+                    }
+                )
+
+            assert result.success is True
+            mock_forward.assert_called_once_with(
+                session_id="parent-session",
+                project_path=tmp_path,
+                reason="No thanks",
+            )

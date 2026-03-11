@@ -709,6 +709,14 @@ Example:
             state["_approval_message"] = message
             self.session_manager.save_state(session_id, project_path, state)
 
+            # Forward approval to child session if one is pending
+            if state.get("pending_child_approval"):
+                self._forward_approval(
+                    session_id=session_id,
+                    project_path=project_path,
+                    message=message,
+                )
+
             return ToolResult(
                 success=True,
                 output={
@@ -776,6 +784,15 @@ Example:
                 status=ApprovalStatus.DENIED,
                 reason=reason,
             )
+
+            # Forward denial to child session if one is pending
+            state = self.session_manager.load_state(session_id, project_path)
+            if state.get("pending_child_approval"):
+                self._forward_denial(
+                    session_id=session_id,
+                    project_path=project_path,
+                    reason=reason,
+                )
 
             # Clear the pending approval
             self.session_manager.clear_pending_approval(session_id, project_path)
