@@ -299,6 +299,10 @@ def check_variable_references(recipe: Recipe) -> list[str]:
         if step.collect:
             available.add(step.collect)
 
+        # Add output_exit_code variable to available variables for next steps (bash)
+        if step.output_exit_code:
+            available.add(step.output_exit_code)
+
     return errors
 
 

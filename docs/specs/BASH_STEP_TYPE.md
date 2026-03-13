@@ -577,7 +577,7 @@ stdin: "y\n"  # Provide stdin input
 
 ## Open Questions
 
-1. **Should `output_exit_code` be added?** - Allow steps to access exit code in subsequent conditions
+1. ~~**Should `output_exit_code` be added?**~~ — **Resolved.** Implemented in commit `02368ad` (2025-12-29). The `output_exit_code` field stores the command's exit code as a string variable for use in subsequent step conditions. Fully documented in `RECIPE_SCHEMA.md`.
 2. **Parallel execution limits?** - Should `parallel: true` have a max concurrency setting?
 3. **Shell detection?** - Auto-detect available shell on Windows vs Unix?
 

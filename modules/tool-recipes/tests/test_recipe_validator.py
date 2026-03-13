@@ -175,6 +175,52 @@ class TestCheckVariableReferences:
         errors = check_variable_references(recipe)
         assert len(errors) == 0  # Should be valid
 
+    def test_output_exit_code_available_to_later_steps(self):
+        """output_exit_code from bash step should be available to later steps.
+
+        Regression test: validator was not accumulating output_exit_code into the
+        set of available variables, causing false-positive 'variable not defined'
+        errors when a subsequent step referenced the exit-code variable.
+        """
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="s1",
+                    type="bash",
+                    command="some-command",
+                    output_exit_code="check_code",
+                    on_error="continue",
+                ),
+                Step(id="s2", agent="a", prompt="Exit code was {{check_code}}"),
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert errors == []
+
+    def test_output_exit_code_not_available_to_earlier_steps(self):
+        """output_exit_code should NOT be available to steps before the bash step."""
+        recipe = Recipe(
+            name="test",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(id="s1", agent="a", prompt="Too early {{check_code}}"),
+                Step(
+                    id="s2",
+                    type="bash",
+                    command="some-command",
+                    output_exit_code="check_code",
+                    on_error="continue",
+                ),
+            ],
+        )
+        errors = check_variable_references(recipe)
+        assert len(errors) == 1
+        assert "check_code" in errors[0]
+
     def test_nested_reference_in_recipe_path_with_known_namespace(self):
         """Nested field references in recipe paths should work with known namespaces."""
         recipe = Recipe(
