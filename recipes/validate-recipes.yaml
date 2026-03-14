@@ -712,3 +712,315 @@ steps:
     output: "structural_results"
     parse_json: true
     timeout: 120
+
+  # ============================================================================
+  # PHASE 3: Best Practices Check
+  # Runs parallel with structural-validation (both depend on recipe-discovery).
+  # Checks naming conventions, error handling, timeouts, prompts, and versioning.
+  # Severity: WARNING (actionable issues) or SUGGESTION (style improvements).
+  # ============================================================================
+
+  - id: "best-practices-check"
+    type: "bash"
+    depends_on: ["recipe-discovery"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      import sys
+      from pathlib import Path
+
+      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      recipe_discovery = json.loads(_recipe_discovery_raw)
+
+
+      def check_best_practices(recipe_info):
+          """Check best practices for a single recipe. Returns list of findings."""
+          findings = []
+          path = recipe_info.get("path", "")
+
+          # Skip recipes with parse errors — nothing to check
+          if recipe_info.get("parse_error"):
+              return findings
+
+          # Fresh parse for detailed analysis
+          try:
+              import yaml
+              data = yaml.safe_load(Path(path).read_text())
+          except Exception:
+              return findings
+
+          if not isinstance(data, dict):
+              return findings
+
+          name = str(data.get("name") or "")
+          description = str(data.get("description") or "").strip()
+          version = str(data.get("version") or "")
+          tags = data.get("tags")
+
+          # Collect all steps (including steps nested inside stages)
+          steps = data.get("steps") or []
+          stages = data.get("stages") or []
+          all_steps = list(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  all_steps.extend(stage.get("steps") or [])
+
+          # ── Naming & Documentation ────────────────────────────────────────────
+
+          # Name not all-lowercase
+          if name and name != name.lower():
+              findings.append({
+                  "code": "NAME_NOT_LOWERCASE",
+                  "severity": "SUGGESTION",
+                  "message": f"Recipe name '{name}' is not all lowercase",
+                  "detail": name,
+              })
+
+          # Name uses underscores (prefer hyphens)
+          if name and "_" in name:
+              findings.append({
+                  "code": "NAME_USES_UNDERSCORES",
+                  "severity": "SUGGESTION",
+                  "message": f"Recipe name '{name}' uses underscores — prefer hyphens",
+                  "detail": name,
+              })
+
+          # Short description (< 50 chars)
+          if len(description) < 50:
+              findings.append({
+                  "code": "SHORT_DESCRIPTION",
+                  "severity": "SUGGESTION",
+                  "message": (
+                      f"Description is very short ({len(description)} chars)"
+                      " — aim for 50+ chars"
+                  ),
+                  "detail": description,
+              })
+
+          # No tags
+          if not tags:
+              findings.append({
+                  "code": "NO_TAGS",
+                  "severity": "SUGGESTION",
+                  "message": "Recipe has no tags — add tags for discoverability",
+                  "detail": "",
+              })
+
+          # Context variables not snake_case (no hyphens, lowercase+digits+underscores)
+          context = data.get("context")
+          if isinstance(context, dict):
+              for var_name in context.keys():
+                  var_str = str(var_name)
+                  if "-" in var_str or not re.match(r'^[a-z][a-z0-9_]*$', var_str):
+                      findings.append({
+                          "code": "CONTEXT_NOT_SNAKE_CASE",
+                          "severity": "SUGGESTION",
+                          "message": (
+                              f"Context variable '{var_name}' is not snake_case"
+                              " — use lowercase_with_underscores"
+                          ),
+                          "detail": var_str,
+                      })
+
+          # ── Step Design ───────────────────────────────────────────────────────
+
+          # Too many steps (> 15)
+          if len(all_steps) > 15:
+              findings.append({
+                  "code": "TOO_MANY_STEPS",
+                  "severity": "WARNING",
+                  "message": (
+                      f"Recipe has {len(all_steps)} steps"
+                      " — consider splitting into sub-recipes (>15 is complex)"
+                  ),
+                  "detail": str(len(all_steps)),
+              })
+
+          # Generic step IDs matching ^step\d+$
+          for step in all_steps:
+              if isinstance(step, dict):
+                  step_id = str(step.get("id") or "")
+                  if re.match(r'^step\d+$', step_id):
+                      findings.append({
+                          "code": "GENERIC_STEP_ID",
+                          "severity": "SUGGESTION",
+                          "message": (
+                              f"Step ID '{step_id}' is generic"
+                              " — use descriptive names that convey intent"
+                          ),
+                          "detail": step_id,
+                      })
+
+          # ── Error Handling & Resilience ────────────────────────────────────────
+
+          # > 3 steps with no explicit timeout
+          no_timeout_steps = [
+              s for s in all_steps
+              if isinstance(s, dict) and "timeout" not in s
+          ]
+          if len(no_timeout_steps) > 3:
+              findings.append({
+                  "code": "NO_TIMEOUTS",
+                  "severity": "WARNING",
+                  "message": (
+                      f"{len(no_timeout_steps)} steps have no explicit timeout"
+                      " — add timeouts to prevent runaway steps"
+                  ),
+                  "detail": str(len(no_timeout_steps)),
+              })
+
+          # > 3 steps with no on_error handler
+          no_error_handler_steps = [
+              s for s in all_steps
+              if isinstance(s, dict) and "on_error" not in s
+          ]
+          if len(no_error_handler_steps) > 3:
+              findings.append({
+                  "code": "NO_ERROR_HANDLING",
+                  "severity": "WARNING",
+                  "message": (
+                      f"{len(no_error_handler_steps)} steps have no on_error handler"
+                      " — add on_error to control failure behavior"
+                  ),
+                  "detail": str(len(no_error_handler_steps)),
+              })
+
+          # Unconditional consumption of output from on_error: continue step
+          # Build map: output_name -> producing step ID (for steps with on_error: continue)
+          continue_outputs = {}  # output_name -> producer step_id
+          for step in all_steps:
+              if isinstance(step, dict):
+                  if step.get("on_error") == "continue":
+                      output_name = step.get("output")
+                      if output_name:
+                          continue_outputs[output_name] = step.get("id", "")
+
+          if continue_outputs:
+              for step in all_steps:
+                  if not isinstance(step, dict):
+                      continue
+                  step_id = step.get("id", "(unknown)")
+                  step_condition = str(step.get("condition") or "")
+                  for output_name, source_step_id in continue_outputs.items():
+                      if step_id == source_step_id:
+                          continue  # Skip the producer itself
+                      # Check if step text references this output
+                      step_text = (
+                          str(step.get("prompt") or "")
+                          + str(step.get("command") or "")
+                      )
+                      if "{{" + output_name + "}}" in step_text:
+                          if not step_condition:
+                              findings.append({
+                                  "code": "UNCONDITIONAL_CONTINUE_OUTPUT",
+                                  "severity": "WARNING",
+                                  "message": (
+                                      f"Step '{step_id}' unconditionally consumes"
+                                      f" output '{output_name}' from step"
+                                      f" '{source_step_id}' (on_error: continue)"
+                                      " — add a condition guard"
+                                  ),
+                                  "detail": output_name,
+                              })
+
+          # ── Prompt Design ─────────────────────────────────────────────────────
+
+          for step in all_steps:
+              if not isinstance(step, dict):
+                  continue
+              step_id = step.get("id", "(unknown)")
+              step_type = step.get("type", "agent")
+
+              # Short prompt for agent steps (< 30 chars)
+              is_agent_step = step_type == "agent" or (
+                  step_type not in ("bash", "recipe") and "prompt" in step
+              )
+              if is_agent_step:
+                  prompt = str(step.get("prompt") or "")
+                  if prompt and len(prompt.strip()) < 30:
+                      findings.append({
+                          "code": "SHORT_PROMPT",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': prompt is very short"
+                              f" ({len(prompt.strip())} chars) — aim for 30+ chars"
+                          ),
+                          "detail": step_id,
+                      })
+
+              # Bash step without 'set -euo pipefail' and not using python3
+              if step_type == "bash":
+                  command = str(step.get("command") or "")
+                  uses_python = "python3" in command or "python " in command
+                  has_strict = "set -euo pipefail" in command
+                  if not has_strict and not uses_python:
+                      findings.append({
+                          "code": "NO_BASH_STRICT",
+                          "severity": "SUGGESTION",
+                          "message": (
+                              f"Step '{step_id}': bash step without 'set -euo pipefail'"
+                              " — add for safer shell error handling"
+                          ),
+                          "detail": step_id,
+                      })
+
+          # ── Versioning ─────────────────────────────────────────────────────────
+
+          if version == "0.0.0":
+              findings.append({
+                  "code": "VERSION_PLACEHOLDER",
+                  "severity": "WARNING",
+                  "message": "Version '0.0.0' is a placeholder — use a real version",
+                  "detail": version,
+              })
+
+          return findings
+
+
+      # Process all recipes from discovery
+      results = []
+      for recipe_info in recipe_discovery.get("recipes", []):
+          path = recipe_info.get("path", "")
+          findings = check_best_practices(recipe_info)
+          warning_count = sum(1 for f in findings if f["severity"] == "WARNING")
+          suggestion_count = sum(1 for f in findings if f["severity"] == "SUGGESTION")
+          results.append({
+              "path": path,
+              "relative_path": recipe_info.get("relative_path", ""),
+              "name": recipe_info.get("name"),
+              "findings": findings,
+              "warning_count": warning_count,
+              "suggestion_count": suggestion_count,
+          })
+
+      # Build summary
+      total = len(results)
+      clean = sum(
+          1 for r in results
+          if r["warning_count"] == 0 and r["suggestion_count"] == 0
+      )
+      with_warnings = sum(1 for r in results if r["warning_count"] > 0)
+      with_suggestions = sum(1 for r in results if r["suggestion_count"] > 0)
+      total_warnings = sum(r["warning_count"] for r in results)
+      total_suggestions = sum(r["suggestion_count"] for r in results)
+
+      output = {
+          "phase": "best_practices",
+          "results": results,
+          "summary": {
+              "total": total,
+              "clean": clean,
+              "with_warnings": with_warnings,
+              "with_suggestions": with_suggestions,
+              "total_warnings": total_warnings,
+              "total_suggestions": total_suggestions,
+          },
+      }
+
+      print(json.dumps(output))
+      EOF
+    output: "practice_results"
+    parse_json: true
+    timeout: 60

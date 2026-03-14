@@ -37,6 +37,7 @@ steps:
   - id: "generate-report"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
+    condition: "{{analysis_result}}"
     prompt: |
       Based on this analysis result: {{analysis_result}}
 

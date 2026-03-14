@@ -5,7 +5,7 @@ name: "warnings_test_recipe"   # warning: underscores in name (prefer hyphens)
 description: "Short desc"      # warning: very short description
 version: "0.0.0"               # warning: placeholder version
 author: "Test Author"
-tags: ["testing", "warnings"]
+# no tags: warning: missing tags
 
 context:
   InputData: ""      # warning: not snake_case (should be input_data)
