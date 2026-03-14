@@ -1,0 +1,1671 @@
+# validate-recipes.yaml
+# Recipe Validator v1.0.0
+# Validates recipe YAML files in a bundle repository for structural correctness,
+# best practices, and semantic consistency.
+#
+# CHANGELOG:
+# v1.0.0 - Initial release
+#        - Phase 0: Environment check (engine availability detection)
+#        - Phase 1: Recipe discovery (recursive scan + filter)
+#        - Phase 2: Structural validation (engine + gap coverage)
+#        - Phase 3: Best practices check (naming, timeouts, error handling, prompts, versioning)
+#        - Phase 4: Semantic validation (agent refs, sub-recipes, variable flow, loops, conditions)
+#        - Phase 5: Quality classification (deterministic scoring)
+#        - Phase 6: Report synthesis (bash quick-pass or LLM)
+#
+# Usage:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=recipes:recipes/validate-recipes.yaml \
+#     context='{"repo_path": "/path/to/bundle-repo"}'
+#
+# With custom recipes directory:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=recipes:recipes/validate-recipes.yaml \
+#     context='{"repo_path": "/path/to/repo", "recipes_dir": "my-recipes"}'
+#
+# QUALITY LEVELS:
+# - good: Clean bill of health — no issues at all
+# - polish: Only SUGGESTIONs — missing tags, short prompts, naming conventions
+# - needs_work: WARNINGs present — missing timeouts, condition issues, convergence concerns
+# - critical: ERRORs present — YAML parse failures, missing required fields, broken references
+
+name: validate-recipes
+description: |
+  Validates Amplifier recipe YAML files in a bundle repository against:
+
+  - **Structural Correctness** (ERROR): Valid YAML, required fields, step schema, type constraints
+  - **Best Practices** (WARNING/SUGGESTION): Naming conventions, error handling, timeouts, prompts, versioning
+  - **Semantic Consistency** (ERROR/WARNING): Agent references, sub-recipe paths, variable flow, loop convergence
+
+  Produces a validation report with findings categorized by severity and actionable remediation.
+
+  **Features:**
+  - Graceful degradation when recipe engine not installed (structural_only mode)
+  - Per-recipe isolation — one broken recipe doesn't block validation of others
+  - Deterministic quality classification with explicit PASS thresholds
+  - Quick-approval path for clean repos (no unnecessary LLM analysis)
+  - Configurable recipes directory and known agent patterns
+version: "1.0.0"
+author: "Amplifier Recipes Collection"
+tags: ["recipes", "validation", "quality", "audit", "structure", "best-practices"]
+
+context:
+  repo_path: ""              # Required: path to bundle repository
+  recipes_dir: "recipes"     # Optional: subdirectory containing recipes (default: "recipes")
+  known_agents: ""           # Optional: JSON list of known external namespace:agent patterns
+                             # e.g., '["foundation:*", "recipes:*", "superpowers:*"]'
+
+steps:
+  # ============================================================================
+  # PHASE 0: Environment Check
+  # Detect whether recipe engine validation models are available
+  # Sets validation_mode: "full" or "structural_only"
+  # ============================================================================
+
+  - id: "environment-check"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      results = {
+          "phase": "environment",
+          "python_version": sys.version.split()[0],
+          "engine_available": False,
+          "yaml_available": False,
+          "repo_path": "{{repo_path}}",
+          "repo_exists": False,
+          "validation_mode": "structural_only",
+          "errors": []
+      }
+
+      # Check 1: PyYAML availability
+      try:
+          import yaml
+          results["yaml_available"] = True
+      except ImportError:
+          results["errors"].append({
+              "type": "import_error",
+              "message": "PyYAML not available — required for recipe parsing",
+              "suggestion": "pip install pyyaml"
+          })
+
+      # Check 2: Recipe engine availability (enables full validation)
+      try:
+          from amplifier_module_tool_recipes.models import Recipe
+          from amplifier_module_tool_recipes.validator import validate_recipe
+          results["engine_available"] = True
+      except ImportError:
+          pass  # Not an error — we degrade gracefully
+
+      # Check 3: Repository path exists
+      repo_path = Path("{{repo_path}}").expanduser().resolve()
+      if repo_path.exists() and repo_path.is_dir():
+          results["repo_exists"] = True
+          results["repo_path_resolved"] = str(repo_path)
+      else:
+          results["errors"].append({
+              "type": "path_error",
+              "message": f"Repository path does not exist or is not a directory: {{repo_path}}"
+          })
+
+      # Determine validation mode
+      if results["engine_available"] and results["yaml_available"]:
+          results["validation_mode"] = "full"
+          results["mode_description"] = "Full validation: engine models + gap coverage + best practices + semantics"
+      elif results["yaml_available"]:
+          results["validation_mode"] = "structural_only"
+          results["mode_description"] = "Structural only: raw YAML parsing without engine model validation"
+      else:
+          results["validation_mode"] = "minimal"
+          results["mode_description"] = "Minimal: cannot parse YAML — only file-level checks possible"
+          results["errors"].append({
+              "type": "degraded_mode",
+              "message": "Neither PyYAML nor recipe engine available — validation severely limited"
+          })
+
+      print(json.dumps(results))
+      EOF
+    output: "env_check"
+    parse_json: true
+    timeout: 30
+
+  # ============================================================================
+  # PHASE 1: Recipe Discovery
+  # Recursively scan recipes_dir and examples/ for YAML recipe files.
+  # Filters test fixtures, captures parse errors, classifies sub-recipes.
+  # ============================================================================
+
+  - id: "recipe-discovery"
+    type: "bash"
+    depends_on: ["environment-check"]
+    command: |
+      python3 << 'EOF'
+      import json
+      from pathlib import Path
+
+      def _process_yaml_file(yaml_path, base, results, sub_recipe_refs):
+          """Process a single YAML file — categorize as recipe, non-recipe, or parse error."""
+          import yaml
+
+          rel = str(yaml_path.relative_to(base)).replace("\\", "/")
+          rel_check = "/" + rel
+
+          # Skip test fixtures
+          if "/tests/" in rel_check or "/test_" in rel_check:
+              return
+
+          file_size = yaml_path.stat().st_size
+
+          # Attempt YAML parse
+          data = None
+          parse_error_msg = None
+          try:
+              data = yaml.safe_load(yaml_path.read_text())
+          except Exception as exc:
+              parse_error_msg = str(exc)
+              results["parse_errors"].append({
+                  "path": str(yaml_path),
+                  "relative_path": rel,
+                  "error": parse_error_msg,
+              })
+
+          # If parse failed, record as recipe with parse_error=True and return
+          if parse_error_msg is not None:
+              results["recipes"].append({
+                  "path": str(yaml_path),
+                  "relative_path": rel,
+                  "filename": yaml_path.name,
+                  "name": None,
+                  "version": None,
+                  "description": None,
+                  "size_bytes": file_size,
+                  "step_count": 0,
+                  "is_staged": False,
+                  "has_context": False,
+                  "has_tags": False,
+                  "parse_error": True,
+                  "is_sub_recipe": False,
+              })
+              return
+
+          # Non-dict or missing required keys → not a recipe
+          if not isinstance(data, dict):
+              results["non_recipe_yaml"].append({
+                  "path": str(yaml_path),
+                  "relative_path": rel,
+              })
+              return
+
+          has_name = bool(data.get("name"))
+          has_steps_or_stages = ("steps" in data) or ("stages" in data)
+
+          if not (has_name and has_steps_or_stages):
+              results["non_recipe_yaml"].append({
+                  "path": str(yaml_path),
+                  "relative_path": rel,
+              })
+              return
+
+          # It's a recipe — collect info
+          steps = data.get("steps") or []
+          stages = data.get("stages") or []
+          is_staged = bool(stages)
+
+          # Count all steps (including steps nested inside stages)
+          step_count = len(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  step_count += len(stage.get("steps") or [])
+
+          # Collect sub-recipe references from type='recipe' steps
+          all_steps = list(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  all_steps.extend(stage.get("steps") or [])
+
+          for step in all_steps:
+              if isinstance(step, dict) and step.get("type") == "recipe":
+                  for field in ("recipe_path", "recipe", "path", "recipe_file"):
+                      ref = step.get(field)
+                      if ref:
+                          sub_recipe_refs.add(str(ref))
+                          break
+
+          version_val = data.get("version")
+          recipe_info = {
+              "path": str(yaml_path),
+              "relative_path": rel,
+              "filename": yaml_path.name,
+              "name": data.get("name"),
+              "version": str(version_val) if version_val is not None else None,
+              "description": str(data.get("description", "") or "")[:200] or None,
+              "size_bytes": file_size,
+              "step_count": step_count,
+              "is_staged": is_staged,
+              "has_context": "context" in data,
+              "has_tags": bool(data.get("tags")),
+              "parse_error": False,
+              "is_sub_recipe": False,
+          }
+          results["recipes"].append(recipe_info)
+
+
+      def discover_recipes(repo_path, recipes_dir):
+          """Discover all recipe YAML files in a repository."""
+          # Early exit if PyYAML not available
+          try:
+              import yaml  # noqa: F401
+          except ImportError:
+              return {
+                  "phase": "discovery",
+                  "skipped": True,
+                  "reason": "PyYAML not available — install with: pip install pyyaml",
+                  "repo_path": repo_path,
+                  "recipes_dir": recipes_dir,
+                  "recipes": [],
+                  "non_recipe_yaml": [],
+                  "parse_errors": [],
+                  "total_count": 0,
+                  "search_paths": [],
+                  "errors": [],
+              }
+
+          repo = Path(repo_path).expanduser().resolve()
+          results = {
+              "phase": "discovery",
+              "repo_path": str(repo),
+              "recipes_dir": recipes_dir,
+              "recipes": [],
+              "non_recipe_yaml": [],
+              "parse_errors": [],
+              "total_count": 0,
+              "search_paths": [],
+              "errors": [],
+          }
+
+          if not repo.exists() or not repo.is_dir():
+              results["errors"].append({
+                  "type": "path_error",
+                  "message": f"Repository path does not exist: {repo_path}",
+              })
+              return results
+
+          sub_recipe_refs = set()
+
+          # Determine directories to scan
+          scan_dirs = []
+
+          # 1. Configured recipes_dir
+          configured_dir = repo / recipes_dir
+          if configured_dir.exists() and configured_dir.is_dir():
+              scan_dirs.append(configured_dir)
+              results["search_paths"].append(str(configured_dir))
+
+          # 2. examples/ directory (if different from recipes_dir and it exists)
+          if recipes_dir != "examples":
+              examples_dir = repo / "examples"
+              if examples_dir.exists() and examples_dir.is_dir():
+                  scan_dirs.append(examples_dir)
+                  results["search_paths"].append(str(examples_dir))
+
+          # Scan each directory recursively
+          for scan_dir in scan_dirs:
+              yaml_files = sorted(
+                  list(scan_dir.rglob("*.yaml")) + list(scan_dir.rglob("*.yml"))
+              )
+              for yaml_path in yaml_files:
+                  _process_yaml_file(yaml_path, repo, results, sub_recipe_refs)
+
+          # Post-processing: classify is_sub_recipe
+          for recipe in results["recipes"]:
+              r_path = recipe.get("path", "")
+              r_name = recipe.get("name") or ""
+              for ref in sub_recipe_refs:
+                  if ref in r_path or (r_name and ref == r_name):
+                      recipe["is_sub_recipe"] = True
+                      break
+
+          results["total_count"] = len(results["recipes"])
+          return results
+
+
+      output = discover_recipes("{{repo_path}}", "{{recipes_dir}}")
+      print(json.dumps(output))
+      EOF
+    output: "recipe_discovery"
+    parse_json: true
+    timeout: 30
+
+  # ============================================================================
+  # PHASE 2: Structural Validation
+  # Engine validation (full mode) + gap coverage checks for each discovered
+  # recipe. Detects unknown keys, missing required fields, invalid types,
+  # duplicate IDs, orphan fields, and condition syntax errors.
+  # ============================================================================
+
+  - id: "structural-validation"
+    type: "bash"
+    depends_on: ["recipe-discovery"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      from pathlib import Path
+
+      _env_check_raw = r"""{{env_check}}"""
+      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      env_check = json.loads(_env_check_raw)
+      recipe_discovery = json.loads(_recipe_discovery_raw)
+
+      validation_mode = env_check.get("validation_mode", "structural_only")
+
+      VALID_RECIPE_KEYS = {
+          "name", "description", "version", "author", "created", "updated",
+          "tags", "context", "steps", "stages", "recursion", "rate_limiting",
+          "orchestrator",
+      }
+
+      VALID_STEP_KEYS = {
+          "id", "type", "agent", "prompt", "mode", "agent_config", "recipe",
+          "context", "command", "cwd", "env", "output_exit_code", "output",
+          "condition", "foreach", "as", "collect", "parallel", "max_iterations",
+          "timeout", "retry", "on_error", "depends_on", "parse_json",
+          "while_condition", "max_while_iterations", "break_when", "update_context",
+          "steps", "recursion", "provider", "model", "provider_preferences",
+          "model_role",
+      }
+
+      VALID_STEP_TYPES = {"agent", "bash", "recipe"}
+
+
+      def validate_recipe_structural(recipe_info):
+          """Validate a single recipe structurally. Returns list of findings."""
+          findings = []
+          path = recipe_info.get("path", "")
+
+          # 1. Handle parse_error recipes — YAML_PARSE_ERROR finding
+          if recipe_info.get("parse_error"):
+              findings.append({
+                  "code": "YAML_PARSE_ERROR",
+                  "severity": "ERROR",
+                  "message": "Recipe file failed YAML parsing",
+                  "detail": path,
+              })
+              return findings
+
+          # 2. Fresh parse for detailed validation
+          try:
+              import yaml
+              data = yaml.safe_load(Path(path).read_text())
+          except Exception as exc:
+              findings.append({
+                  "code": "YAML_PARSE_ERROR",
+                  "severity": "ERROR",
+                  "message": f"Failed to parse recipe: {exc}",
+                  "detail": str(exc),
+              })
+              return findings
+
+          if not isinstance(data, dict):
+              findings.append({
+                  "code": "INVALID_STRUCTURE",
+                  "severity": "ERROR",
+                  "message": "Recipe is not a YAML mapping",
+                  "detail": "",
+              })
+              return findings
+
+          # 3. Engine validation when validation_mode == 'full'
+          if validation_mode == "full":
+              try:
+                  from amplifier_module_tool_recipes.models import Recipe
+                  from amplifier_module_tool_recipes.validator import validate_recipe
+                  try:
+                      recipe_obj = Recipe.from_yaml(path)
+                      result = validate_recipe(recipe_obj)
+                      for err in result.errors:
+                          findings.append({
+                              "code": "ENGINE_ERROR",
+                              "severity": "ERROR",
+                              "message": str(err),
+                              "detail": "",
+                          })
+                      for warn in result.warnings:
+                          findings.append({
+                              "code": "ENGINE_WARNING",
+                              "severity": "WARNING",
+                              "message": str(warn),
+                              "detail": "",
+                          })
+                  except Exception as exc:
+                      findings.append({
+                          "code": "ENGINE_VALIDATION_FAILED",
+                          "severity": "ERROR",
+                          "message": f"Engine validation exception: {exc}",
+                          "detail": str(exc),
+                      })
+              except ImportError:
+                  pass  # Engine not available — graceful degradation
+
+          # 4. Unknown top-level keys (WARNING)
+          for key in data.keys():
+              if key not in VALID_RECIPE_KEYS:
+                  findings.append({
+                      "code": "UNKNOWN_RECIPE_KEY",
+                      "severity": "WARNING",
+                      "message": f"Unknown top-level key: '{key}'",
+                      "detail": key,
+                  })
+
+          # 5. Mixed mode: both steps and stages (ERROR)
+          if "steps" in data and "stages" in data:
+              findings.append({
+                  "code": "MIXED_MODE",
+                  "severity": "ERROR",
+                  "message": "Recipe has both 'steps' and 'stages' — use one or the other",
+                  "detail": "",
+              })
+
+          # 6. Missing required fields
+          if not data.get("name"):
+              findings.append({
+                  "code": "MISSING_NAME",
+                  "severity": "ERROR",
+                  "message": "Recipe is missing required 'name' field",
+                  "detail": "",
+              })
+
+          description = data.get("description", "")
+          if not description or not str(description).strip():
+              findings.append({
+                  "code": "MISSING_DESCRIPTION",
+                  "severity": "ERROR",
+                  "message": "Recipe is missing required 'description' field or it is empty",
+                  "detail": "",
+              })
+
+          if "version" not in data:
+              findings.append({
+                  "code": "MISSING_VERSION",
+                  "severity": "ERROR",
+                  "message": "Recipe is missing required 'version' field",
+                  "detail": "",
+              })
+
+          # 7. Version format: must match X.Y.Z
+          version = str(data["version"]) if data.get("version") is not None else ""
+          if version and not re.match(r"^\d+\.\d+\.\d+$", version):
+              findings.append({
+                  "code": "INVALID_VERSION",
+                  "severity": "ERROR",
+                  "message": f"Version '{version}' does not match semver format (X.Y.Z)",
+                  "detail": version,
+              })
+
+          # 8. Collect all steps (including steps nested inside stages)
+          steps = data.get("steps") or []
+          stages = data.get("stages") or []
+          all_steps = list(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  all_steps.extend(stage.get("steps") or [])
+
+          # 9. Duplicate step IDs (ERROR)
+          seen_ids = set()
+          for step in all_steps:
+              if isinstance(step, dict):
+                  step_id = step.get("id")
+                  if step_id:
+                      if step_id in seen_ids:
+                          findings.append({
+                              "code": "DUPLICATE_STEP_ID",
+                              "severity": "ERROR",
+                              "message": f"Duplicate step ID: '{step_id}'",
+                              "detail": step_id,
+                          })
+                      else:
+                          seen_ids.add(step_id)
+
+          # 10. Duplicate output names (WARNING)
+          seen_outputs = set()
+          for step in all_steps:
+              if isinstance(step, dict):
+                  output_name = step.get("output")
+                  if output_name:
+                      if output_name in seen_outputs:
+                          findings.append({
+                              "code": "DUPLICATE_OUTPUT",
+                              "severity": "WARNING",
+                              "message": f"Duplicate output name: '{output_name}'",
+                              "detail": output_name,
+                          })
+                      else:
+                          seen_outputs.add(output_name)
+
+          # 11. Per-step validations
+          for step in all_steps:
+              if not isinstance(step, dict):
+                  continue
+              step_id = step.get("id", "(unknown)")
+
+              # Unknown step keys (WARNING)
+              for key in step.keys():
+                  if key not in VALID_STEP_KEYS:
+                      findings.append({
+                          "code": "UNKNOWN_STEP_KEY",
+                          "severity": "WARNING",
+                          "message": f"Step '{step_id}': unknown key '{key}'",
+                          "detail": key,
+                      })
+
+              # Invalid step type (ERROR)
+              step_type = step.get("type")
+              if step_type and step_type not in VALID_STEP_TYPES:
+                  findings.append({
+                      "code": "INVALID_STEP_TYPE",
+                      "severity": "ERROR",
+                      "message": (
+                          f"Step '{step_id}': invalid type '{step_type}'"
+                          f" (valid: {sorted(VALID_STEP_TYPES)})"
+                      ),
+                      "detail": step_type,
+                  })
+
+              # Empty prompt (ERROR)
+              if "prompt" in step and not str(step.get("prompt") or "").strip():
+                  findings.append({
+                      "code": "EMPTY_PROMPT",
+                      "severity": "ERROR",
+                      "message": f"Step '{step_id}': prompt is empty",
+                      "detail": step_id,
+                  })
+
+              # Empty command (ERROR)
+              if "command" in step and not str(step.get("command") or "").strip():
+                  findings.append({
+                      "code": "EMPTY_COMMAND",
+                      "severity": "ERROR",
+                      "message": f"Step '{step_id}': command is empty",
+                      "detail": step_id,
+                  })
+
+              # Orphan fields: collect / as / parallel without foreach (WARNING)
+              has_foreach = "foreach" in step
+              if "collect" in step and not has_foreach:
+                  findings.append({
+                      "code": "ORPHAN_COLLECT",
+                      "severity": "WARNING",
+                      "message": f"Step '{step_id}': 'collect' used without 'foreach'",
+                      "detail": step_id,
+                  })
+              if "as" in step and not has_foreach:
+                  findings.append({
+                      "code": "ORPHAN_AS",
+                      "severity": "WARNING",
+                      "message": f"Step '{step_id}': 'as' used without 'foreach'",
+                      "detail": step_id,
+                  })
+              if "parallel" in step and not has_foreach:
+                  findings.append({
+                      "code": "ORPHAN_PARALLEL",
+                      "severity": "WARNING",
+                      "message": f"Step '{step_id}': 'parallel' used without 'foreach'",
+                      "detail": step_id,
+                  })
+
+              # break_when without while_condition (WARNING)
+              if "break_when" in step and "while_condition" not in step:
+                  findings.append({
+                      "code": "ORPHAN_BREAK_WHEN",
+                      "severity": "WARNING",
+                      "message": f"Step '{step_id}': 'break_when' used without 'while_condition'",
+                      "detail": step_id,
+                  })
+
+              # Condition syntax: invalid operators ===, <>, !== (ERROR)
+              condition = str(step.get("condition") or "")
+              for invalid_op in ["===", "<>", "!=="]:
+                  if invalid_op in condition:
+                      findings.append({
+                          "code": "INVALID_CONDITION_OP",
+                          "severity": "ERROR",
+                          "message": (
+                              f"Step '{step_id}': condition uses invalid"
+                              f" operator '{invalid_op}'"
+                          ),
+                          "detail": invalid_op,
+                      })
+
+          # 12. Staged mode: approval_required without prompt (WARNING)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  if stage.get("approval_required") and not stage.get("prompt"):
+                      stage_id = stage.get("id", "(unknown)")
+                      findings.append({
+                          "code": "APPROVAL_NO_PROMPT",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Stage '{stage_id}': approval_required"
+                              " but no approval prompt defined"
+                          ),
+                          "detail": stage_id,
+                      })
+
+          return findings
+
+
+      # Process all recipes from discovery
+      results = []
+      for recipe_info in recipe_discovery.get("recipes", []):
+          path = recipe_info.get("path", "")
+          findings = validate_recipe_structural(recipe_info)
+          error_count = sum(1 for f in findings if f["severity"] == "ERROR")
+          warning_count = sum(1 for f in findings if f["severity"] == "WARNING")
+          results.append({
+              "path": path,
+              "relative_path": recipe_info.get("relative_path", ""),
+              "name": recipe_info.get("name"),
+              "findings": findings,
+              "error_count": error_count,
+              "warning_count": warning_count,
+          })
+
+      # Build summary
+      total = len(results)
+      clean = sum(1 for r in results if r["error_count"] == 0 and r["warning_count"] == 0)
+      with_errors = sum(1 for r in results if r["error_count"] > 0)
+      with_warnings = sum(1 for r in results if r["warning_count"] > 0)
+      total_errors = sum(r["error_count"] for r in results)
+      total_warnings = sum(r["warning_count"] for r in results)
+
+      output = {
+          "phase": "structural",
+          "validation_mode": validation_mode,
+          "results": results,
+          "summary": {
+              "total": total,
+              "clean": clean,
+              "with_errors": with_errors,
+              "with_warnings": with_warnings,
+              "total_errors": total_errors,
+              "total_warnings": total_warnings,
+          },
+      }
+
+      print(json.dumps(output))
+      EOF
+    output: "structural_results"
+    parse_json: true
+    timeout: 120
+
+  # ============================================================================
+  # PHASE 3: Best Practices Check
+  # Runs parallel with structural-validation (both depend on recipe-discovery).
+  # Checks naming conventions, error handling, timeouts, prompts, and versioning.
+  # Severity: WARNING (actionable issues) or SUGGESTION (style improvements).
+  # ============================================================================
+
+  - id: "best-practices-check"
+    type: "bash"
+    depends_on: ["recipe-discovery"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      from pathlib import Path
+
+      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      recipe_discovery = json.loads(_recipe_discovery_raw)
+
+
+      def check_best_practices(recipe_info):
+          """Check best practices for a single recipe. Returns list of findings."""
+          findings = []
+          path = recipe_info.get("path", "")
+
+          # Skip recipes with parse errors — nothing to check
+          if recipe_info.get("parse_error"):
+              return findings
+
+          # Fresh parse for detailed analysis
+          try:
+              import yaml
+              data = yaml.safe_load(Path(path).read_text())
+          except Exception:
+              return findings
+
+          if not isinstance(data, dict):
+              return findings
+
+          name = str(data.get("name") or "")
+          description = str(data.get("description") or "").strip()
+          version = str(data.get("version") or "")
+          tags = data.get("tags")
+
+          # Collect all steps (including steps nested inside stages)
+          steps = data.get("steps") or []
+          stages = data.get("stages") or []
+          all_steps = list(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  all_steps.extend(stage.get("steps") or [])
+
+          # ── Naming & Documentation ────────────────────────────────────────────
+
+          # Name not all-lowercase
+          if name and name != name.lower():
+              findings.append({
+                  "code": "NAME_NOT_LOWERCASE",
+                  "severity": "SUGGESTION",
+                  "message": f"Recipe name '{name}' is not all lowercase",
+                  "detail": name,
+              })
+
+          # Name uses underscores (prefer hyphens)
+          if name and "_" in name:
+              findings.append({
+                  "code": "NAME_USES_UNDERSCORES",
+                  "severity": "SUGGESTION",
+                  "message": f"Recipe name '{name}' uses underscores — prefer hyphens",
+                  "detail": name,
+              })
+
+          # Short description (< 50 chars)
+          if len(description) < 50:
+              findings.append({
+                  "code": "SHORT_DESCRIPTION",
+                  "severity": "SUGGESTION",
+                  "message": (
+                      f"Description is very short ({len(description)} chars)"
+                      " — aim for 50+ chars"
+                  ),
+                  "detail": description,
+              })
+
+          # No tags
+          if not tags:
+              findings.append({
+                  "code": "NO_TAGS",
+                  "severity": "SUGGESTION",
+                  "message": "Recipe has no tags — add tags for discoverability",
+                  "detail": "",
+              })
+
+          # Context variables not snake_case (no hyphens, lowercase+digits+underscores)
+          context = data.get("context")
+          if isinstance(context, dict):
+              for var_name in context.keys():
+                  var_str = str(var_name)
+                  if "-" in var_str or not re.match(r'^[a-z][a-z0-9_]*$', var_str):
+                      findings.append({
+                          "code": "CONTEXT_NOT_SNAKE_CASE",
+                          "severity": "SUGGESTION",
+                          "message": (
+                              f"Context variable '{var_name}' is not snake_case"
+                              " — use lowercase_with_underscores"
+                          ),
+                          "detail": var_str,
+                      })
+
+          # ── Step Design ───────────────────────────────────────────────────────
+
+          # Too many steps (> 15)
+          if len(all_steps) > 15:
+              findings.append({
+                  "code": "TOO_MANY_STEPS",
+                  "severity": "WARNING",
+                  "message": (
+                      f"Recipe has {len(all_steps)} steps"
+                      " — consider splitting into sub-recipes (>15 is complex)"
+                  ),
+                  "detail": str(len(all_steps)),
+              })
+
+          # Generic step IDs matching ^step\d+$
+          for step in all_steps:
+              if isinstance(step, dict):
+                  step_id = str(step.get("id") or "")
+                  if re.match(r'^step\d+$', step_id):
+                      findings.append({
+                          "code": "GENERIC_STEP_ID",
+                          "severity": "SUGGESTION",
+                          "message": (
+                              f"Step ID '{step_id}' is generic"
+                              " — use descriptive names that convey intent"
+                          ),
+                          "detail": step_id,
+                      })
+
+          # ── Error Handling & Resilience ────────────────────────────────────────
+
+          # > 3 steps with no explicit timeout
+          no_timeout_steps = [
+              s for s in all_steps
+              if isinstance(s, dict) and "timeout" not in s
+          ]
+          if len(no_timeout_steps) > 3:
+              findings.append({
+                  "code": "NO_TIMEOUTS",
+                  "severity": "WARNING",
+                  "message": (
+                      f"{len(no_timeout_steps)} steps have no explicit timeout"
+                      " — add timeouts to prevent runaway steps"
+                  ),
+                  "detail": str(len(no_timeout_steps)),
+              })
+
+          # > 3 steps with no on_error handler
+          no_error_handler_steps = [
+              s for s in all_steps
+              if isinstance(s, dict) and "on_error" not in s
+          ]
+          if len(no_error_handler_steps) > 3:
+              findings.append({
+                  "code": "NO_ERROR_HANDLING",
+                  "severity": "WARNING",
+                  "message": (
+                      f"{len(no_error_handler_steps)} steps have no on_error handler"
+                      " — add on_error to control failure behavior"
+                  ),
+                  "detail": str(len(no_error_handler_steps)),
+              })
+
+          # Unconditional consumption of output from on_error: continue step
+          # Build map: output_name -> producing step ID (for steps with on_error: continue)
+          continue_outputs = {}  # output_name -> producer step_id
+          for step in all_steps:
+              if isinstance(step, dict):
+                  if step.get("on_error") == "continue":
+                      output_name = step.get("output")
+                      if output_name:
+                          continue_outputs[output_name] = step.get("id", "")
+
+          if continue_outputs:
+              for step in all_steps:
+                  if not isinstance(step, dict):
+                      continue
+                  step_id = step.get("id", "(unknown)")
+                  step_condition = str(step.get("condition") or "")
+                  for output_name, source_step_id in continue_outputs.items():
+                      if step_id == source_step_id:
+                          continue  # Skip the producer itself
+                      # Check if step text references this output
+                      step_text = (
+                          str(step.get("prompt") or "")
+                          + str(step.get("command") or "")
+                      )
+                      if "{{" + output_name + "}}" in step_text:
+                          if not step_condition:
+                              findings.append({
+                                  "code": "UNCONDITIONAL_CONTINUE_OUTPUT",
+                                  "severity": "WARNING",
+                                  "message": (
+                                      f"Step '{step_id}' unconditionally consumes"
+                                      f" output '{output_name}' from step"
+                                      f" '{source_step_id}' (on_error: continue)"
+                                      " — add a condition guard"
+                                  ),
+                                  "detail": output_name,
+                              })
+
+          # ── Prompt Design ─────────────────────────────────────────────────────
+
+          for step in all_steps:
+              if not isinstance(step, dict):
+                  continue
+              step_id = step.get("id", "(unknown)")
+              step_type = step.get("type", "agent")
+
+              # Short prompt for agent steps (< 30 chars)
+              is_agent_step = step_type == "agent" or (
+                  step_type not in ("bash", "recipe") and "prompt" in step
+              )
+              if is_agent_step:
+                  prompt = str(step.get("prompt") or "")
+                  if prompt and len(prompt.strip()) < 30:
+                      findings.append({
+                          "code": "SHORT_PROMPT",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': prompt is very short"
+                              f" ({len(prompt.strip())} chars) — aim for 30+ chars"
+                          ),
+                          "detail": step_id,
+                      })
+
+              # Bash step without 'set -euo pipefail' and not using python3
+              if step_type == "bash":
+                  command = str(step.get("command") or "")
+                  uses_python = "python3" in command or "python " in command
+                  has_strict = "set -euo pipefail" in command
+                  if not has_strict and not uses_python:
+                      findings.append({
+                          "code": "NO_BASH_STRICT",
+                          "severity": "SUGGESTION",
+                          "message": (
+                              f"Step '{step_id}': bash step without 'set -euo pipefail'"
+                              " — add for safer shell error handling"
+                          ),
+                          "detail": step_id,
+                      })
+
+          # ── Versioning ─────────────────────────────────────────────────────────
+
+          if version == "0.0.0":
+              findings.append({
+                  "code": "VERSION_PLACEHOLDER",
+                  "severity": "WARNING",
+                  "message": "Version '0.0.0' is a placeholder — use a real version",
+                  "detail": version,
+              })
+
+          return findings
+
+
+      # Process all recipes from discovery
+      results = []
+      for recipe_info in recipe_discovery.get("recipes", []):
+          path = recipe_info.get("path", "")
+          findings = check_best_practices(recipe_info)
+          warning_count = sum(1 for f in findings if f["severity"] == "WARNING")
+          suggestion_count = sum(1 for f in findings if f["severity"] == "SUGGESTION")
+          results.append({
+              "path": path,
+              "relative_path": recipe_info.get("relative_path", ""),
+              "name": recipe_info.get("name"),
+              "findings": findings,
+              "warning_count": warning_count,
+              "suggestion_count": suggestion_count,
+          })
+
+      # Build summary
+      total = len(results)
+      clean = sum(
+          1 for r in results
+          if r["warning_count"] == 0 and r["suggestion_count"] == 0
+      )
+      with_warnings = sum(1 for r in results if r["warning_count"] > 0)
+      with_suggestions = sum(1 for r in results if r["suggestion_count"] > 0)
+      total_warnings = sum(r["warning_count"] for r in results)
+      total_suggestions = sum(r["suggestion_count"] for r in results)
+
+      output = {
+          "phase": "best_practices",
+          "results": results,
+          "summary": {
+              "total": total,
+              "clean": clean,
+              "with_warnings": with_warnings,
+              "with_suggestions": with_suggestions,
+              "total_warnings": total_warnings,
+              "total_suggestions": total_suggestions,
+          },
+      }
+
+      print(json.dumps(output))
+      EOF
+    output: "practice_results"
+    parse_json: true
+    timeout: 60
+
+  # ============================================================================
+  # PHASE 4: Semantic Validation
+  # Validates agent references, sub-recipe paths, variable flow, loop
+  # convergence, and condition syntax. Runs parallel with structural-validation
+  # and best-practices-check (all depend on recipe-discovery).
+  # ============================================================================
+
+  - id: "semantic-validation"
+    type: "bash"
+    depends_on: ["recipe-discovery"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json
+      from fnmatch import fnmatch
+      from pathlib import Path
+
+      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      _known_agents_raw = r"""{{known_agents}}"""
+      _repo_path_raw = """{{repo_path}}"""
+      recipe_discovery = json.loads(_recipe_discovery_raw)
+
+      # Parse known agent patterns
+      try:
+          known_agent_patterns = (
+              json.loads(_known_agents_raw) if _known_agents_raw.strip() else []
+          )
+          if not isinstance(known_agent_patterns, list):
+              known_agent_patterns = []
+      except (json.JSONDecodeError, ValueError):
+          known_agent_patterns = []
+
+      repo_path = Path(_repo_path_raw.strip()).expanduser().resolve()
+
+      # ── Discover local agents from repo ────────────────────────────────────
+      local_namespace = None
+      local_agents = set()
+
+      bundle_md = repo_path / "bundle.md"
+      if bundle_md.exists():
+          try:
+              import yaml
+              content = bundle_md.read_text()
+              if content.startswith("---"):
+                  end_idx = content.find("---", 3)
+                  if end_idx > 0:
+                      frontmatter_text = content[3:end_idx].strip()
+                      frontmatter = yaml.safe_load(frontmatter_text)
+                      if isinstance(frontmatter, dict):
+                          bundle_info = frontmatter.get("bundle", {})
+                          if isinstance(bundle_info, dict):
+                              local_namespace = bundle_info.get("name")
+          except Exception:
+              pass
+
+      agents_dir = repo_path / "agents"
+      if agents_dir.exists() and agents_dir.is_dir():
+          for agent_file in agents_dir.rglob("*.md"):
+              agent_name = agent_file.stem
+              local_agents.add(agent_name)
+              if local_namespace:
+                  local_agents.add(f"{local_namespace}:{agent_name}")
+
+
+      def agent_is_known(agent_ref):
+          """Check if an agent reference is known (local or matches a pattern)."""
+          if agent_ref in local_agents:
+              return True
+          for pattern in known_agent_patterns:
+              if fnmatch(agent_ref, pattern):
+                  return True
+          if local_namespace and agent_ref.startswith(f"{local_namespace}:"):
+              return True
+          return False
+
+
+      def validate_semantic(recipe_info):
+          """Validate semantic aspects of a single recipe. Returns list of findings."""
+          findings = []
+          path = recipe_info.get("path", "")
+
+          # Skip recipes with parse errors — nothing to check semantically
+          if recipe_info.get("parse_error"):
+              return findings
+
+          try:
+              import yaml
+              data = yaml.safe_load(Path(path).read_text())
+          except Exception:
+              return findings
+
+          if not isinstance(data, dict):
+              return findings
+
+          # Collect all steps (including steps nested inside stages)
+          steps = data.get("steps") or []
+          stages = data.get("stages") or []
+          all_steps = list(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  all_steps.extend(stage.get("steps") or [])
+
+          # Variable tracking: context keys + built-ins
+          available_vars = set()
+          context = data.get("context")
+          if isinstance(context, dict):
+              available_vars.update(context.keys())
+          available_vars.update(["recipe", "session", "step"])
+
+          for step in all_steps:
+              if not isinstance(step, dict):
+                  continue
+
+              step_id = step.get("id", "(unknown)")
+              step_type = step.get("type", "agent")
+
+              # ── 1. Agent Reference Resolution ─────────────────────────────
+              agent_ref = step.get("agent")
+              if agent_ref:
+                  agent_ref = str(agent_ref)
+                  if ":" not in agent_ref:
+                      # Bare agent name without namespace colon
+                      findings.append({
+                          "code": "BARE_AGENT_NAME",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': agent reference '{agent_ref}' "
+                              "has no namespace prefix "
+                              "(use 'namespace:agent-name' format)"
+                          ),
+                          "detail": agent_ref,
+                      })
+                  elif not agent_is_known(agent_ref):
+                      findings.append({
+                          "code": "UNKNOWN_AGENT",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': agent '{agent_ref}' "
+                              "is not in local agents or known patterns"
+                          ),
+                          "detail": agent_ref,
+                      })
+
+              # ── 2. Sub-Recipe Path Resolution ──────────────────────────────
+              if step_type == "recipe":
+                  recipe_ref = None
+                  for field in ("recipe_path", "recipe", "path", "recipe_file"):
+                      ref = step.get(field)
+                      if ref:
+                          recipe_ref = str(ref)
+                          break
+
+                  if recipe_ref:
+                      if "{{" in recipe_ref:
+                          findings.append({
+                              "code": "DYNAMIC_RECIPE_PATH",
+                              "severity": "INFO",
+                              "message": (
+                                  f"Step '{step_id}': recipe path uses "
+                                  "template variables (dynamic path)"
+                              ),
+                              "detail": recipe_ref,
+                          })
+                      elif recipe_ref.startswith("/"):
+                          findings.append({
+                              "code": "ABSOLUTE_RECIPE_PATH",
+                              "severity": "WARNING",
+                              "message": (
+                                  f"Step '{step_id}': recipe path "
+                                  f"'{recipe_ref}' is absolute — "
+                                  "prefer relative paths for portability"
+                              ),
+                              "detail": recipe_ref,
+                          })
+                      elif ":" not in recipe_ref:
+                          # Relative path — check if it exists on disk
+                          recipe_file_path = Path(path).parent / recipe_ref
+                          if not recipe_file_path.exists():
+                              findings.append({
+                                  "code": "BROKEN_RECIPE_REF",
+                                  "severity": "ERROR",
+                                  "message": (
+                                      f"Step '{step_id}': recipe path "
+                                      f"'{recipe_ref}' does not exist on disk"
+                                  ),
+                                  "detail": recipe_ref,
+                              })
+                          else:
+                              # Variable flow: sub-recipe required vars
+                              step_context = step.get("context") or {}
+                              if isinstance(step_context, dict):
+                                  try:
+                                      import yaml
+                                      sub_data = yaml.safe_load(
+                                          recipe_file_path.read_text()
+                                      )
+                                      if isinstance(sub_data, dict):
+                                          sub_ctx = sub_data.get("context") or {}
+                                          if isinstance(sub_ctx, dict):
+                                              for var_name, default_val in sub_ctx.items():
+                                                  if default_val == "" or default_val is None:
+                                                      if (
+                                                          var_name not in step_context
+                                                          and var_name not in available_vars
+                                                      ):
+                                                          findings.append({
+                                                              "code": "MISSING_SUB_RECIPE_VAR",
+                                                              "severity": "WARNING",
+                                                              "message": (
+                                                                  f"Step '{step_id}': "
+                                                                  f"sub-recipe requires "
+                                                                  f"variable '{var_name}' "
+                                                                  "but step context "
+                                                                  "doesn't pass it"
+                                                              ),
+                                                              "detail": var_name,
+                                                          })
+                                  except Exception:
+                                      pass
+
+              # ── 3. Loop Validation ────────────────────────────────────────
+              if "while_condition" in step:
+                  has_update = "update_context" in step
+                  has_break = "break_when" in step
+                  if not has_update and not has_break:
+                      findings.append({
+                          "code": "WHILE_NO_CONVERGENCE",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': while_condition with no "
+                              "update_context or break_when — "
+                              "loop may not converge"
+                          ),
+                          "detail": step_id,
+                      })
+                  if "max_while_iterations" not in step:
+                      findings.append({
+                          "code": "WHILE_NO_MAX_ITERATIONS",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': while_condition without "
+                              "max_while_iterations — add a safety limit"
+                          ),
+                          "detail": step_id,
+                      })
+
+              # Aggressive parallel (> 20)
+              if "foreach" in step:
+                  parallel = step.get("parallel")
+                  if isinstance(parallel, int) and parallel > 20:
+                      findings.append({
+                          "code": "AGGRESSIVE_PARALLEL",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': parallel={parallel} is "
+                              "very high (>20) — may overwhelm API rate limits"
+                          ),
+                          "detail": str(parallel),
+                      })
+
+              # ── 4. Condition Syntax ───────────────────────────────────────
+              condition = str(step.get("condition") or "")
+              if condition:
+                  for invalid_op in ["===", "<>", "!=="]:
+                      if invalid_op in condition:
+                          findings.append({
+                              "code": "INVALID_CONDITION_SYNTAX",
+                              "severity": "ERROR",
+                              "message": (
+                                  f"Step '{step_id}': condition uses invalid "
+                                  f"operator '{invalid_op}'"
+                              ),
+                              "detail": invalid_op,
+                          })
+
+              # ── 5. Variable Tracking ──────────────────────────────────────
+              output_key = step.get("output")
+              if output_key:
+                  available_vars.add(str(output_key))
+              collect_key = step.get("collect")
+              if collect_key:
+                  available_vars.add(str(collect_key))
+              exit_key = step.get("output_exit_code")
+              if exit_key:
+                  available_vars.add(str(exit_key))
+
+          return findings
+
+
+      # Process all recipes from discovery
+      results = []
+      for recipe_info in recipe_discovery.get("recipes", []):
+          path = recipe_info.get("path", "")
+          findings = validate_semantic(recipe_info)
+          error_count = sum(1 for f in findings if f["severity"] == "ERROR")
+          warning_count = sum(1 for f in findings if f["severity"] == "WARNING")
+          results.append({
+              "path": path,
+              "relative_path": recipe_info.get("relative_path", ""),
+              "name": recipe_info.get("name"),
+              "findings": findings,
+              "error_count": error_count,
+              "warning_count": warning_count,
+          })
+
+      # Cross-Recipe Consistency: duplicate recipe names
+      cross_recipe_findings = []
+      name_to_paths = {}
+      for recipe_info in recipe_discovery.get("recipes", []):
+          name = recipe_info.get("name")
+          rpath = recipe_info.get("path", "")
+          if name:
+              name_to_paths.setdefault(name, []).append(rpath)
+
+      for name, paths in name_to_paths.items():
+          if len(paths) > 1:
+              cross_recipe_findings.append({
+                  "code": "DUPLICATE_RECIPE_NAME",
+                  "severity": "WARNING",
+                  "message": (
+                      f"Recipe name '{name}' appears in {len(paths)} files "
+                      "— recipe names must be unique"
+                  ),
+                  "detail": name,
+                  "paths": paths,
+              })
+
+      # Build summary
+      total = len(results)
+      clean = sum(
+          1 for r in results
+          if r["error_count"] == 0 and r["warning_count"] == 0
+      )
+      with_errors = sum(1 for r in results if r["error_count"] > 0)
+      with_warnings = sum(1 for r in results if r["warning_count"] > 0)
+      total_errors = sum(r["error_count"] for r in results)
+      total_warnings = sum(r["warning_count"] for r in results)
+
+      output_data = {
+          "phase": "semantic",
+          "local_namespace": local_namespace,
+          "local_agents_count": len(local_agents),
+          "known_agent_patterns": known_agent_patterns,
+          "results": results,
+          "cross_recipe_findings": cross_recipe_findings,
+          "summary": {
+              "total": total,
+              "with_errors": with_errors,
+              "with_warnings": with_warnings,
+              "clean": clean,
+              "total_errors": total_errors,
+              "total_warnings": total_warnings,
+          },
+      }
+      print(json.dumps(output_data))
+      EOF
+    output: "semantic_results"
+    parse_json: true
+    timeout: 120
+
+  # ============================================================================
+  # PHASE 5: Quality Classification
+  # Deterministic scoring — aggregates findings from all three validation phases
+  # and assigns a quality level to each recipe and the repo as a whole.
+  # Decides whether LLM report synthesis is needed (requires_llm_analysis).
+  # ============================================================================
+
+  - id: "quality-classification"
+    type: "bash"
+    depends_on: ["structural-validation", "best-practices-check", "semantic-validation"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json
+
+      _structural_results_raw = r"""{{structural_results}}"""
+      _practice_results_raw = r"""{{practice_results}}"""
+      _semantic_results_raw = r"""{{semantic_results}}"""
+
+      structural_results = json.loads(_structural_results_raw)
+      practice_results = json.loads(_practice_results_raw)
+      semantic_results = json.loads(_semantic_results_raw)
+
+
+      def classify_recipe(path, structural_findings, practice_findings, semantic_findings):
+          """Classify a single recipe's quality based on its findings.
+
+          Returns 'critical', 'needs_work', 'polish', or 'good'.
+          """
+          all_findings = list(structural_findings) + list(practice_findings) + list(semantic_findings)
+          has_errors = any(f.get("severity") == "ERROR" for f in all_findings)
+          has_warnings = any(f.get("severity") == "WARNING" for f in all_findings)
+          has_suggestions = any(f.get("severity") == "SUGGESTION" for f in all_findings)
+
+          if has_errors:
+              return "critical"
+          if has_warnings:
+              return "needs_work"
+          if has_suggestions:
+              return "polish"
+          return "good"
+
+
+      # Build lookup by path from structural results
+      structural_by_path = {}
+      for r in structural_results.get("results", []):
+          structural_by_path[r.get("path", "")] = r
+
+      # Build lookup by path from practice results
+      practice_by_path = {}
+      for r in practice_results.get("results", []):
+          practice_by_path[r.get("path", "")] = r
+
+      # Build lookup by path from semantic results
+      semantic_by_path = {}
+      for r in semantic_results.get("results", []):
+          semantic_by_path[r.get("path", "")] = r
+
+      # Collect all unique paths across all three phases
+      all_paths = sorted(
+          set(structural_by_path.keys())
+          | set(practice_by_path.keys())
+          | set(semantic_by_path.keys())
+      )
+
+      # Classify each recipe
+      classified_recipes = []
+      summary_counts = {"total": 0, "good": 0, "polish": 0, "needs_work": 0, "critical": 0}
+
+      for path in all_paths:
+          s_info = structural_by_path.get(path, {})
+          p_info = practice_by_path.get(path, {})
+          m_info = semantic_by_path.get(path, {})
+
+          s_findings = s_info.get("findings", [])
+          p_findings = p_info.get("findings", [])
+          m_findings = m_info.get("findings", [])
+
+          quality = classify_recipe(path, s_findings, p_findings, m_findings)
+
+          relative_path = (
+              s_info.get("relative_path")
+              or p_info.get("relative_path")
+              or m_info.get("relative_path")
+              or path
+          )
+          name = (
+              s_info.get("name")
+              or p_info.get("name")
+              or m_info.get("name")
+          )
+
+          classified_recipes.append({
+              "path": path,
+              "relative_path": relative_path,
+              "name": name,
+              "quality": quality,
+              "error_count": sum(
+                  1 for f in s_findings + p_findings + m_findings
+                  if f.get("severity") == "ERROR"
+              ),
+              "warning_count": sum(
+                  1 for f in s_findings + p_findings + m_findings
+                  if f.get("severity") == "WARNING"
+              ),
+              "suggestion_count": sum(
+                  1 for f in s_findings + p_findings + m_findings
+                  if f.get("severity") == "SUGGESTION"
+              ),
+          })
+          summary_counts["total"] += 1
+          summary_counts[quality] += 1
+
+      # Cross-recipe findings from semantic phase
+      cross_recipe_findings = semantic_results.get("cross_recipe_findings", [])
+      cross_errors = sum(1 for f in cross_recipe_findings if f.get("severity") == "ERROR")
+      cross_warnings = sum(1 for f in cross_recipe_findings if f.get("severity") == "WARNING")
+
+      # Aggregate quality level
+      n_critical = summary_counts["critical"]
+      n_needs_work = summary_counts["needs_work"]
+      n_polish = summary_counts["polish"]
+      n_good = summary_counts["good"]
+      n_total = summary_counts["total"]
+
+      if n_critical > 0 or cross_errors > 0:
+          quality_level = "critical"
+          requires_llm_analysis = True
+      elif n_needs_work > 0 or cross_warnings > 0:
+          quality_level = "needs_work"
+          requires_llm_analysis = True
+      elif n_polish > 0:
+          quality_level = "polish"
+          requires_llm_analysis = True
+      else:
+          quality_level = "good"
+          requires_llm_analysis = False
+
+      # Build message
+      if quality_level == "good":
+          message = f"All {n_total} recipes meet quality thresholds"
+      else:
+          message = (
+              f"Issues found: {n_critical} critical, {n_needs_work} need work, "
+              f"{n_polish} polish. {n_good}/{n_total} recipes are good."
+          )
+
+      output = {
+          "phase": "quality_classification",
+          "recipes": classified_recipes,
+          "cross_recipe_findings": cross_recipe_findings,
+          "summary": summary_counts,
+          "quality_level": quality_level,
+          "requires_llm_analysis": requires_llm_analysis,
+          "message": message,
+      }
+
+      print(json.dumps(output))
+      EOF
+    output: "quality_classification"
+    parse_json: true
+    timeout: 60
+
+  # ============================================================================
+  # PHASE 6a: Quick Approval (bash fast path)
+  # When all recipes are clean (requires_llm_analysis == false), generate a
+  # simple PASS report without invoking an LLM agent.
+  # ============================================================================
+
+  - id: "quick-approval"
+    type: "bash"
+    condition: "{{quality_classification.requires_llm_analysis}} == false"
+    depends_on: ["quality-classification"]
+    command: |
+      python3 << 'EOF'
+      import json
+
+      _quality_classification_raw = r"""{{quality_classification}}"""
+      quality_classification = json.loads(_quality_classification_raw)
+
+      summary = quality_classification.get("summary", {})
+      recipes = quality_classification.get("recipes", [])
+      n_total = summary.get("total", len(recipes))
+
+      per_recipe_verdicts = [
+          {
+              "path": r.get("relative_path") or r.get("path", ""),
+              "name": r.get("name"),
+              "verdict": "PASS",
+              "quality": r.get("quality", "good"),
+          }
+          for r in recipes
+      ]
+
+      output = {
+          "phase": "report",
+          "quality_level": "good",
+          "summary": f"All {n_total} recipes passed validation with no issues.",
+          "recipes_validated": n_total,
+          "findings_by_severity": {
+              "errors": 0,
+              "warnings": 0,
+              "suggestions": 0,
+          },
+          "per_recipe_verdicts": per_recipe_verdicts,
+          "recommendations": [],
+      }
+
+      print(json.dumps(output))
+      EOF
+    output: "recipe_validation"
+    parse_json: true
+    timeout: 10
+
+  # ============================================================================
+  # PHASE 6b: LLM Report Synthesis
+  # When issues are found (requires_llm_analysis == true), delegate to
+  # foundation:zen-architect for structured report generation.
+  # ============================================================================
+
+  - id: "synthesize-report"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    condition: "{{quality_classification.requires_llm_analysis}} == true"
+    depends_on: ["quality-classification"]
+    on_error: "continue"
+    prompt: |
+      You are analyzing recipe validation results for an Amplifier bundle repository.
+
+      ## Validation Phase Results
+
+      **Structural Validation Results (structural_results):**
+      ```json
+      {{structural_results}}
+      ```
+
+      **Best Practices Results (practice_results):**
+      ```json
+      {{practice_results}}
+      ```
+
+      **Semantic Validation Results (semantic_results):**
+      ```json
+      {{semantic_results}}
+      ```
+
+      **Quality Classification:**
+      ```json
+      {{quality_classification}}
+      ```
+
+      ## Task
+
+      Based on the aggregate quality_level from the quality classification:
+      - If quality_level == 'polish': Overall verdict is **PASS WITH SUGGESTIONS**
+      - If quality_level == 'needs_work': Overall verdict is **PASS WITH WARNINGS**
+      - If quality_level == 'critical': Overall verdict is **FAIL**
+
+      Generate a structured validation report. Output ONLY a valid JSON object with exactly
+      these keys (no extra text before or after the JSON):
+
+      ```json
+      {
+        "quality_level": "<good|polish|needs_work|critical>",
+        "summary": "<one paragraph overall assessment>",
+        "recipes_validated": <integer count>,
+        "findings_by_severity": {
+          "errors": <integer>,
+          "warnings": <integer>,
+          "suggestions": <integer>
+        },
+        "per_recipe_verdicts": [
+          {
+            "path": "<relative_path>",
+            "name": "<recipe name>",
+            "verdict": "<PASS|PASS WITH SUGGESTIONS|PASS WITH WARNINGS|FAIL>",
+            "top_findings": ["<brief finding description>", ...]
+          }
+        ],
+        "recommendations": [
+          {
+            "priority": "<high|medium|low>",
+            "recipe": "<recipe name or 'all'>",
+            "action": "<specific actionable recommendation>"
+          }
+        ],
+        "report_text": "<full human-readable report with: Recipe Validation Summary, Per-Recipe Verdicts table, Top Issues by severity (Errors/Warnings/Suggestions), Prioritized Recommendations>"
+      }
+      ```
+
+      Ensure per_recipe_verdicts covers every recipe in the quality classification results.
+      Prioritize recommendations by severity: Errors first, then Warnings, then Suggestions.
+      The report_text should be comprehensive and actionable.
+    output: "recipe_validation"
+    parse_json: true
+    timeout: 300

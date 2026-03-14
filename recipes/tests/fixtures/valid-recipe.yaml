@@ -1,0 +1,53 @@
+name: "valid-test-recipe"
+description: |
+  A well-formed recipe used as a validation fixture.
+  This recipe should pass all validation phases with zero findings.
+  It demonstrates correct structure, step definitions, and dependency usage.
+version: "1.0.0"
+author: "Amplifier Recipes Collection"
+tags: ["testing", "validation", "fixture"]
+
+context:
+  input_data: ""       # Required: path to input data file
+  output_format: "json" # Optional: output format (default: json)
+
+steps:
+  - id: "analyze-input"
+    type: bash
+    command: |
+      python3 <<'EOF'
+      import json
+      import sys
+
+      input_file = "{{input_data}}"
+      try:
+          with open(input_file) as f:
+              data = json.load(f)
+          result = {"status": "ok", "count": len(data)}
+      except Exception as e:
+          result = {"status": "error", "message": str(e)}
+
+      print(json.dumps(result))
+      EOF
+    parse_json: true
+    timeout: 60
+    on_error: continue
+    output: "analysis_result"
+
+  - id: "generate-report"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    condition: "{{analysis_result}}"
+    prompt: |
+      Based on this analysis result: {{analysis_result}}
+
+      Generate a structured report in {{output_format}} format that summarizes:
+      1. Data quality assessment
+      2. Key findings from the analysis
+      3. Recommended next steps
+
+      Provide a clear, actionable report.
+    timeout: 300
+    on_error: fail
+    depends_on: "analyze-input"
+    output: "final_report"

@@ -1,0 +1,25 @@
+# This fixture intentionally contains structural errors to test validation
+# error detection. It should trigger ERROR-level findings.
+
+naem: "broken-test-recipe"    # typo: should be 'name'
+description: ""               # empty description
+version: "not-a-version"      # invalid semver format
+
+stesp:                        # typo: should be 'steps'
+  - id: "step1"
+    tyep: bash                # typo: should be 'type'
+    comand: "echo hello"      # typo: should be 'command'
+
+  - id: "step1"               # duplicate step ID
+    type: agent
+    agent: "bare-agent-name"  # missing namespace (no colon)
+    prompt: "Process {{nonexistent_var}} and output results"  # undefined variable
+    depends_on: "missing-step"  # references non-existent step
+
+steps:                        # Added for semantic validation testing
+  - id: "semantic-test-step"
+    type: agent
+    agent: "bare-agent-name"  # missing namespace (no colon) — triggers BARE_AGENT_NAME
+    prompt: "Process the input data and output results"
+    timeout: 60
+    on_error: continue

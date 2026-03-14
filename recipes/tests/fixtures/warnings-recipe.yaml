@@ -1,0 +1,36 @@
+# This fixture is valid YAML but contains best-practice issues.
+# It should trigger WARNING and SUGGESTION level findings (not ERRORs).
+
+name: "warnings_test_recipe"   # warning: underscores in name (prefer hyphens)
+description: "Short desc"      # warning: very short description
+version: "0.0.0"               # warning: placeholder version
+author: "Test Author"
+# no tags: warning: missing tags
+
+context:
+  InputData: ""      # warning: not snake_case (should be input_data)
+
+steps:
+  - id: "step1"      # warning: generic step ID
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: "Do it"  # warning: very short/vague prompt
+
+  - id: "step2"      # warning: generic step ID
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: "More"   # warning: very short/vague prompt
+    depends_on: "step1"
+
+  - id: "step3"      # warning: generic step ID
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: "Even more"  # warning: very short/vague prompt
+    depends_on: "step2"
+
+  - id: "step4"      # warning: generic step ID
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: "Final"  # warning: very short/vague prompt
+    depends_on: "step3"
+    on_error: continue  # suggestion: last step silencing errors
