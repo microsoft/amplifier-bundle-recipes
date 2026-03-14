@@ -339,3 +339,376 @@ steps:
     output: "recipe_discovery"
     parse_json: true
     timeout: 30
+
+  # ============================================================================
+  # PHASE 2: Structural Validation
+  # Engine validation (full mode) + gap coverage checks for each discovered
+  # recipe. Detects unknown keys, missing required fields, invalid types,
+  # duplicate IDs, orphan fields, and condition syntax errors.
+  # ============================================================================
+
+  - id: "structural-validation"
+    type: "bash"
+    depends_on: ["recipe-discovery"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      import sys
+      from pathlib import Path
+
+      _env_check_raw = r"""{{env_check}}"""
+      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      env_check = json.loads(_env_check_raw)
+      recipe_discovery = json.loads(_recipe_discovery_raw)
+
+      validation_mode = env_check.get("validation_mode", "structural_only")
+
+      VALID_RECIPE_KEYS = {
+          "name", "description", "version", "author", "created", "updated",
+          "tags", "context", "steps", "stages", "recursion", "rate_limiting",
+          "orchestrator",
+      }
+
+      VALID_STEP_KEYS = {
+          "id", "type", "agent", "prompt", "mode", "agent_config", "recipe",
+          "context", "command", "cwd", "env", "output_exit_code", "output",
+          "condition", "foreach", "as", "collect", "parallel", "max_iterations",
+          "timeout", "retry", "on_error", "depends_on", "parse_json",
+          "while_condition", "max_while_iterations", "break_when", "update_context",
+          "steps", "recursion", "provider", "model", "provider_preferences",
+          "model_role",
+      }
+
+      VALID_STEP_TYPES = {"agent", "bash", "recipe"}
+
+
+      def validate_recipe_structural(recipe_info):
+          """Validate a single recipe structurally. Returns list of findings."""
+          findings = []
+          path = recipe_info.get("path", "")
+
+          # 1. Handle parse_error recipes — YAML_PARSE_ERROR finding
+          if recipe_info.get("parse_error"):
+              findings.append({
+                  "code": "YAML_PARSE_ERROR",
+                  "severity": "ERROR",
+                  "message": "Recipe file failed YAML parsing",
+                  "detail": path,
+              })
+              return findings
+
+          # 2. Fresh parse for detailed validation
+          try:
+              import yaml
+              data = yaml.safe_load(Path(path).read_text())
+          except Exception as exc:
+              findings.append({
+                  "code": "YAML_PARSE_ERROR",
+                  "severity": "ERROR",
+                  "message": f"Failed to parse recipe: {exc}",
+                  "detail": str(exc),
+              })
+              return findings
+
+          if not isinstance(data, dict):
+              findings.append({
+                  "code": "INVALID_STRUCTURE",
+                  "severity": "ERROR",
+                  "message": "Recipe is not a YAML mapping",
+                  "detail": "",
+              })
+              return findings
+
+          # 3. Engine validation when validation_mode == 'full'
+          if validation_mode == "full":
+              try:
+                  from amplifier_module_tool_recipes.models import Recipe
+                  from amplifier_module_tool_recipes.validator import validate_recipe
+                  try:
+                      recipe_obj = Recipe.from_yaml(path)
+                      result = validate_recipe(recipe_obj)
+                      for err in result.errors:
+                          findings.append({
+                              "code": "ENGINE_ERROR",
+                              "severity": "ERROR",
+                              "message": str(err),
+                              "detail": "",
+                          })
+                      for warn in result.warnings:
+                          findings.append({
+                              "code": "ENGINE_WARNING",
+                              "severity": "WARNING",
+                              "message": str(warn),
+                              "detail": "",
+                          })
+                  except Exception as exc:
+                      findings.append({
+                          "code": "ENGINE_VALIDATION_FAILED",
+                          "severity": "ERROR",
+                          "message": f"Engine validation exception: {exc}",
+                          "detail": str(exc),
+                      })
+              except ImportError:
+                  pass  # Engine not available — graceful degradation
+
+          # 4. Unknown top-level keys (WARNING)
+          for key in data.keys():
+              if key not in VALID_RECIPE_KEYS:
+                  findings.append({
+                      "code": "UNKNOWN_RECIPE_KEY",
+                      "severity": "WARNING",
+                      "message": f"Unknown top-level key: '{key}'",
+                      "detail": key,
+                  })
+
+          # 5. Mixed mode: both steps and stages (ERROR)
+          if "steps" in data and "stages" in data:
+              findings.append({
+                  "code": "MIXED_MODE",
+                  "severity": "ERROR",
+                  "message": "Recipe has both 'steps' and 'stages' — use one or the other",
+                  "detail": "",
+              })
+
+          # 6. Missing required fields
+          if not data.get("name"):
+              findings.append({
+                  "code": "MISSING_NAME",
+                  "severity": "ERROR",
+                  "message": "Recipe is missing required 'name' field",
+                  "detail": "",
+              })
+
+          description = data.get("description", "")
+          if not description or not str(description).strip():
+              findings.append({
+                  "code": "MISSING_DESCRIPTION",
+                  "severity": "ERROR",
+                  "message": "Recipe is missing required 'description' field or it is empty",
+                  "detail": "",
+              })
+
+          if "version" not in data:
+              findings.append({
+                  "code": "MISSING_VERSION",
+                  "severity": "ERROR",
+                  "message": "Recipe is missing required 'version' field",
+                  "detail": "",
+              })
+
+          # 7. Version format: must match X.Y.Z
+          version = str(data["version"]) if data.get("version") is not None else ""
+          if version and not re.match(r"^\d+\.\d+\.\d+$", version):
+              findings.append({
+                  "code": "INVALID_VERSION",
+                  "severity": "ERROR",
+                  "message": f"Version '{version}' does not match semver format (X.Y.Z)",
+                  "detail": version,
+              })
+
+          # 8. Version placeholder '0.0.0' (WARNING)
+          if version == "0.0.0":
+              findings.append({
+                  "code": "PLACEHOLDER_VERSION",
+                  "severity": "WARNING",
+                  "message": "Version '0.0.0' is a placeholder — use a real version",
+                  "detail": version,
+              })
+
+          # 9. Collect all steps (including steps nested inside stages)
+          steps = data.get("steps") or []
+          stages = data.get("stages") or []
+          all_steps = list(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  all_steps.extend(stage.get("steps") or [])
+
+          # 10. Duplicate step IDs (ERROR)
+          seen_ids = set()
+          for step in all_steps:
+              if isinstance(step, dict):
+                  step_id = step.get("id")
+                  if step_id:
+                      if step_id in seen_ids:
+                          findings.append({
+                              "code": "DUPLICATE_STEP_ID",
+                              "severity": "ERROR",
+                              "message": f"Duplicate step ID: '{step_id}'",
+                              "detail": step_id,
+                          })
+                      else:
+                          seen_ids.add(step_id)
+
+          # 11. Duplicate output names (WARNING)
+          seen_outputs = set()
+          for step in all_steps:
+              if isinstance(step, dict):
+                  output_name = step.get("output")
+                  if output_name:
+                      if output_name in seen_outputs:
+                          findings.append({
+                              "code": "DUPLICATE_OUTPUT",
+                              "severity": "WARNING",
+                              "message": f"Duplicate output name: '{output_name}'",
+                              "detail": output_name,
+                          })
+                      else:
+                          seen_outputs.add(output_name)
+
+          # 12. Per-step validations
+          for step in all_steps:
+              if not isinstance(step, dict):
+                  continue
+              step_id = step.get("id", "(unknown)")
+
+              # Unknown step keys (WARNING)
+              for key in step.keys():
+                  if key not in VALID_STEP_KEYS:
+                      findings.append({
+                          "code": "UNKNOWN_STEP_KEY",
+                          "severity": "WARNING",
+                          "message": f"Step '{step_id}': unknown key '{key}'",
+                          "detail": key,
+                      })
+
+              # Invalid step type (ERROR)
+              step_type = step.get("type")
+              if step_type and step_type not in VALID_STEP_TYPES:
+                  findings.append({
+                      "code": "INVALID_STEP_TYPE",
+                      "severity": "ERROR",
+                      "message": (
+                          f"Step '{step_id}': invalid type '{step_type}'"
+                          f" (valid: {sorted(VALID_STEP_TYPES)})"
+                      ),
+                      "detail": step_type,
+                  })
+
+              # Empty prompt (ERROR)
+              if "prompt" in step and not str(step.get("prompt") or "").strip():
+                  findings.append({
+                      "code": "EMPTY_PROMPT",
+                      "severity": "ERROR",
+                      "message": f"Step '{step_id}': prompt is empty",
+                      "detail": step_id,
+                  })
+
+              # Empty command (ERROR)
+              if "command" in step and not str(step.get("command") or "").strip():
+                  findings.append({
+                      "code": "EMPTY_COMMAND",
+                      "severity": "ERROR",
+                      "message": f"Step '{step_id}': command is empty",
+                      "detail": step_id,
+                  })
+
+              # Orphan fields: collect / as / parallel without foreach (WARNING)
+              has_foreach = "foreach" in step
+              if "collect" in step and not has_foreach:
+                  findings.append({
+                      "code": "ORPHAN_COLLECT",
+                      "severity": "WARNING",
+                      "message": f"Step '{step_id}': 'collect' used without 'foreach'",
+                      "detail": step_id,
+                  })
+              if "as" in step and not has_foreach:
+                  findings.append({
+                      "code": "ORPHAN_AS",
+                      "severity": "WARNING",
+                      "message": f"Step '{step_id}': 'as' used without 'foreach'",
+                      "detail": step_id,
+                  })
+              if "parallel" in step and not has_foreach:
+                  findings.append({
+                      "code": "ORPHAN_PARALLEL",
+                      "severity": "WARNING",
+                      "message": f"Step '{step_id}': 'parallel' used without 'foreach'",
+                      "detail": step_id,
+                  })
+
+              # break_when without while_condition (WARNING)
+              if "break_when" in step and "while_condition" not in step:
+                  findings.append({
+                      "code": "ORPHAN_BREAK_WHEN",
+                      "severity": "WARNING",
+                      "message": f"Step '{step_id}': 'break_when' used without 'while_condition'",
+                      "detail": step_id,
+                  })
+
+              # Condition syntax: invalid operators ===, <>, !== (ERROR)
+              condition = str(step.get("condition") or "")
+              for invalid_op in ["===", "<>", "!=="]:
+                  if invalid_op in condition:
+                      findings.append({
+                          "code": "INVALID_CONDITION_OP",
+                          "severity": "ERROR",
+                          "message": (
+                              f"Step '{step_id}': condition uses invalid"
+                              f" operator '{invalid_op}'"
+                          ),
+                          "detail": invalid_op,
+                      })
+
+          # 13. Staged mode: approval_required without prompt (WARNING)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  if stage.get("approval_required") and not stage.get("prompt"):
+                      stage_id = stage.get("id", "(unknown)")
+                      findings.append({
+                          "code": "APPROVAL_NO_PROMPT",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Stage '{stage_id}': approval_required"
+                              " but no approval prompt defined"
+                          ),
+                          "detail": stage_id,
+                      })
+
+          return findings
+
+
+      # Process all recipes from discovery
+      results = []
+      for recipe_info in recipe_discovery.get("recipes", []):
+          path = recipe_info.get("path", "")
+          findings = validate_recipe_structural(recipe_info)
+          error_count = sum(1 for f in findings if f["severity"] == "ERROR")
+          warning_count = sum(1 for f in findings if f["severity"] == "WARNING")
+          results.append({
+              "path": path,
+              "relative_path": recipe_info.get("relative_path", ""),
+              "name": recipe_info.get("name"),
+              "findings": findings,
+              "error_count": error_count,
+              "warning_count": warning_count,
+          })
+
+      # Build summary
+      total = len(results)
+      clean = sum(1 for r in results if r["error_count"] == 0 and r["warning_count"] == 0)
+      with_errors = sum(1 for r in results if r["error_count"] > 0)
+      with_warnings = sum(1 for r in results if r["warning_count"] > 0)
+      total_errors = sum(r["error_count"] for r in results)
+      total_warnings = sum(r["warning_count"] for r in results)
+
+      output = {
+          "phase": "structural",
+          "validation_mode": validation_mode,
+          "results": results,
+          "summary": {
+              "total": total,
+              "clean": clean,
+              "with_errors": with_errors,
+              "with_warnings": with_warnings,
+              "total_errors": total_errors,
+              "total_warnings": total_warnings,
+          },
+      }
+
+      print(json.dumps(output))
+      EOF
+    output: "structural_results"
+    parse_json: true
+    timeout: 120
