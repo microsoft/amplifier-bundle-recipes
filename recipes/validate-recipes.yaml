@@ -922,7 +922,7 @@ steps:
               sid = str(s.get("id") or "")
               if sid not in continue_step_ids:
                   continue
-              # Scan prompt + command for {{var}} references
+              # Scan prompt + command for template variable references
               step_text = (
                   str(s.get("prompt") or "")
                   + str(s.get("command") or "")
