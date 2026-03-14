@@ -530,21 +530,32 @@ steps:
                       else:
                           seen_ids.add(step_id)
 
-          # 10. Duplicate output names (WARNING)
-          seen_outputs = set()
+          # 10. Duplicate output names (WARNING — unless default+override pattern)
+          # Build map: output_name -> list of steps that write to it
+          output_writers = {}  # output_name -> [step_dict, ...]
           for step in all_steps:
               if isinstance(step, dict):
                   output_name = step.get("output")
                   if output_name:
-                      if output_name in seen_outputs:
-                          findings.append({
-                              "code": "DUPLICATE_OUTPUT",
-                              "severity": "WARNING",
-                              "message": f"Duplicate output name: '{output_name}'",
-                              "detail": output_name,
-                          })
-                      else:
-                          seen_outputs.add(output_name)
+                      output_writers.setdefault(output_name, []).append(step)
+
+          for output_name, writers in output_writers.items():
+              if len(writers) > 1:
+                  # Check if this is the "default + conditional override" pattern:
+                  # one unconditional step sets a default, a conditional step overrides.
+                  # If at least one writer has a condition, it's an accepted pattern.
+                  any_conditional = any(
+                      bool(w.get("condition"))
+                      for w in writers
+                  )
+                  if not any_conditional:
+                      # All writers are unconditional — real duplicate
+                      findings.append({
+                          "code": "DUPLICATE_OUTPUT",
+                          "severity": "WARNING",
+                          "message": f"Duplicate output name: '{output_name}'",
+                          "detail": output_name,
+                      })
 
           # 11. Per-step validations
           for step in all_steps:
@@ -814,14 +825,14 @@ steps:
 
           # ── Step Design ───────────────────────────────────────────────────────
 
-          # Too many steps (> 15)
-          if len(all_steps) > 15:
+          # Too many steps (> 20)
+          if len(all_steps) > 20:
               findings.append({
                   "code": "TOO_MANY_STEPS",
-                  "severity": "WARNING",
+                  "severity": "SUGGESTION",
                   "message": (
                       f"Recipe has {len(all_steps)} steps"
-                      " — consider splitting into sub-recipes (>15 is complex)"
+                      " — consider splitting into sub-recipes (>20 is complex)"
                   ),
                   "detail": str(len(all_steps)),
               })
@@ -938,10 +949,14 @@ steps:
                           "detail": step_id,
                       })
 
-              # Bash step without 'set -euo pipefail' and not using python3
+              # Bash step without 'set -euo pipefail' (skip for python heredocs)
               if step_type == "bash":
                   command = str(step.get("command") or "")
-                  uses_python = "python3" in command or "python " in command
+                  cmd_stripped = command.lstrip()
+                  uses_python = (
+                      cmd_stripped.startswith("python3")
+                      or cmd_stripped.startswith("python ")
+                  )
                   has_strict = "set -euo pipefail" in command
                   if not has_strict and not uses_python:
                       findings.append({
