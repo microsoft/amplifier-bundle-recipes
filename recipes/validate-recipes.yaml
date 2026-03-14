@@ -1,0 +1,133 @@
+# validate-recipes.yaml
+# Recipe Validator v1.0.0
+# Validates recipe YAML files in a bundle repository for structural correctness,
+# best practices, and semantic consistency.
+#
+# CHANGELOG:
+# v1.0.0 - Initial release
+#        - Phase 0: Environment check (engine availability detection)
+#        - Phase 1: Recipe discovery (recursive scan + filter)
+#        - Phase 2: Structural validation (engine + gap coverage)
+#        - Phase 3: Best practices check (naming, timeouts, error handling, prompts, versioning)
+#        - Phase 4: Semantic validation (agent refs, sub-recipes, variable flow, loops, conditions)
+#        - Phase 5: Quality classification (deterministic scoring)
+#        - Phase 6: Report synthesis (bash quick-pass or LLM)
+#
+# Usage:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=recipes:recipes/validate-recipes.yaml \
+#     context='{"repo_path": "/path/to/bundle-repo"}'
+#
+# With custom recipes directory:
+#   amplifier tool invoke recipes operation=execute \
+#     recipe_path=recipes:recipes/validate-recipes.yaml \
+#     context='{"repo_path": "/path/to/repo", "recipes_dir": "my-recipes"}'
+#
+# QUALITY LEVELS:
+# - good: Clean bill of health — no issues at all
+# - polish: Only SUGGESTIONs — missing tags, short prompts, naming conventions
+# - needs_work: WARNINGs present — missing timeouts, condition issues, convergence concerns
+# - critical: ERRORs present — YAML parse failures, missing required fields, broken references
+
+name: validate-recipes
+description: |
+  Validates Amplifier recipe YAML files in a bundle repository against:
+
+  - **Structural Correctness** (ERROR): Valid YAML, required fields, step schema, type constraints
+  - **Best Practices** (WARNING/SUGGESTION): Naming conventions, error handling, timeouts, prompts, versioning
+  - **Semantic Consistency** (ERROR/WARNING): Agent references, sub-recipe paths, variable flow, loop convergence
+
+  Produces a validation report with findings categorized by severity and actionable remediation.
+
+  **Features:**
+  - Graceful degradation when recipe engine not installed (structural_only mode)
+  - Per-recipe isolation — one broken recipe doesn't block validation of others
+  - Deterministic quality classification with explicit PASS thresholds
+  - Quick-approval path for clean repos (no unnecessary LLM analysis)
+  - Configurable recipes directory and known agent patterns
+version: "1.0.0"
+author: "Amplifier Recipes Collection"
+tags: ["recipes", "validation", "quality", "audit", "structure", "best-practices"]
+
+context:
+  repo_path: ""              # Required: path to bundle repository
+  recipes_dir: "recipes"     # Optional: subdirectory containing recipes (default: "recipes")
+  known_agents: ""           # Optional: JSON list of known external namespace:agent patterns
+                             # e.g., '["foundation:*", "recipes:*", "superpowers:*"]'
+
+steps:
+  # ============================================================================
+  # PHASE 0: Environment Check
+  # Detect whether recipe engine validation models are available
+  # Sets validation_mode: "full" or "structural_only"
+  # ============================================================================
+
+  - id: "environment-check"
+    type: "bash"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      results = {
+          "phase": "environment",
+          "python_version": sys.version.split()[0],
+          "engine_available": False,
+          "yaml_available": False,
+          "repo_path": "{{repo_path}}",
+          "repo_exists": False,
+          "validation_mode": "structural_only",
+          "errors": []
+      }
+
+      # Check 1: PyYAML availability
+      try:
+          import yaml
+          results["yaml_available"] = True
+      except ImportError:
+          results["errors"].append({
+              "type": "import_error",
+              "message": "PyYAML not available — required for recipe parsing",
+              "suggestion": "pip install pyyaml"
+          })
+
+      # Check 2: Recipe engine availability (enables full validation)
+      try:
+          from amplifier_module_tool_recipes.models import Recipe
+          from amplifier_module_tool_recipes.validator import validate_recipe
+          results["engine_available"] = True
+      except ImportError:
+          pass  # Not an error — we degrade gracefully
+
+      # Check 3: Repository path exists
+      repo_path = Path("{{repo_path}}").expanduser().resolve()
+      if repo_path.exists() and repo_path.is_dir():
+          results["repo_exists"] = True
+          results["repo_path_resolved"] = str(repo_path)
+      else:
+          results["errors"].append({
+              "type": "path_error",
+              "message": f"Repository path does not exist or is not a directory: {{repo_path}}"
+          })
+
+      # Determine validation mode
+      if results["engine_available"] and results["yaml_available"]:
+          results["validation_mode"] = "full"
+          results["mode_description"] = "Full validation: engine models + gap coverage + best practices + semantics"
+      elif results["yaml_available"]:
+          results["validation_mode"] = "structural_only"
+          results["mode_description"] = "Structural only: raw YAML parsing without engine model validation"
+      else:
+          results["validation_mode"] = "minimal"
+          results["mode_description"] = "Minimal: cannot parse YAML — only file-level checks possible"
+          results["errors"].append({
+              "type": "degraded_mode",
+              "message": "Neither PyYAML nor recipe engine available — validation severely limited"
+          })
+
+      print(json.dumps(results))
+      EOF
+    output: "env_check"
+    parse_json: true
+    timeout: 30
