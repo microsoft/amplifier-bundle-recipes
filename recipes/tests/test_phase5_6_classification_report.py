@@ -53,8 +53,7 @@ def steps_by_id(steps):
 def test_recipe_has_8_steps(steps):
     """Recipe must have exactly 8 steps."""
     assert len(steps) == 8, (
-        f"Expected 8 steps, got {len(steps)}. "
-        f"Step IDs: {[s['id'] for s in steps]}"
+        f"Expected 8 steps, got {len(steps)}. Step IDs: {[s['id'] for s in steps]}"
     )
 
 
@@ -62,8 +61,7 @@ def test_step_ids_are_correct(steps):
     """All 8 step IDs must be present in the correct order."""
     actual_ids = [step["id"] for step in steps]
     assert actual_ids == EXPECTED_STEP_IDS, (
-        f"Expected step IDs:\n  {EXPECTED_STEP_IDS}\n"
-        f"Got:\n  {actual_ids}"
+        f"Expected step IDs:\n  {EXPECTED_STEP_IDS}\nGot:\n  {actual_ids}"
     )
 
 
@@ -97,10 +95,13 @@ def test_quality_classification_depends_on_all_three_phases(steps_by_id):
     """quality-classification must depend on all 3 validation phases."""
     step = steps_by_id["quality-classification"]
     depends_on = set(step.get("depends_on", []))
-    required_deps = {"structural-validation", "best-practices-check", "semantic-validation"}
+    required_deps = {
+        "structural-validation",
+        "best-practices-check",
+        "semantic-validation",
+    }
     assert required_deps == depends_on, (
-        f"Expected depends_on: {sorted(required_deps)}\n"
-        f"Got: {sorted(depends_on)}"
+        f"Expected depends_on: {sorted(required_deps)}\nGot: {sorted(depends_on)}"
     )
 
 
@@ -137,9 +138,7 @@ def test_quality_classification_command_consumes_all_phase_results(steps_by_id):
     step = steps_by_id["quality-classification"]
     command = step.get("command", "")
     for var in ("structural_results", "practice_results", "semantic_results"):
-        assert var in command, (
-            f"quality-classification command must consume '{var}'"
-        )
+        assert var in command, f"quality-classification command must consume '{var}'"
 
 
 def test_quality_classification_command_has_quality_levels(steps_by_id):
@@ -225,9 +224,7 @@ def test_quick_approval_command_generates_pass_report(steps_by_id):
     step = steps_by_id["quick-approval"]
     command = step.get("command", "")
     for key in ("quality_level", "summary", "recipes_validated", "recommendations"):
-        assert key in command, (
-            f"quick-approval command must reference key '{key}'"
-        )
+        assert key in command, f"quick-approval command must reference key '{key}'"
 
 
 def test_quick_approval_command_has_good_quality_level(steps_by_id):
@@ -309,17 +306,22 @@ def test_synthesize_report_prompt_references_all_phases(steps_by_id):
     step = steps_by_id["synthesize-report"]
     prompt = step.get("prompt", "")
     for var in ("structural_results", "practice_results", "semantic_results"):
-        assert var in prompt, (
-            f"synthesize-report prompt must reference '{var}'"
-        )
+        assert var in prompt, f"synthesize-report prompt must reference '{var}'"
 
 
 def test_synthesize_report_prompt_has_output_json_keys(steps_by_id):
     """synthesize-report prompt must specify required output JSON keys."""
     step = steps_by_id["synthesize-report"]
     prompt = step.get("prompt", "")
-    for key in ("quality_level", "summary", "recipes_validated", "findings_by_severity",
-                "per_recipe_verdicts", "recommendations", "report_text"):
+    for key in (
+        "quality_level",
+        "summary",
+        "recipes_validated",
+        "findings_by_severity",
+        "per_recipe_verdicts",
+        "recommendations",
+        "report_text",
+    ):
         assert key in prompt, (
             f"synthesize-report prompt must reference output key '{key}'"
         )

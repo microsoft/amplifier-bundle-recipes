@@ -144,7 +144,6 @@ steps:
     command: |
       python3 << 'EOF'
       import json
-      import sys
       from pathlib import Path
 
       def _process_yaml_file(yaml_path, base, results, sub_recipe_refs):
@@ -355,7 +354,6 @@ steps:
       python3 << 'EOF'
       import json
       import re
-      import sys
       from pathlib import Path
 
       _env_check_raw = r"""{{env_check}}"""
@@ -508,16 +506,7 @@ steps:
                   "detail": version,
               })
 
-          # 8. Version placeholder '0.0.0' (WARNING)
-          if version == "0.0.0":
-              findings.append({
-                  "code": "PLACEHOLDER_VERSION",
-                  "severity": "WARNING",
-                  "message": "Version '0.0.0' is a placeholder — use a real version",
-                  "detail": version,
-              })
-
-          # 9. Collect all steps (including steps nested inside stages)
+          # 8. Collect all steps (including steps nested inside stages)
           steps = data.get("steps") or []
           stages = data.get("stages") or []
           all_steps = list(steps)
@@ -525,7 +514,7 @@ steps:
               if isinstance(stage, dict):
                   all_steps.extend(stage.get("steps") or [])
 
-          # 10. Duplicate step IDs (ERROR)
+          # 9. Duplicate step IDs (ERROR)
           seen_ids = set()
           for step in all_steps:
               if isinstance(step, dict):
@@ -541,7 +530,7 @@ steps:
                       else:
                           seen_ids.add(step_id)
 
-          # 11. Duplicate output names (WARNING)
+          # 10. Duplicate output names (WARNING)
           seen_outputs = set()
           for step in all_steps:
               if isinstance(step, dict):
@@ -557,7 +546,7 @@ steps:
                       else:
                           seen_outputs.add(output_name)
 
-          # 12. Per-step validations
+          # 11. Per-step validations
           for step in all_steps:
               if not isinstance(step, dict):
                   continue
@@ -651,7 +640,7 @@ steps:
                           "detail": invalid_op,
                       })
 
-          # 13. Staged mode: approval_required without prompt (WARNING)
+          # 12. Staged mode: approval_required without prompt (WARNING)
           for stage in stages:
               if isinstance(stage, dict):
                   if stage.get("approval_required") and not stage.get("prompt"):
@@ -728,7 +717,6 @@ steps:
       python3 << 'EOF'
       import json
       import re
-      import sys
       from pathlib import Path
 
       _recipe_discovery_raw = r"""{{recipe_discovery}}"""
@@ -1039,7 +1027,6 @@ steps:
     command: |
       python3 << 'EOF'
       import json
-      import sys
       from fnmatch import fnmatch
       from pathlib import Path
 
