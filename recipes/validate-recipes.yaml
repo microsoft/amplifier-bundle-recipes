@@ -131,3 +131,211 @@ steps:
     output: "env_check"
     parse_json: true
     timeout: 30
+
+  # ============================================================================
+  # PHASE 1: Recipe Discovery
+  # Recursively scan recipes_dir and examples/ for YAML recipe files.
+  # Filters test fixtures, captures parse errors, classifies sub-recipes.
+  # ============================================================================
+
+  - id: "recipe-discovery"
+    type: "bash"
+    depends_on: ["environment-check"]
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      def _process_yaml_file(yaml_path, base, results, sub_recipe_refs):
+          """Process a single YAML file — categorize as recipe, non-recipe, or parse error."""
+          import yaml
+
+          rel = str(yaml_path.relative_to(base)).replace("\\", "/")
+          rel_check = "/" + rel
+
+          # Skip test fixtures
+          if "/tests/" in rel_check or "/test_" in rel_check:
+              return
+
+          file_size = yaml_path.stat().st_size
+
+          # Attempt YAML parse
+          data = None
+          parse_error_msg = None
+          try:
+              data = yaml.safe_load(yaml_path.read_text())
+          except Exception as exc:
+              parse_error_msg = str(exc)
+              results["parse_errors"].append({
+                  "path": str(yaml_path),
+                  "relative_path": rel,
+                  "error": parse_error_msg,
+              })
+
+          # If parse failed, record as recipe with parse_error=True and return
+          if parse_error_msg is not None:
+              results["recipes"].append({
+                  "path": str(yaml_path),
+                  "relative_path": rel,
+                  "filename": yaml_path.name,
+                  "name": None,
+                  "version": None,
+                  "description": None,
+                  "size_bytes": file_size,
+                  "step_count": 0,
+                  "is_staged": False,
+                  "has_context": False,
+                  "has_tags": False,
+                  "parse_error": True,
+                  "is_sub_recipe": False,
+              })
+              return
+
+          # Non-dict or missing required keys → not a recipe
+          if not isinstance(data, dict):
+              results["non_recipe_yaml"].append({
+                  "path": str(yaml_path),
+                  "relative_path": rel,
+              })
+              return
+
+          has_name = bool(data.get("name"))
+          has_steps_or_stages = ("steps" in data) or ("stages" in data)
+
+          if not (has_name and has_steps_or_stages):
+              results["non_recipe_yaml"].append({
+                  "path": str(yaml_path),
+                  "relative_path": rel,
+              })
+              return
+
+          # It's a recipe — collect info
+          steps = data.get("steps") or []
+          stages = data.get("stages") or []
+          is_staged = bool(stages)
+
+          # Count all steps (including steps nested inside stages)
+          step_count = len(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  step_count += len(stage.get("steps") or [])
+
+          # Collect sub-recipe references from type='recipe' steps
+          all_steps = list(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  all_steps.extend(stage.get("steps") or [])
+
+          for step in all_steps:
+              if isinstance(step, dict) and step.get("type") == "recipe":
+                  for field in ("recipe_path", "recipe", "path", "recipe_file"):
+                      ref = step.get(field)
+                      if ref:
+                          sub_recipe_refs.add(str(ref))
+                          break
+
+          version_val = data.get("version")
+          recipe_info = {
+              "path": str(yaml_path),
+              "relative_path": rel,
+              "filename": yaml_path.name,
+              "name": data.get("name"),
+              "version": str(version_val) if version_val is not None else None,
+              "description": str(data.get("description", "") or "")[:200] or None,
+              "size_bytes": file_size,
+              "step_count": step_count,
+              "is_staged": is_staged,
+              "has_context": "context" in data,
+              "has_tags": bool(data.get("tags")),
+              "parse_error": False,
+              "is_sub_recipe": False,
+          }
+          results["recipes"].append(recipe_info)
+
+
+      def discover_recipes(repo_path, recipes_dir):
+          """Discover all recipe YAML files in a repository."""
+          # Early exit if PyYAML not available
+          try:
+              import yaml  # noqa: F401
+          except ImportError:
+              return {
+                  "phase": "discovery",
+                  "skipped": True,
+                  "reason": "PyYAML not available — install with: pip install pyyaml",
+                  "repo_path": repo_path,
+                  "recipes_dir": recipes_dir,
+                  "recipes": [],
+                  "non_recipe_yaml": [],
+                  "parse_errors": [],
+                  "total_count": 0,
+                  "search_paths": [],
+                  "errors": [],
+              }
+
+          repo = Path(repo_path).expanduser().resolve()
+          results = {
+              "phase": "discovery",
+              "repo_path": str(repo),
+              "recipes_dir": recipes_dir,
+              "recipes": [],
+              "non_recipe_yaml": [],
+              "parse_errors": [],
+              "total_count": 0,
+              "search_paths": [],
+              "errors": [],
+          }
+
+          if not repo.exists() or not repo.is_dir():
+              results["errors"].append({
+                  "type": "path_error",
+                  "message": f"Repository path does not exist: {repo_path}",
+              })
+              return results
+
+          sub_recipe_refs = set()
+
+          # Determine directories to scan
+          scan_dirs = []
+
+          # 1. Configured recipes_dir
+          configured_dir = repo / recipes_dir
+          if configured_dir.exists() and configured_dir.is_dir():
+              scan_dirs.append(configured_dir)
+              results["search_paths"].append(str(configured_dir))
+
+          # 2. examples/ directory (if different from recipes_dir and it exists)
+          if recipes_dir != "examples":
+              examples_dir = repo / "examples"
+              if examples_dir.exists() and examples_dir.is_dir():
+                  scan_dirs.append(examples_dir)
+                  results["search_paths"].append(str(examples_dir))
+
+          # Scan each directory recursively
+          for scan_dir in scan_dirs:
+              yaml_files = sorted(
+                  list(scan_dir.rglob("*.yaml")) + list(scan_dir.rglob("*.yml"))
+              )
+              for yaml_path in yaml_files:
+                  _process_yaml_file(yaml_path, repo, results, sub_recipe_refs)
+
+          # Post-processing: classify is_sub_recipe
+          for recipe in results["recipes"]:
+              r_path = recipe.get("path", "")
+              r_name = recipe.get("name") or ""
+              for ref in sub_recipe_refs:
+                  if ref in r_path or (r_name and ref == r_name):
+                      recipe["is_sub_recipe"] = True
+                      break
+
+          results["total_count"] = len(results["recipes"])
+          return results
+
+
+      output = discover_recipes("{{repo_path}}", "{{recipes_dir}}")
+      print(json.dumps(output))
+      EOF
+    output: "recipe_discovery"
+    parse_json: true
+    timeout: 30
