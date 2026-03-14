@@ -1385,3 +1385,300 @@ steps:
     output: "semantic_results"
     parse_json: true
     timeout: 120
+
+  # ============================================================================
+  # PHASE 5: Quality Classification
+  # Deterministic scoring — aggregates findings from all three validation phases
+  # and assigns a quality level to each recipe and the repo as a whole.
+  # Decides whether LLM report synthesis is needed (requires_llm_analysis).
+  # ============================================================================
+
+  - id: "quality-classification"
+    type: "bash"
+    depends_on: ["structural-validation", "best-practices-check", "semantic-validation"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json
+
+      _structural_results_raw = r"""{{structural_results}}"""
+      _practice_results_raw = r"""{{practice_results}}"""
+      _semantic_results_raw = r"""{{semantic_results}}"""
+
+      structural_results = json.loads(_structural_results_raw)
+      practice_results = json.loads(_practice_results_raw)
+      semantic_results = json.loads(_semantic_results_raw)
+
+
+      def classify_recipe(path, structural_findings, practice_findings, semantic_findings):
+          """Classify a single recipe's quality based on its findings.
+
+          Returns 'critical', 'needs_work', 'polish', or 'good'.
+          """
+          all_findings = list(structural_findings) + list(practice_findings) + list(semantic_findings)
+          has_errors = any(f.get("severity") == "ERROR" for f in all_findings)
+          has_warnings = any(f.get("severity") == "WARNING" for f in all_findings)
+          has_suggestions = any(f.get("severity") == "SUGGESTION" for f in all_findings)
+
+          if has_errors:
+              return "critical"
+          if has_warnings:
+              return "needs_work"
+          if has_suggestions:
+              return "polish"
+          return "good"
+
+
+      # Build lookup by path from structural results
+      structural_by_path = {}
+      for r in structural_results.get("results", []):
+          structural_by_path[r.get("path", "")] = r
+
+      # Build lookup by path from practice results
+      practice_by_path = {}
+      for r in practice_results.get("results", []):
+          practice_by_path[r.get("path", "")] = r
+
+      # Build lookup by path from semantic results
+      semantic_by_path = {}
+      for r in semantic_results.get("results", []):
+          semantic_by_path[r.get("path", "")] = r
+
+      # Collect all unique paths across all three phases
+      all_paths = sorted(
+          set(structural_by_path.keys())
+          | set(practice_by_path.keys())
+          | set(semantic_by_path.keys())
+      )
+
+      # Classify each recipe
+      classified_recipes = []
+      summary_counts = {"total": 0, "good": 0, "polish": 0, "needs_work": 0, "critical": 0}
+
+      for path in all_paths:
+          s_info = structural_by_path.get(path, {})
+          p_info = practice_by_path.get(path, {})
+          m_info = semantic_by_path.get(path, {})
+
+          s_findings = s_info.get("findings", [])
+          p_findings = p_info.get("findings", [])
+          m_findings = m_info.get("findings", [])
+
+          quality = classify_recipe(path, s_findings, p_findings, m_findings)
+
+          relative_path = (
+              s_info.get("relative_path")
+              or p_info.get("relative_path")
+              or m_info.get("relative_path")
+              or path
+          )
+          name = (
+              s_info.get("name")
+              or p_info.get("name")
+              or m_info.get("name")
+          )
+
+          classified_recipes.append({
+              "path": path,
+              "relative_path": relative_path,
+              "name": name,
+              "quality": quality,
+              "error_count": sum(
+                  1 for f in s_findings + p_findings + m_findings
+                  if f.get("severity") == "ERROR"
+              ),
+              "warning_count": sum(
+                  1 for f in s_findings + p_findings + m_findings
+                  if f.get("severity") == "WARNING"
+              ),
+              "suggestion_count": sum(
+                  1 for f in s_findings + p_findings + m_findings
+                  if f.get("severity") == "SUGGESTION"
+              ),
+          })
+          summary_counts["total"] += 1
+          summary_counts[quality] += 1
+
+      # Cross-recipe findings from semantic phase
+      cross_recipe_findings = semantic_results.get("cross_recipe_findings", [])
+      cross_errors = sum(1 for f in cross_recipe_findings if f.get("severity") == "ERROR")
+      cross_warnings = sum(1 for f in cross_recipe_findings if f.get("severity") == "WARNING")
+
+      # Aggregate quality level
+      n_critical = summary_counts["critical"]
+      n_needs_work = summary_counts["needs_work"]
+      n_polish = summary_counts["polish"]
+      n_good = summary_counts["good"]
+      n_total = summary_counts["total"]
+
+      if n_critical > 0 or cross_errors > 0:
+          quality_level = "critical"
+          requires_llm_analysis = True
+      elif n_needs_work > 0 or cross_warnings > 0:
+          quality_level = "needs_work"
+          requires_llm_analysis = True
+      elif n_polish > 0:
+          quality_level = "polish"
+          requires_llm_analysis = True
+      else:
+          quality_level = "good"
+          requires_llm_analysis = False
+
+      # Build message
+      if quality_level == "good":
+          message = f"All {n_total} recipes meet quality thresholds"
+      else:
+          message = (
+              f"Issues found: {n_critical} critical, {n_needs_work} need work, "
+              f"{n_polish} polish. {n_good}/{n_total} recipes are good."
+          )
+
+      output = {
+          "phase": "quality_classification",
+          "recipes": classified_recipes,
+          "cross_recipe_findings": cross_recipe_findings,
+          "summary": summary_counts,
+          "quality_level": quality_level,
+          "requires_llm_analysis": requires_llm_analysis,
+          "message": message,
+      }
+
+      print(json.dumps(output))
+      EOF
+    output: "quality_classification"
+    parse_json: true
+    timeout: 60
+
+  # ============================================================================
+  # PHASE 6a: Quick Approval (bash fast path)
+  # When all recipes are clean (requires_llm_analysis == false), generate a
+  # simple PASS report without invoking an LLM agent.
+  # ============================================================================
+
+  - id: "quick-approval"
+    type: "bash"
+    condition: "{{quality_classification.requires_llm_analysis}} == false"
+    depends_on: ["quality-classification"]
+    command: |
+      python3 << 'EOF'
+      import json
+
+      _quality_classification_raw = r"""{{quality_classification}}"""
+      quality_classification = json.loads(_quality_classification_raw)
+
+      summary = quality_classification.get("summary", {})
+      recipes = quality_classification.get("recipes", [])
+      n_total = summary.get("total", len(recipes))
+
+      per_recipe_verdicts = [
+          {
+              "path": r.get("relative_path") or r.get("path", ""),
+              "name": r.get("name"),
+              "verdict": "PASS",
+              "quality": r.get("quality", "good"),
+          }
+          for r in recipes
+      ]
+
+      output = {
+          "phase": "report",
+          "quality_level": "good",
+          "summary": f"All {n_total} recipes passed validation with no issues.",
+          "recipes_validated": n_total,
+          "findings_by_severity": {
+              "errors": 0,
+              "warnings": 0,
+              "suggestions": 0,
+          },
+          "per_recipe_verdicts": per_recipe_verdicts,
+          "recommendations": [],
+      }
+
+      print(json.dumps(output))
+      EOF
+    output: "recipe_validation"
+    parse_json: true
+    timeout: 10
+
+  # ============================================================================
+  # PHASE 6b: LLM Report Synthesis
+  # When issues are found (requires_llm_analysis == true), delegate to
+  # foundation:zen-architect for structured report generation.
+  # ============================================================================
+
+  - id: "synthesize-report"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    condition: "{{quality_classification.requires_llm_analysis}} == true"
+    depends_on: ["quality-classification"]
+    on_error: "continue"
+    prompt: |
+      You are analyzing recipe validation results for an Amplifier bundle repository.
+
+      ## Validation Phase Results
+
+      **Structural Validation Results (structural_results):**
+      ```json
+      {{structural_results}}
+      ```
+
+      **Best Practices Results (practice_results):**
+      ```json
+      {{practice_results}}
+      ```
+
+      **Semantic Validation Results (semantic_results):**
+      ```json
+      {{semantic_results}}
+      ```
+
+      **Quality Classification:**
+      ```json
+      {{quality_classification}}
+      ```
+
+      ## Task
+
+      Based on the aggregate quality_level from the quality classification:
+      - If quality_level == 'polish': Overall verdict is **PASS WITH SUGGESTIONS**
+      - If quality_level == 'needs_work': Overall verdict is **PASS WITH WARNINGS**
+      - If quality_level == 'critical': Overall verdict is **FAIL**
+
+      Generate a structured validation report. Output ONLY a valid JSON object with exactly
+      these keys (no extra text before or after the JSON):
+
+      ```json
+      {
+        "quality_level": "<good|polish|needs_work|critical>",
+        "summary": "<one paragraph overall assessment>",
+        "recipes_validated": <integer count>,
+        "findings_by_severity": {
+          "errors": <integer>,
+          "warnings": <integer>,
+          "suggestions": <integer>
+        },
+        "per_recipe_verdicts": [
+          {
+            "path": "<relative_path>",
+            "name": "<recipe name>",
+            "verdict": "<PASS|PASS WITH SUGGESTIONS|PASS WITH WARNINGS|FAIL>",
+            "top_findings": ["<brief finding description>", ...]
+          }
+        ],
+        "recommendations": [
+          {
+            "priority": "<high|medium|low>",
+            "recipe": "<recipe name or 'all'>",
+            "action": "<specific actionable recommendation>"
+          }
+        ],
+        "report_text": "<full human-readable report with: Recipe Validation Summary, Per-Recipe Verdicts table, Top Issues by severity (Errors/Warnings/Suggestions), Prioritized Recommendations>"
+      }
+      ```
+
+      Ensure per_recipe_verdicts covers every recipe in the quality classification results.
+      Prioritize recommendations by severity: Errors first, then Warnings, then Suggestions.
+      The report_text should be comprehensive and actionable.
+    output: "recipe_validation"
+    parse_json: true
+    timeout: 300
