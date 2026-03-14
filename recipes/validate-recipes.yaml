@@ -1024,3 +1024,364 @@ steps:
     output: "practice_results"
     parse_json: true
     timeout: 60
+
+  # ============================================================================
+  # PHASE 4: Semantic Validation
+  # Validates agent references, sub-recipe paths, variable flow, loop
+  # convergence, and condition syntax. Runs parallel with structural-validation
+  # and best-practices-check (all depend on recipe-discovery).
+  # ============================================================================
+
+  - id: "semantic-validation"
+    type: "bash"
+    depends_on: ["recipe-discovery"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json
+      import sys
+      from fnmatch import fnmatch
+      from pathlib import Path
+
+      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      _known_agents_raw = r"""{{known_agents}}"""
+      _repo_path_raw = """{{repo_path}}"""
+      recipe_discovery = json.loads(_recipe_discovery_raw)
+
+      # Parse known agent patterns
+      try:
+          known_agent_patterns = (
+              json.loads(_known_agents_raw) if _known_agents_raw.strip() else []
+          )
+          if not isinstance(known_agent_patterns, list):
+              known_agent_patterns = []
+      except (json.JSONDecodeError, ValueError):
+          known_agent_patterns = []
+
+      repo_path = Path(_repo_path_raw.strip()).expanduser().resolve()
+
+      # ── Discover local agents from repo ────────────────────────────────────
+      local_namespace = None
+      local_agents = set()
+
+      bundle_md = repo_path / "bundle.md"
+      if bundle_md.exists():
+          try:
+              import yaml
+              content = bundle_md.read_text()
+              if content.startswith("---"):
+                  end_idx = content.find("---", 3)
+                  if end_idx > 0:
+                      frontmatter_text = content[3:end_idx].strip()
+                      frontmatter = yaml.safe_load(frontmatter_text)
+                      if isinstance(frontmatter, dict):
+                          bundle_info = frontmatter.get("bundle", {})
+                          if isinstance(bundle_info, dict):
+                              local_namespace = bundle_info.get("name")
+          except Exception:
+              pass
+
+      agents_dir = repo_path / "agents"
+      if agents_dir.exists() and agents_dir.is_dir():
+          for agent_file in agents_dir.rglob("*.md"):
+              agent_name = agent_file.stem
+              local_agents.add(agent_name)
+              if local_namespace:
+                  local_agents.add(f"{local_namespace}:{agent_name}")
+
+
+      def agent_is_known(agent_ref):
+          """Check if an agent reference is known (local or matches a pattern)."""
+          if agent_ref in local_agents:
+              return True
+          for pattern in known_agent_patterns:
+              if fnmatch(agent_ref, pattern):
+                  return True
+          if local_namespace and agent_ref.startswith(f"{local_namespace}:"):
+              return True
+          return False
+
+
+      def validate_semantic(recipe_info):
+          """Validate semantic aspects of a single recipe. Returns list of findings."""
+          findings = []
+          path = recipe_info.get("path", "")
+
+          # Skip recipes with parse errors — nothing to check semantically
+          if recipe_info.get("parse_error"):
+              return findings
+
+          try:
+              import yaml
+              data = yaml.safe_load(Path(path).read_text())
+          except Exception:
+              return findings
+
+          if not isinstance(data, dict):
+              return findings
+
+          # Collect all steps (including steps nested inside stages)
+          steps = data.get("steps") or []
+          stages = data.get("stages") or []
+          all_steps = list(steps)
+          for stage in stages:
+              if isinstance(stage, dict):
+                  all_steps.extend(stage.get("steps") or [])
+
+          # Variable tracking: context keys + built-ins
+          available_vars = set()
+          context = data.get("context")
+          if isinstance(context, dict):
+              available_vars.update(context.keys())
+          available_vars.update(["recipe", "session", "step"])
+
+          for step in all_steps:
+              if not isinstance(step, dict):
+                  continue
+
+              step_id = step.get("id", "(unknown)")
+              step_type = step.get("type", "agent")
+
+              # ── 1. Agent Reference Resolution ─────────────────────────────
+              agent_ref = step.get("agent")
+              if agent_ref:
+                  agent_ref = str(agent_ref)
+                  if ":" not in agent_ref:
+                      # Bare agent name without namespace colon
+                      findings.append({
+                          "code": "BARE_AGENT_NAME",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': agent reference '{agent_ref}' "
+                              "has no namespace prefix "
+                              "(use 'namespace:agent-name' format)"
+                          ),
+                          "detail": agent_ref,
+                      })
+                  elif not agent_is_known(agent_ref):
+                      findings.append({
+                          "code": "UNKNOWN_AGENT",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': agent '{agent_ref}' "
+                              "is not in local agents or known patterns"
+                          ),
+                          "detail": agent_ref,
+                      })
+
+              # ── 2. Sub-Recipe Path Resolution ──────────────────────────────
+              if step_type == "recipe":
+                  recipe_ref = None
+                  for field in ("recipe_path", "recipe", "path", "recipe_file"):
+                      ref = step.get(field)
+                      if ref:
+                          recipe_ref = str(ref)
+                          break
+
+                  if recipe_ref:
+                      if "{{" in recipe_ref:
+                          findings.append({
+                              "code": "DYNAMIC_RECIPE_PATH",
+                              "severity": "INFO",
+                              "message": (
+                                  f"Step '{step_id}': recipe path uses "
+                                  "template variables (dynamic path)"
+                              ),
+                              "detail": recipe_ref,
+                          })
+                      elif recipe_ref.startswith("/"):
+                          findings.append({
+                              "code": "ABSOLUTE_RECIPE_PATH",
+                              "severity": "WARNING",
+                              "message": (
+                                  f"Step '{step_id}': recipe path "
+                                  f"'{recipe_ref}' is absolute — "
+                                  "prefer relative paths for portability"
+                              ),
+                              "detail": recipe_ref,
+                          })
+                      elif ":" not in recipe_ref:
+                          # Relative path — check if it exists on disk
+                          recipe_file_path = Path(path).parent / recipe_ref
+                          if not recipe_file_path.exists():
+                              findings.append({
+                                  "code": "BROKEN_RECIPE_REF",
+                                  "severity": "ERROR",
+                                  "message": (
+                                      f"Step '{step_id}': recipe path "
+                                      f"'{recipe_ref}' does not exist on disk"
+                                  ),
+                                  "detail": recipe_ref,
+                              })
+                          else:
+                              # Variable flow: sub-recipe required vars
+                              step_context = step.get("context") or {}
+                              if isinstance(step_context, dict):
+                                  try:
+                                      import yaml
+                                      sub_data = yaml.safe_load(
+                                          recipe_file_path.read_text()
+                                      )
+                                      if isinstance(sub_data, dict):
+                                          sub_ctx = sub_data.get("context") or {}
+                                          if isinstance(sub_ctx, dict):
+                                              for var_name, default_val in sub_ctx.items():
+                                                  if default_val == "" or default_val is None:
+                                                      if (
+                                                          var_name not in step_context
+                                                          and var_name not in available_vars
+                                                      ):
+                                                          findings.append({
+                                                              "code": "MISSING_SUB_RECIPE_VAR",
+                                                              "severity": "WARNING",
+                                                              "message": (
+                                                                  f"Step '{step_id}': "
+                                                                  f"sub-recipe requires "
+                                                                  f"variable '{var_name}' "
+                                                                  "but step context "
+                                                                  "doesn't pass it"
+                                                              ),
+                                                              "detail": var_name,
+                                                          })
+                                  except Exception:
+                                      pass
+
+              # ── 3. Loop Validation ────────────────────────────────────────
+              if "while_condition" in step:
+                  has_update = "update_context" in step
+                  has_break = "break_when" in step
+                  if not has_update and not has_break:
+                      findings.append({
+                          "code": "WHILE_NO_CONVERGENCE",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': while_condition with no "
+                              "update_context or break_when — "
+                              "loop may not converge"
+                          ),
+                          "detail": step_id,
+                      })
+                  if "max_while_iterations" not in step:
+                      findings.append({
+                          "code": "WHILE_NO_MAX_ITERATIONS",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': while_condition without "
+                              "max_while_iterations — add a safety limit"
+                          ),
+                          "detail": step_id,
+                      })
+
+              # Aggressive parallel (> 20)
+              if "foreach" in step:
+                  parallel = step.get("parallel")
+                  if isinstance(parallel, int) and parallel > 20:
+                      findings.append({
+                          "code": "AGGRESSIVE_PARALLEL",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Step '{step_id}': parallel={parallel} is "
+                              "very high (>20) — may overwhelm API rate limits"
+                          ),
+                          "detail": str(parallel),
+                      })
+
+              # ── 4. Condition Syntax ───────────────────────────────────────
+              condition = str(step.get("condition") or "")
+              if condition:
+                  for invalid_op in ["===", "<>", "!=="]:
+                      if invalid_op in condition:
+                          findings.append({
+                              "code": "INVALID_CONDITION_SYNTAX",
+                              "severity": "ERROR",
+                              "message": (
+                                  f"Step '{step_id}': condition uses invalid "
+                                  f"operator '{invalid_op}'"
+                              ),
+                              "detail": invalid_op,
+                          })
+
+              # ── 5. Variable Tracking ──────────────────────────────────────
+              output_key = step.get("output")
+              if output_key:
+                  available_vars.add(str(output_key))
+              collect_key = step.get("collect")
+              if collect_key:
+                  available_vars.add(str(collect_key))
+              exit_key = step.get("output_exit_code")
+              if exit_key:
+                  available_vars.add(str(exit_key))
+
+          return findings
+
+
+      # Process all recipes from discovery
+      results = []
+      for recipe_info in recipe_discovery.get("recipes", []):
+          path = recipe_info.get("path", "")
+          findings = validate_semantic(recipe_info)
+          error_count = sum(1 for f in findings if f["severity"] == "ERROR")
+          warning_count = sum(1 for f in findings if f["severity"] == "WARNING")
+          results.append({
+              "path": path,
+              "relative_path": recipe_info.get("relative_path", ""),
+              "name": recipe_info.get("name"),
+              "findings": findings,
+              "error_count": error_count,
+              "warning_count": warning_count,
+          })
+
+      # Cross-Recipe Consistency: duplicate recipe names
+      cross_recipe_findings = []
+      name_to_paths = {}
+      for recipe_info in recipe_discovery.get("recipes", []):
+          name = recipe_info.get("name")
+          rpath = recipe_info.get("path", "")
+          if name:
+              name_to_paths.setdefault(name, []).append(rpath)
+
+      for name, paths in name_to_paths.items():
+          if len(paths) > 1:
+              cross_recipe_findings.append({
+                  "code": "DUPLICATE_RECIPE_NAME",
+                  "severity": "WARNING",
+                  "message": (
+                      f"Recipe name '{name}' appears in {len(paths)} files "
+                      "— recipe names must be unique"
+                  ),
+                  "detail": name,
+                  "paths": paths,
+              })
+
+      # Build summary
+      total = len(results)
+      clean = sum(
+          1 for r in results
+          if r["error_count"] == 0 and r["warning_count"] == 0
+      )
+      with_errors = sum(1 for r in results if r["error_count"] > 0)
+      with_warnings = sum(1 for r in results if r["warning_count"] > 0)
+      total_errors = sum(r["error_count"] for r in results)
+      total_warnings = sum(r["warning_count"] for r in results)
+
+      output_data = {
+          "phase": "semantic",
+          "local_namespace": local_namespace,
+          "local_agents_count": len(local_agents),
+          "known_agent_patterns": known_agent_patterns,
+          "results": results,
+          "cross_recipe_findings": cross_recipe_findings,
+          "summary": {
+              "total": total,
+              "with_errors": with_errors,
+              "with_warnings": with_warnings,
+              "clean": clean,
+              "total_errors": total_errors,
+              "total_warnings": total_warnings,
+          },
+      }
+      print(json.dumps(output_data))
+      EOF
+    output: "semantic_results"
+    parse_json: true
+    timeout: 120

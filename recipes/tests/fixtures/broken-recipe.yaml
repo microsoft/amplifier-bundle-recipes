@@ -15,3 +15,11 @@ stesp:                        # typo: should be 'steps'
     agent: "bare-agent-name"  # missing namespace (no colon)
     prompt: "Process {{nonexistent_var}} and output results"  # undefined variable
     depends_on: "missing-step"  # references non-existent step
+
+steps:                        # Added for semantic validation testing
+  - id: "semantic-test-step"
+    type: agent
+    agent: "bare-agent-name"  # missing namespace (no colon) — triggers BARE_AGENT_NAME
+    prompt: "Process the input data and output results"
+    timeout: 60
+    on_error: continue
