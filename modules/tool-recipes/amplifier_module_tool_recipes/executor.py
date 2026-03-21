@@ -1700,7 +1700,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             agent_cfg = agents.get(step.agent, {})
             agent_model_role = agent_cfg.get("model_role")
             if agent_model_role:
-                routing_state = self.coordinator.get_capability("session.routing_matrix")
+                routing_state = self.coordinator.get_capability(
+                    "session.routing_matrix"
+                )
                 if routing_state:
                     roles = (
                         [agent_model_role]
