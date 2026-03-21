@@ -1623,11 +1623,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Resolve model_role via routing matrix (takes priority over legacy fields,
         # but provider_preferences on the step is more explicit and wins)
         if step.model_role and not step.provider_preferences:
-            routing_state = (
-                self.coordinator.session_state.get("routing_matrix")
-                if hasattr(self.coordinator, "session_state")
-                else None
-            )
+            routing_state = self.coordinator.get_capability("session.routing_matrix")
             if routing_state:
                 try:
                     from amplifier_hooks_routing.resolver import resolve_model_role
@@ -1704,11 +1700,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             agent_cfg = agents.get(step.agent, {})
             agent_model_role = agent_cfg.get("model_role")
             if agent_model_role:
-                routing_state = (
-                    self.coordinator.session_state.get("routing_matrix")
-                    if hasattr(self.coordinator, "session_state")
-                    else None
-                )
+                routing_state = self.coordinator.get_capability("session.routing_matrix")
                 if routing_state:
                     roles = (
                         [agent_model_role]

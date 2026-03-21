@@ -189,7 +189,7 @@ class TestAgentProviderPreferencesFallback:
         Simulates step 1 of a recipe: the routing hook fires lazily (after first
         child spawn), so provider_preferences is NOT yet in agent config. But
         model_role IS present. The executor should fall back to resolving the role
-        directly against the routing matrix in session_state.
+        directly against the routing matrix via get_capability("session.routing_matrix").
         """
         coordinator = _make_coordinator(
             agents={
@@ -200,27 +200,29 @@ class TestAgentProviderPreferencesFallback:
                 }
             },
         )
-        # Simulate routing matrix available in session_state
-        coordinator.session_state = {
-            "routing_matrix": {
-                "name": "balanced",
-                "roles": {
-                    "coding": {
-                        "candidates": [
-                            {"provider": "anthropic", "model": "claude-sonnet-4-6"}
-                        ]
-                    },
-                    "general": {
-                        "candidates": [
-                            {"provider": "anthropic", "model": "claude-sonnet-4-6"}
-                        ]
-                    },
+        # Simulate routing matrix available via get_capability (new API)
+        routing_matrix = {
+            "name": "balanced",
+            "roles": {
+                "coding": {
+                    "candidates": [
+                        {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+                    ]
                 },
-            }
+                "general": {
+                    "candidates": [
+                        {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+                    ]
+                },
+            },
         }
+        mock_spawn = AsyncMock(return_value="step result")
+        capabilities = {
+            "session.spawn": mock_spawn,
+            "session.routing_matrix": routing_matrix,
+        }
+        coordinator.get_capability.side_effect = lambda key: capabilities.get(key)
         coordinator.get.return_value = {"anthropic": MagicMock()}
-        mock_spawn = coordinator.get_capability.return_value
-        mock_spawn.return_value = "step result"
 
         recipe = Recipe(
             name="test-recipe",
