@@ -210,9 +210,7 @@ class ProviderPreferenceConfig:
         """Validate preference configuration."""
         errors = []
         if not self.provider:
-            errors.append(
-                "provider_preferences entry must have 'provider' field"
-            )
+            errors.append("provider_preferences entry must have 'provider' field")
         return errors
 
 
@@ -292,6 +290,9 @@ class Step:
     # Semantic role for routing matrix resolution
     model_role: str | None = None
 
+    # Process isolation for agent steps
+    spawn_mode: str | None = None  # "subprocess" or None (default: in-process)
+
     def validate(self) -> list[str]:
         """Validate step structure and constraints."""
         errors = []
@@ -325,6 +326,12 @@ class Step:
                 errors.append(
                     f"Step '{self.id}': agent steps cannot have 'command' field"
                 )
+            # Validate spawn_mode value
+            if self.spawn_mode is not None and self.spawn_mode != "subprocess":
+                errors.append(
+                    f"Step '{self.id}': spawn_mode must be 'subprocess' or omitted, "
+                    f"got '{self.spawn_mode}'"
+                )
         elif self.type == "recipe":
             # Recipe steps require recipe path
             if not self.recipe:
@@ -341,6 +348,11 @@ class Step:
             if self.mode:
                 errors.append(
                     f"Step '{self.id}': recipe steps cannot have 'mode' field"
+                )
+            # Recipe steps cannot have spawn_mode
+            if self.spawn_mode:
+                errors.append(
+                    f"Step '{self.id}': recipe steps cannot have 'spawn_mode' field"
                 )
             # Recipe steps cannot have bash-specific fields
             if self.command:
@@ -383,6 +395,11 @@ class Step:
             if self.recursion:
                 errors.append(
                     f"Step '{self.id}': bash steps cannot have 'recursion' field"
+                )
+            # Bash steps cannot have spawn_mode
+            if self.spawn_mode:
+                errors.append(
+                    f"Step '{self.id}': bash steps cannot have 'spawn_mode' field"
                 )
             # Validate output_exit_code name
             if self.output_exit_code:

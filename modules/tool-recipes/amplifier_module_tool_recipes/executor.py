@@ -1769,6 +1769,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             orchestrator_config=orchestrator_dict,
             provider_preferences=provider_preferences,
             session_metadata=session_metadata,
+            use_subprocess=step.spawn_mode == "subprocess",
         )
         try:
             result = await asyncio.wait_for(spawn_coro, timeout=step.timeout)
