@@ -200,4 +200,4 @@ The recipe-author agent has complete schema knowledge and will ask clarifying qu
 - Systematic evaluation against criteria or rubrics
 - Formal verdicts needed for automation decisions or approval gates
 
-**Run `recipes:recipes/generate-recipe-docs.yaml`** to generate or refresh co-located DOT+PNG flowchart diagrams after creating or modifying recipes. `validate-recipes` Phase 7 auto-regenerates structural DOTs for stale/missing diagrams, but LLM-enhanced accessible labels require running `generate-recipe-docs` explicitly.
+**Diagrams are auto-maintained:** `validate-recipes` Phase 7 auto-regenerates stale or missing DOT+PNG diagrams with LLM-enhanced accessible labels by default. Set `enhance_diagrams: "false"` to get structural-only regeneration (faster, no LLM cost). Run `recipes:recipes/generate-recipe-docs.yaml` directly for bulk generation or to force a full refresh.

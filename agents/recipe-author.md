@@ -634,7 +634,8 @@ When generating or validating recipes, the agent checks:
 - [ ] Co-located `.dot` + `.png` exist alongside the recipe YAML (SUGGESTION if missing)
   - `recipes/my-recipe.yaml` → `recipes/my-recipe.dot` + `recipes/my-recipe.png`
   - Generate or refresh with: run `recipes:recipes/generate-recipe-docs.yaml` on the repo
-- [ ] If recipe structure changed, remind user to regenerate (WARNING if stale — `validate-recipes` Phase 7 detects via embedded `source_hash` and auto-regenerates structural DOT)
+- [ ] If recipe structure changed, remind user that `validate-recipes` Phase 7 will auto-regenerate with LLM-enhanced labels (WARNING if stale, detected via `source_hash`)
+  - To skip LLM enhancement: set `enhance_diagrams: "false"` in `validate-recipes` context
 - *(Full convention: @recipes:skills/recipe-to-dot/SKILL.md)*
 
 ## Changelog Maintenance
@@ -824,9 +825,8 @@ Recipe created successfully. Technical validation passed.
 
 **Diagram Status:**
 - Co-located `.dot`/`.png`: [Present / Missing / Not checked — recipe not yet saved to disk]
-- If missing or recipe was modified: user should run `generate-recipe-docs` to create/refresh
-  (`validate-recipes` Phase 7 will auto-regenerate structural DOT, but LLM voice labels require
-  running `generate-recipe-docs` explicitly)
+- If missing or modified: `validate-recipes` Phase 7 auto-regenerates with LLM-enhanced labels
+  (set `enhance_diagrams: "false"` for structural-only; or run `generate-recipe-docs` directly)
 
 The calling agent should now delegate to `recipes:result-validator` with the 
 above context to verify this recipe addresses the stated requirements.

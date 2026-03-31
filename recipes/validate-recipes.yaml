@@ -60,6 +60,8 @@ context:
   recipes_dir: "recipes"     # Optional: subdirectory containing recipes (default: "recipes")
   known_agents: ""           # Optional: JSON list of known external namespace:agent patterns
                              # e.g., '["foundation:*", "recipes:*", "superpowers:*"]'
+  enhance_diagrams: "true"   # Optional: LLM-enhance diagram labels for accessibility (default: "true")
+                             # Set to "false" to generate structural DOTs only (faster, no LLM cost)
 
 steps:
   # ============================================================================
@@ -2032,73 +2034,170 @@ steps:
     timeout: 60
 
   # ============================================================================
-  # PHASE 7b: Recipe Flow DOT Auto-Regeneration
-  # For any recipes missing a DOT file or with a stale one, regenerates the
-  # structural DOT in-place (co-located next to YAML). Runs only when
-  # recipe_to_dot is available and there are stale/missing DOTs to fix.
-  # Note: generates structural DOTs only (deterministic, no LLM). For
-  # LLM-enhanced accessible labels, run generate-recipe-docs separately.
+  # PHASE 7b: Recipe Flow DOT Auto-Regeneration (LLM-enhanced by default)
+  # For any recipes missing a DOT file or with a stale source_hash, regenerates
+  # DOT+PNG in-place (co-located next to YAML).
+  #
+  # Default (enhance_diagrams: "true"): LLM-enhanced labels for accessibility.
+  # Opt-out (enhance_diagrams: "false"): structural DOTs only, faster, no LLM.
   # ============================================================================
 
-  - id: "dot-auto-regen"
+  - id: "dot-regen-structural"
     type: "bash"
     depends_on: ["dot-freshness-check"]
     on_error: "continue"
     command: |
       python3 << 'EOF'
-      import json
-      import subprocess
+      import json, yaml, sys
       from pathlib import Path
-
-      _dot_freshness_raw = r"""{{dot_freshness}}"""
-      dot_freshness = json.loads(_dot_freshness_raw)
-
+      raw = r"""{{dot_freshness}}"""
+      dot_freshness = json.loads(raw)
       if not dot_freshness.get("dot_available"):
-          print(json.dumps({"skipped": True, "reason": "recipe_to_dot not available", "regenerated": 0}))
-          raise SystemExit(0)
-
-      findings = dot_freshness.get("findings", [])
-      to_regen = [
-          f for f in findings
-          if f.get("code") in ("RECIPE_DOT_MISSING", "RECIPE_DOT_STALE")
-          and f.get("recipe_path")
-      ]
-
+          print(json.dumps({"skipped": True, "recipes": []})); sys.exit(0)
+      to_regen = [f for f in dot_freshness.get("findings", [])
+                  if f.get("code") in ("RECIPE_DOT_MISSING", "RECIPE_DOT_STALE")
+                  and f.get("recipe_path")]
       if not to_regen:
-          print(json.dumps({"skipped": False, "regenerated": 0, "rendered": 0, "errors": []}))
-          raise SystemExit(0)
-
+          print(json.dumps({"skipped": False, "recipes": []})); sys.exit(0)
       from amplifier_module_tool_recipes.recipe_to_dot import recipe_to_dot
-
-      results = {"skipped": False, "regenerated": 0, "rendered": 0, "errors": []}
-
+      recipes = []
       for finding in to_regen:
-          recipe_path = finding["recipe_path"]
-          p = Path(recipe_path)
-          if not p.exists():
-              results["errors"].append(f"Recipe not found: {recipe_path}")
-              continue
+          rp = Path(finding["recipe_path"])
+          if not rp.exists(): continue
+          try: d = yaml.safe_load(rp.read_text())
+          except Exception: continue
+          structural_dot = recipe_to_dot(str(rp))
+          all_steps = list(d.get("steps", []))
+          for stage in d.get("stages", []):
+              if isinstance(stage, dict): all_steps.extend(stage.get("steps", []))
+          steps_info = []
+          for step in all_steps:
+              if not isinstance(step, dict): continue
+              info = {"id": step.get("id",""), "type": step.get("type","agent")}
+              if step.get("agent"): info["agent"] = step["agent"]
+              if step.get("prompt"): info["prompt_excerpt"] = str(step["prompt"])[:200]
+              if step.get("command"): info["command_excerpt"] = str(step["command"])[:100]
+              steps_info.append(info)
+          recipes.append({"yaml_path": str(rp), "dot_path": str(rp.with_suffix(".dot")),
+              "name": d.get("name", rp.stem), "description": str(d.get("description",""))[:300],
+              "structural_dot": structural_dot, "steps_info": steps_info})
+      print(json.dumps({"skipped": False, "recipes": recipes}))
+      EOF
+    output: "regen_targets"
+    parse_json: true
+    timeout: 60
 
-          dot_path = p.with_suffix(".dot")
-          png_path = p.with_suffix(".png")
+  - id: "dot-regen-enhance"
+    agent: "foundation:zen-architect"
+    mode: "ARCHITECT"
+    condition: "{{enhance_diagrams}} != 'false'"
+    depends_on: ["dot-regen-structural"]
+    foreach: "{{regen_targets.recipes}}"
+    as: "recipe"
+    parallel: 3
+    collect: "enhanced_dots"
+    on_error: "continue"
+    timeout: 120
+    prompt: |
+      You are rewriting the labels of a DOT flowchart to be accessible and friendly.
+      The goal: a non-technical person should understand what each step does just
+      from reading the diagram.
 
+      ## Source Recipe
+      Name: {{recipe.name}}
+      Description: {{recipe.description}}
+
+      ## Steps in this recipe
+      ```json
+      {{recipe.steps_info}}
+      ```
+
+      ## Structural DOT (current auto-generated labels)
+      ```dot
+      {{recipe.structural_dot}}
+      ```
+
+      ## Your Task
+
+      Rewrite the DOT to have clear, accessible labels. Rules:
+      1. Keep ALL structural elements unchanged: node IDs, edges, shapes, colors,
+         fillcolor, style, cluster subgraphs, legend - these are correct, don't touch them.
+      2. ONLY change label values on nodes and subgraph clusters, AND the graph title.
+      3. For the graph title: write a descriptive name + subtitle. In DOT, use \n
+         (backslash-n) for a newline within a label string.
+      4. For each step node: rewrite to clear, plain English a non-technical person
+         would understand. Use the step prompt/command to infer what it does.
+         Use \n (backslash-n) for line breaks within label strings.
+      5. For cluster subgraph labels: make them descriptive.
+      6. For approval gates: keep "Human Approves?" but may add a subtitle.
+      7. For condition diamonds: simplify to plain language.
+      8. Keep labels to 2-3 lines max.
+      9. Add a short // comment at the top explaining the recipe in one sentence.
+      10. Keep the source_hash="..." graph attribute exactly as-is.
+
+      Return ONLY the complete rewritten DOT. No explanation, no markdown fences,
+      just the raw DOT content starting with // and ending with }.
+
+      CRITICAL: Preserve every node ID, every edge, every shape/color/style attribute.
+      Only labels and the top comment change.
+
+  - id: "dot-regen-write"
+    type: "bash"
+    depends_on: ["dot-regen-enhance"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json, subprocess, re, sys
+      from pathlib import Path
+      regen_targets = json.loads(r"""{{regen_targets}}""")
+      enhanced_raw = r"""{{enhanced_dots}}"""
+      if regen_targets.get("skipped") or not regen_targets.get("recipes"):
+          print(json.dumps({"written": 0, "rendered": 0, "fallback": 0, "errors": []}))
+          sys.exit(0)
+      recipes = regen_targets["recipes"]
+      enhanced_list = []
+      try:
+          enhanced_list = json.loads(enhanced_raw)
+      except (json.JSONDecodeError, TypeError):
+          s = enhanced_raw.strip()
+          if s and s != "null": enhanced_list = [s]
+      results = {"written": 0, "rendered": 0, "fallback": 0, "errors": []}
+      for i, ri in enumerate(recipes):
+          dot_path = Path(ri["dot_path"])
+          png_path = dot_path.with_suffix(".png")
+          dot_content = None
+          if i < len(enhanced_list) and enhanced_list[i]:
+              candidate = str(enhanced_list[i]).strip()
+              candidate = re.sub(r"^```(?:dot)?\s*\n", "", candidate)
+              candidate = re.sub(r"\n```\s*$", "", candidate)
+              if candidate.startswith("//") or candidate.startswith("digraph"):
+                  dot_content = candidate
+              elif "digraph" in candidate:
+                  m = re.search(r"((?://[^\n]*\n)*digraph\s+\w+\s*\{.*\})", candidate, re.DOTALL)
+                  if m: dot_content = m.group(1)
+          if not dot_content:
+              dot_content = ri["structural_dot"]
+              results["fallback"] += 1
+          if "source_hash" not in dot_content:
+              m = re.search(r'source_hash="[a-f0-9]+"', ri["structural_dot"])
+              if m:
+                  dot_content = dot_content.replace('bgcolor="white"',
+                      'bgcolor="white"\n    ' + m.group(0))
           try:
-              dot_content = recipe_to_dot(str(p))
-              dot_path.write_text(dot_content)
-              results["regenerated"] += 1
-
-              # Render PNG
-              proc = subprocess.run(
-                  ["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
-                  capture_output=True, text=True, timeout=15
-              )
-              if proc.returncode == 0:
-                  results["rendered"] += 1
-              else:
-                  results["errors"].append(f"PNG render failed for {dot_path.name}: {proc.stderr[:80]}")
+              dot_path.write_text(dot_content); results["written"] += 1
           except Exception as exc:
-              results["errors"].append(f"Regen failed for {p.name}: {exc}")
-
+              results["errors"].append(f"Write failed: {exc}"); continue
+          proc = subprocess.run(["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
+                                capture_output=True, text=True, timeout=15)
+          if proc.returncode == 0:
+              results["rendered"] += 1
+          else:
+              dot_path.write_text(ri["structural_dot"]); results["fallback"] += 1
+              proc2 = subprocess.run(["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
+                                     capture_output=True, text=True, timeout=15)
+              if proc2.returncode == 0: results["rendered"] += 1
+              else: results["errors"].append(f"Render failed: {dot_path.name}")
+      results["total"] = len(recipes)
       print(json.dumps(results))
       EOF
     output: "dot_regen"
