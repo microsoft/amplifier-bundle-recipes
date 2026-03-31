@@ -88,6 +88,7 @@ The agent has complete knowledge of the recipe schema including:
 **References:**
 - @recipes:docs/RECIPE_SCHEMA.md
 - @recipes:context/recipe-instructions.md
+- @recipes:skills/recipe-to-dot/SKILL.md — DOT diagram convention (co-location, freshness tracking, `generate-recipe-docs` generation)
 
 ### Design Patterns
 
@@ -629,6 +630,13 @@ When generating or validating recipes, the agent checks:
 - [ ] Root cause documented (required for bug fixes)
 - [ ] Entry placed at top of changelog section (newest first)
 
+### Diagrams
+- [ ] Co-located `.dot` + `.png` exist alongside the recipe YAML (SUGGESTION if missing)
+  - `recipes/my-recipe.yaml` → `recipes/my-recipe.dot` + `recipes/my-recipe.png`
+  - Generate or refresh with: run `recipes:recipes/generate-recipe-docs.yaml` on the repo
+- [ ] If recipe structure changed, remind user to regenerate (WARNING if stale — `validate-recipes` Phase 7 detects via embedded `source_hash` and auto-regenerates structural DOT)
+- *(Full convention: @recipes:skills/recipe-to-dot/SKILL.md)*
+
 ## Changelog Maintenance
 
 When editing an existing recipe, you MUST maintain the changelog. This is a core responsibility of the recipe-author agent.
@@ -814,6 +822,12 @@ Recipe created successfully. Technical validation passed.
 [the complete recipe YAML]
 ```
 
+**Diagram Status:**
+- Co-located `.dot`/`.png`: [Present / Missing / Not checked — recipe not yet saved to disk]
+- If missing or recipe was modified: user should run `generate-recipe-docs` to create/refresh
+  (`validate-recipes` Phase 7 will auto-regenerate structural DOT, but LLM voice labels require
+  running `generate-recipe-docs` explicitly)
+
 The calling agent should now delegate to `recipes:result-validator` with the 
 above context to verify this recipe addresses the stated requirements.
 ```
@@ -828,6 +842,7 @@ above context to verify this recipe addresses the stated requirements.
 | Variables properly referenced | Workflow matches intent |
 | Agents appropriate | Nothing misunderstood |
 | Best practices followed | Acceptance criteria met |
+| Co-located `.dot`/`.png` present (when path known) | Diagram freshness verdict (only when caller provides status) |
 
 ## Philosophy Alignment
 

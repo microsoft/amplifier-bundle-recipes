@@ -1,9 +1,8 @@
-// Verifies session work using a different AI provider to catch blind spots.
 digraph session_verify {
     rankdir=TB
     fontname="Helvetica"
     fontsize=12
-    label="Cross-Provider Session Verification\nUses a different AI provider to independently verify work from a prior session"
+    label="Session Verify — Run cross-provider verification on a session with a specified verifier"
     labelloc=t
     labeljust=c
     compound=true
@@ -16,10 +15,12 @@ digraph session_verify {
     edge [fontname="Helvetica", fontsize=9]
 
     start [label="Start", shape=oval, fillcolor="#e0e0e0"]
-    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done!", shape=oval, fillcolor="#e0e0e0"]
 
-    step_extract_session_context [label="Extract Session Context\n\"Intent, claims, and actual results\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:session-analyst"]
-    step_verification_review [label="Run Verification Audit\n\"Does the work match the intent?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_extract_session_context [label="Extract Session
+Context", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:session-analyst"]
+    step_verification_review [label="Verification
+Review", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
 
     start -> step_extract_session_context
     step_extract_session_context -> step_verification_review

@@ -39,10 +39,13 @@ This agent is designed for general-purpose validation in recipes and workflows:
 - **Workflow outcomes**: Assess multi-step workflow success/failure
 - **Compliance checking**: Verify results meet compliance requirements
 - **Performance evaluation**: Validate performance against benchmarks
+- **DOT diagram freshness**: NOT this agent's responsibility — handled by `validate-recipes` Phase 7 (`dot-freshness-check` + `dot-auto-regen`), which has filesystem access. This agent evaluates content passed to it, not filesystem state.
 
 ## Knowledge Base
 
-**Reference:** @recipes:context/recipe-instructions.md
+**References:**
+- @recipes:context/recipe-instructions.md
+- @recipes:skills/recipe-to-dot/SKILL.md — DOT diagram convention for recipes
 
 ## Validation Patterns
 
@@ -231,6 +234,25 @@ Changelog Verdict: FAIL
 ```
 
 **Note:** For NEW recipes (not edits), only verify that an initial `v1.0.0` entry exists. Full changelog validation applies to edits of existing recipes.
+
+### Diagram Freshness Validation (when status is provided)
+
+Every recipe YAML should have a co-located `.dot` + `.png` diagram (see `@recipes:skills/recipe-to-dot/SKILL.md`).
+This agent **cannot check the filesystem** (`tools: []`) — diagram status must be explicitly passed by the caller.
+Phase 7 of `validate-recipes` is the authoritative source for filesystem-based diagram checks and auto-regeneration.
+
+**Severity: WARN only — never a standalone FAIL.** Diagram staleness is a convention violation, not a
+functional failure. A recipe can correctly solve the user's intent even with a missing diagram.
+
+**When diagram status is provided by caller:**
+
+| Condition | Assessment |
+|-----------|------------|
+| `.dot` + `.png` exist, `source_hash` matches current YAML | ✓ Diagrams current |
+| `.dot` exists but `source_hash` is stale | ⚠ WARN: Diagram stale — run `generate-recipe-docs` |
+| `.dot`/`.png` missing entirely | ⚠ WARN: No diagram — run `generate-recipe-docs` |
+
+**When diagram status is not provided:** Note "Diagram status: not verified (no filesystem access)" and continue without penalizing.
 
 ## Output Format
 
