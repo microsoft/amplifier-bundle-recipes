@@ -8,8 +8,9 @@ All recipe work MUST follow this lifecycle. Do NOT write recipe YAML directly.
 
 | Phase | Agent | Purpose |
 |-------|-------|---------|
-| 1. Author | `recipes:recipe-author` | Create, edit, validate, debug recipes |
+| 1. Author   | `recipes:recipe-author`    | Create, edit, validate, debug recipes |
 | 2. Validate | `recipes:result-validator` | Verify recipe meets user's original intent |
+| 3. Document | `recipes:generate-recipe-docs` recipe | Generate co-located DOT+PNG flowcharts |
 
 ### Why This Matters
 
@@ -198,3 +199,5 @@ The recipe-author agent has complete schema knowledge and will ask clarifying qu
 - Objective pass/fail assessment of step outcomes or workflow results
 - Systematic evaluation against criteria or rubrics
 - Formal verdicts needed for automation decisions or approval gates
+
+**Run `recipes:recipes/generate-recipe-docs.yaml`** to generate or refresh co-located DOT+PNG flowchart diagrams after creating or modifying recipes. `validate-recipes` Phase 7 auto-regenerates structural DOTs for stale/missing diagrams, but LLM-enhanced accessible labels require running `generate-recipe-docs` explicitly.
