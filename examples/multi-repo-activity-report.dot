@@ -1,0 +1,77 @@
+// Analyzes activity across multiple GitHub repositories and generates a unified report.
+digraph multi_repo_activity_report {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Multi-Repository Activity Report\nAnalyzes commits and PRs across multiple GitHub repos into one combined report"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="d65e489c399356d5efbbce91d07d8e9f06ecf3b71c4cf857b32d67c8d3e12126"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    gate_setup [label="Human\nApproves?", shape=diamond, fillcolor="#ffe0b2", tooltip="## Ready for Multi-Repository Analysis  {{analysis_plan}}  **Approve** to begin analyzing each repos"]
+    start -> gate_setup
+    subgraph cluster_setup {
+        label="Setup\n\"Load repos and plan analysis\""
+        style="filled,rounded"
+        fillcolor="#f9f9f9"
+        color="#999999"
+
+        step_load_repos [label="Load Repository List\n\"Which repos to analyze?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:modular-builder"]
+        step_prepare_analysis_plan [label="Prepare Analysis Plan\n\"Scope and time estimate\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+        gate_setup -> step_load_repos
+        step_load_repos -> step_prepare_analysis_plan
+    }
+
+    subgraph cluster_analysis {
+        label="Analysis\n\"Examine each repository\""
+        style="filled,rounded"
+        fillcolor="#f9f9f9"
+        color="#999999"
+
+        step_analyze_repos [label="Analyze Each Repo\n\"Commits and PRs per repo\"\n(sub-recipe)\n(for each)", shape=box, fillcolor="#e0e0e0", style="filled,rounded,dashed", tooltip="analyze-repos"]
+
+        step_prepare_analysis_plan -> step_analyze_repos
+    }
+
+    subgraph cluster_synthesis {
+        label="Synthesis\n\"Combine results into one report\""
+        style="filled,rounded"
+        fillcolor="#f9f9f9"
+        color="#999999"
+
+        step_aggregate_results [label="Aggregate Results\n\"Merge all repo findings\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:modular-builder"]
+        step_generate_report [label="Generate Report\n\"Write the combined summary\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+        step_completion [label="Confirm Completion\n\"Report path and final stats\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:modular-builder"]
+
+        step_analyze_repos -> step_aggregate_results
+        step_aggregate_results -> step_generate_report
+        step_generate_report -> step_completion
+    }
+
+    step_completion -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_sub [label="Sub-Recipe Call", shape=box, fillcolor="#e0e0e0", style="filled,rounded,dashed"]
+        leg_gate [label="Approval Gate", shape=diamond, fillcolor="#ffe0b2"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_sub -> leg_gate -> leg_start [style=invis]
+    }
+}

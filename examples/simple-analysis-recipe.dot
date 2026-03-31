@@ -1,0 +1,41 @@
+// Basic analysis workflow demonstrating sequential steps and output accumulation.
+digraph simple_analysis_workflow {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Simple File Analysis\nReads a file, identifies key points, and generates a brief report"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="8e2310e24fa0d3b7213661d7a1206d0255538a29667afb3d600c65e7fcde2f7d"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_extract_summary [label="Extract Summary\n\"Read and summarize the file\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_identify_key_points [label="Identify Key Points\n\"What matters most?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_generate_report [label="Generate Report\n\"Format as a markdown document\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_extract_summary
+    step_extract_summary -> step_identify_key_points
+    step_identify_key_points -> step_generate_report
+    step_generate_report -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_start [style=invis]
+    }
+}

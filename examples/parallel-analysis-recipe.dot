@@ -1,0 +1,39 @@
+// Analyzes code from multiple perspectives simultaneously, then synthesizes a unified assessment.
+digraph parallel_multi_perspective_analysis {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Multi-Perspective Code Analysis\nAnalyzes code from security, performance, maintainability, and testability angles in parallel"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="41f6ebcc6442e8c85172703948a66e0c765ed0cb6517a5104605a5c1a2023ad9"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_multi_perspective_analysis [label="Analyze Each Perspective\n\"Security, performance, clarity, testability\"\n(for each)", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_synthesize_perspectives [label="Synthesize Assessment\n\"Prioritize cross-cutting concerns\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_multi_perspective_analysis
+    step_multi_perspective_analysis -> step_synthesize_perspectives
+    step_synthesize_perspectives -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_start [style=invis]
+    }
+}

@@ -1,6 +1,25 @@
+# =============================================================================
+# CHANGELOG
+# =============================================================================
+#
+# v1.1.0 (2026-03-31):
+#   - IMPROVEMENT: Added explicit depends_on to all steps for parallel execution
+#     * Phase 1: repo-hypothesis-analysis ∥ repo-exploratory-analysis (fork-join)
+#     * Phase 2: tree-architectural-analysis ∥ tree-exploratory-analysis (fork-join)
+#     * Phase 4: final-report ∥ generate-action-scripts (fork, terminal)
+#     * Phase 3 remains sequential: file-detailed-analysis references
+#       {{steps.file-reachability-analysis.result}}, creating a real data dependency
+#     * All steps now have explicit depends_on expressing real data dependencies,
+#       allowing the recipe engine to schedule independent steps in parallel
+#
+# v1.0.0 (initial):
+#   - Initial multi-level, multi-perspective codebase analysis recipe
+#
+# =============================================================================
+
 ---
 name: multi-level-python-code-analysis
-version: 1.0.0
+version: 1.1.0
 description: |
   Multi-level, multi-perspective systematic codebase analysis recipe.
   Analyzes code at multiple granularities (repo → tree → dir → file) using
@@ -67,10 +86,14 @@ steps:
     
   # ==========================================================================
   # PHASE 1: Whole Repository Level Analysis
+  #
+  # Parallelism: repo-hypothesis-analysis and repo-exploratory-analysis
+  # run concurrently. repo-differential-analysis joins both results.
   # ==========================================================================
   
   - id: repo-hypothesis-analysis
     agent: foundation:bug-hunter
+    depends_on: ["repo-context"]
     prompt: |
       ## Task: Repository-Level Hypothesis-Driven Dead Code Detection
       
@@ -121,6 +144,7 @@ steps:
   
   - id: repo-exploratory-analysis
     agent: foundation:explorer
+    depends_on: ["repo-context"]
     prompt: |
       ## Task: Repository-Level Exploratory Analysis
       
@@ -167,6 +191,7 @@ steps:
   
   - id: repo-differential-analysis
     agent: foundation:bug-hunter
+    depends_on: ["repo-hypothesis-analysis", "repo-exploratory-analysis"]
     prompt: |
       ## Task: Repository-Level Differential Analysis
       
@@ -221,10 +246,14 @@ steps:
   
   # ==========================================================================
   # PHASE 2: Directory Tree Level Analysis
+  #
+  # Parallelism: tree-architectural-analysis and tree-exploratory-analysis
+  # run concurrently. tree-differential-analysis joins both results.
   # ==========================================================================
   
   - id: identify-trees
     agent: foundation:explorer
+    depends_on: ["repo-differential-analysis"]
     prompt: |
       ## Task: Identify Major Directory Trees for Deep Dive
       
@@ -263,6 +292,7 @@ steps:
   - id: tree-architectural-analysis
     agent: foundation:zen-architect
     condition: "{{use_architectural_analysis}}"
+    depends_on: ["identify-trees"]
     prompt: |
       ## Task: Directory Tree Architectural Analysis
       
@@ -305,6 +335,7 @@ steps:
   
   - id: tree-exploratory-analysis
     agent: foundation:explorer
+    depends_on: ["identify-trees"]
     prompt: |
       ## Task: Directory Tree Exploratory Analysis
       
@@ -341,6 +372,7 @@ steps:
   
   - id: tree-differential-analysis
     agent: foundation:bug-hunter
+    depends_on: ["tree-architectural-analysis", "tree-exploratory-analysis"]
     prompt: |
       ## Task: Directory Tree Differential Analysis
       
@@ -376,10 +408,15 @@ steps:
   
   # ==========================================================================
   # PHASE 3: File Level Deep Dive
+  #
+  # NOTE: These steps are sequential. file-detailed-analysis references
+  # {{steps.file-reachability-analysis.result}} (line: "File Reachability
+  # Context"), creating a real data dependency that prevents parallelism.
   # ==========================================================================
   
   - id: identify-suspect-files
     agent: foundation:explorer
+    depends_on: ["tree-differential-analysis"]
     prompt: |
       ## Task: Identify Specific Files for Deep Analysis
       
@@ -416,6 +453,7 @@ steps:
   
   - id: file-reachability-analysis
     agent: foundation:bug-hunter
+    depends_on: ["identify-suspect-files"]
     prompt: |
       ## Task: Per-File Reachability Analysis (Hypothesis-Driven)
       
@@ -455,6 +493,7 @@ steps:
   
   - id: file-detailed-analysis
     agent: foundation:explorer
+    depends_on: ["file-reachability-analysis"]
     prompt: |
       ## Task: Detailed File Content Analysis
       
@@ -498,6 +537,7 @@ steps:
   
   - id: file-action-plan
     agent: foundation:bug-hunter
+    depends_on: ["file-detailed-analysis"]
     prompt: |
       ## Task: Generate File-Level Action Plan
       
@@ -534,10 +574,14 @@ steps:
   
   # ==========================================================================
   # PHASE 4: Synthesis & Final Report
+  #
+  # Parallelism: final-report and generate-action-scripts run concurrently.
+  # Both depend only on aggregate-findings; nothing downstream needs both.
   # ==========================================================================
   
   - id: aggregate-findings
     agent: foundation:explorer
+    depends_on: ["file-action-plan"]
     prompt: |
       ## Task: Aggregate All Analysis Findings
       
@@ -578,6 +622,7 @@ steps:
   
   - id: final-report
     agent: foundation:explorer
+    depends_on: ["aggregate-findings"]
     prompt: |
       ## Task: Generate Final Analysis Report
       
@@ -658,6 +703,7 @@ steps:
   
   - id: generate-action-scripts
     agent: foundation:explorer
+    depends_on: ["aggregate-findings"]
     prompt: |
       ## Task: Generate Executable Action Scripts
       
@@ -711,6 +757,7 @@ metadata:
     - "LSP + grep differential identifies dead code accurately"
     - "Prioritization ensures high-value targets analyzed deeply"
     - "Actionable output with confidence calibration"
+    - "Parallel execution of independent analysis perspectives reduces wall-clock time"
   
   limitations:
     - "Execution time proportional to repo size (plan for 10-30 min)"

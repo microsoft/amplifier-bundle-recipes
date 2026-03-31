@@ -1,0 +1,71 @@
+// Multi-Level Code Analysis — Systematic repo → directory → file investigation with parallel perspectives
+digraph multi_level_python_code_analysis {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Multi-Level Code Analysis\nSystematic repo → directory → file investigation with parallel perspectives"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="d6fe2d206d7733563206164e380764f57b3d025d09863a628bde7509c596def2"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_repo_context [label="Survey the Repository\n\"Languages, structure, and tech stack\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+    step_repo_hypothesis_analysis [label="Hypothesis Analysis\n\"Trace code paths from entry points\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:bug-hunter"]
+    step_repo_exploratory_analysis [label="Pattern Search\n\"Find all occurrences across the codebase\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+    step_repo_differential_analysis [label="Cross-Validate Findings\n\"Compare hypothesis vs exploration results\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:bug-hunter"]
+    step_identify_trees [label="Identify Key Directories\n\"Prioritize folders for deeper analysis\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+    cond_step_tree_architectural_analysis [label="Include architecture\nanalysis?", shape=diamond, fillcolor="#fff9c4"]
+    step_tree_architectural_analysis [label="Analyze Architecture\n\"Module boundaries and coupling\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_tree_exploratory_analysis [label="Scan for Patterns\n\"Hot-spot files and pattern density\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+    step_tree_differential_analysis [label="Reconcile Directory Findings\n\"Risk-rank each directory for cleanup\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:bug-hunter"]
+    step_identify_suspect_files [label="Select Suspect Files\n\"Score and prioritize for deep review\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+    step_file_reachability_analysis [label="Test Reachability\n\"Is each file actually used anywhere?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:bug-hunter"]
+    step_file_detailed_analysis [label="Read and Analyze Files\n\"Content review with full context\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+    step_file_action_plan [label="Create Action Plan\n\"Delete, edit, or flag for human review\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:bug-hunter"]
+    step_aggregate_findings [label="Synthesize All Findings\n\"Cross-level patterns and metrics\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+    step_final_report [label="Write Final Report\n\"Executive summary and recommendations\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+    step_generate_action_scripts [label="Generate Cleanup Scripts\n\"Ready-to-run commands and checklists\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+
+    start -> step_repo_context
+    step_repo_context -> step_repo_hypothesis_analysis
+    step_repo_context -> step_repo_exploratory_analysis
+    step_repo_hypothesis_analysis -> step_repo_differential_analysis
+    step_repo_exploratory_analysis -> step_repo_differential_analysis
+    step_repo_differential_analysis -> step_identify_trees
+    step_identify_trees -> cond_step_tree_architectural_analysis
+    cond_step_tree_architectural_analysis -> step_tree_architectural_analysis [label="yes"]
+    step_identify_trees -> step_tree_exploratory_analysis
+    step_tree_architectural_analysis -> step_tree_differential_analysis
+    step_tree_exploratory_analysis -> step_tree_differential_analysis
+    step_tree_differential_analysis -> step_identify_suspect_files
+    step_identify_suspect_files -> step_file_reachability_analysis
+    step_file_reachability_analysis -> step_file_detailed_analysis
+    step_file_detailed_analysis -> step_file_action_plan
+    step_file_action_plan -> step_aggregate_findings
+    step_aggregate_findings -> step_final_report
+    step_aggregate_findings -> step_generate_action_scripts
+    cond_step_tree_architectural_analysis -> step_tree_exploratory_analysis [label="skip", style=dashed]
+    step_generate_action_scripts -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_cond [label="Condition Gate", shape=diamond, fillcolor="#fff9c4"]
+        leg_start [label="Start / Done", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_cond -> leg_start [style=invis]
+    }
+}

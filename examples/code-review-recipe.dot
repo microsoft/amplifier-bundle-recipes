@@ -1,0 +1,57 @@
+// Multi-stage code review with conditional paths based on issue severity.
+digraph code_review_comprehensive {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Code Review Pipeline\nAnalyzes code quality, identifies issues, and suggests improvements"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="d6820ebbbafff631103aff9112276e66bb3e4a86a6681a543be57c901682170a"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_analyze_structure [label="Analyze Structure\n\"How is the code organized?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_identify_issues [label="Identify Issues\n\"What are the problems?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_assess_severity [label="Assess Severity\n\"How critical are the issues?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_suggest_improvements [label="Issues found?", shape=diamond, fillcolor="#fff9c4"]
+    step_suggest_improvements [label="Suggest Improvements\n\"How to fix each issue\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_validate_suggestions [label="Critical or high?", shape=diamond, fillcolor="#fff9c4"]
+    step_validate_suggestions [label="Validate Suggestions\n\"Are the fixes safe and feasible?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_quick_approval [label="No issues?", shape=diamond, fillcolor="#fff9c4"]
+    step_quick_approval [label="Quick Approval\n\"Code looks good — no issues\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_analyze_structure
+    step_analyze_structure -> step_identify_issues
+    step_identify_issues -> step_assess_severity
+    step_assess_severity -> cond_step_suggest_improvements
+    cond_step_suggest_improvements -> step_suggest_improvements [label="severity != 'none'"]
+    step_assess_severity -> cond_step_validate_suggestions
+    cond_step_validate_suggestions -> step_validate_suggestions [label="severity == 'critical' or"]
+    step_assess_severity -> cond_step_quick_approval
+    cond_step_quick_approval -> step_quick_approval [label="severity == 'none'"]
+    cond_step_suggest_improvements -> done [label="skip", style=dashed]
+    cond_step_validate_suggestions -> done [label="skip", style=dashed]
+    cond_step_quick_approval -> done [label="skip", style=dashed]
+    step_assess_severity -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_cond [label="Condition", shape=diamond, fillcolor="#fff9c4"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_cond -> leg_start [style=invis]
+    }
+}

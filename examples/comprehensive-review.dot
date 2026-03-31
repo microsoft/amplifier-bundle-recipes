@@ -1,0 +1,42 @@
+// Runs code review and security audit as sub-recipes, then synthesizes a unified report.
+digraph comprehensive_review {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Comprehensive Code Review\nCombines code quality analysis and security audit into one report"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="dac8a405e769f3f6d65d30728f643404ddad9a8ed00a84062bdd2141117c1196"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_code_review [label="Run Code Review\n\"Quality and design analysis\"\n(sub-recipe)", shape=box, fillcolor="#e0e0e0", style="filled,rounded,dashed", tooltip="code-review"]
+    step_security_audit [label="Run Security Audit\n\"Vulnerability and config check\"\n(sub-recipe)", shape=box, fillcolor="#e0e0e0", style="filled,rounded,dashed", tooltip="security-audit"]
+    step_synthesize_comprehensive [label="Synthesize Report\n\"Combine findings into prioritized actions\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_code_review
+    step_code_review -> step_security_audit
+    step_security_audit -> step_synthesize_comprehensive
+    step_synthesize_comprehensive -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_sub [label="Sub-Recipe Call", shape=box, fillcolor="#e0e0e0", style="filled,rounded,dashed"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_sub -> leg_start [style=invis]
+    }
+}
