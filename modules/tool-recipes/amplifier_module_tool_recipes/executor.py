@@ -2219,9 +2219,46 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Create tasks for all iterations (semaphore controls actual concurrency)
         tasks = [bounded_iteration(idx, item) for idx, item in enumerate(items)]
 
-        # Run all tasks concurrently, fail-fast on any error
-        # asyncio.gather preserves order of results
-        results = await asyncio.gather(*tasks)
+        # Run all tasks concurrently with return_exceptions=True.
+        # Without it, a single failed iteration raises immediately but does NOT
+        # cancel remaining tasks — they continue as orphans and asyncio.gather
+        # never returns if any orphaned task hangs. With return_exceptions=True,
+        # all iterations run to completion (or timeout) and we handle failures
+        # after all are done.
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Separate successes from failures
+        results = []
+        failures = []
+        for idx, result in enumerate(raw_results):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "Step '%s' iteration %d failed: %s",
+                    step.id,
+                    idx,
+                    str(result)[:200],
+                )
+                failures.append((idx, result))
+                results.append(None)
+            else:
+                results.append(result)
+
+        if failures:
+            if step.on_error == "continue":
+                logger.info(
+                    "Step '%s': %d/%d iterations succeeded (on_error=continue)",
+                    step.id,
+                    len(results) - len(failures),
+                    len(results),
+                )
+            else:
+                failure_summary = "; ".join(
+                    f"iteration {i}: {str(e)[:100]}" for i, e in failures
+                )
+                raise ValueError(
+                    f"Step '{step.id}': {len(failures)}/{len(results)} "
+                    f"iterations failed: {failure_summary}"
+                )
 
         return list(results)
 
