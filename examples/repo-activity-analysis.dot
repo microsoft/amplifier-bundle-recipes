@@ -1,0 +1,70 @@
+// Analyzes a single GitHub repository for recent commits and PRs within a date range.
+digraph repo_activity_analysis {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Repository Activity Analysis\nFetches commits and PRs from GitHub, analyzes impact, and writes a summary"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="22ca53eb2dd45ffb0604eb9faab2c680a80e7b97eb868228e9e1378dca63ea81"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_detect_repo [label="Detect Repository\n\"Identify owner and repo name\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="set -euo pipefail  mkdir -p {{working_dir}}/analyses  # Check for precomputed values first (from par"]
+    step_parse_date_range [label="Parse Date Range\n\"Convert to API-compatible format\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="# Check for precomputed date values from parent recipe precomputed_iso='{{_precomputed.date_since_is"]
+    cond_step_parse_date_range_llm [label="Need AI\nfor dates?", shape=diamond, fillcolor="#fff9c4"]
+    step_parse_date_range_llm [label="Parse Dates with AI\n\"Interpret natural language range\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_use_precomputed_date [label="Pre-computed?", shape=diamond, fillcolor="#fff9c4"]
+    step_use_precomputed_date [label="Use Pre-computed Dates\n\"Already parsed by parent\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '{'original': '{{date_check.original}}', 'since_iso': '{{date_check.since_iso}}', 'since_date':"]
+    cond_step_use_llm_date [label="AI-parsed ready?", shape=diamond, fillcolor="#fff9c4"]
+    step_use_llm_date [label="Use AI-parsed Dates\n\"Apply the interpreted range\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '{'original': '{{parsed_date_llm.original}}', 'since_iso': '{{parsed_date_llm.since_iso}}', 'si"]
+    step_fetch_commits [label="Fetch Commits\n\"Download from GitHub API\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="cd {{working_dir}}/analyses  # Fetch commits from GitHub API gh api 'repos/{{repo_info.owner}}/{{rep"]
+    step_fetch_prs [label="Fetch Pull Requests\n\"Download PR data\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="cd {{working_dir}}/analyses  # Fetch PRs from GitHub gh pr list --repo {{repo_info.owner}}/{{repo_in"]
+    step_analyze_commits [label="Analyze Commits\n\"Categorize changes by impact\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_deep_dive_unclear_commits [label="Deep-Dive Unclear Commits\n\"Investigate ambiguous changes\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:explorer"]
+    step_analyze_prs [label="Analyze Pull Requests\n\"Categorize by type and scope\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_synthesize_repo_findings [label="Synthesize Findings\n\"Create comprehensive summary\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_write_analysis_files [label="Write Analysis Files\n\"Save JSON and markdown to disk\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="set -euo pipefail  mkdir -p {{working_dir}}/analyses  # Write JSON analysis file using printf (safe "]
+
+    start -> step_detect_repo
+    step_detect_repo -> step_parse_date_range
+    step_parse_date_range -> cond_step_parse_date_range_llm
+    cond_step_parse_date_range_llm -> step_parse_date_range_llm [label="date_check.needs_llm == '"]
+    step_parse_date_range -> cond_step_use_precomputed_date
+    cond_step_use_precomputed_date -> step_use_precomputed_date [label="date_check.needs_llm == '"]
+    step_parse_date_range -> cond_step_use_llm_date
+    cond_step_use_llm_date -> step_use_llm_date [label="date_check.needs_llm == '"]
+    step_parse_date_range -> step_fetch_commits
+    step_fetch_commits -> step_fetch_prs
+    step_fetch_prs -> step_analyze_commits
+    step_analyze_commits -> step_deep_dive_unclear_commits
+    step_deep_dive_unclear_commits -> step_analyze_prs
+    step_analyze_prs -> step_synthesize_repo_findings
+    step_synthesize_repo_findings -> step_write_analysis_files
+    cond_step_parse_date_range_llm -> step_fetch_commits [label="skip", style=dashed]
+    cond_step_use_precomputed_date -> step_fetch_commits [label="skip", style=dashed]
+    cond_step_use_llm_date -> step_fetch_commits [label="skip", style=dashed]
+    step_write_analysis_files -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_bash [label="Script Step", shape=box, fillcolor="#bbdefb"]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_cond [label="Condition", shape=diamond, fillcolor="#fff9c4"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_bash -> leg_agent -> leg_cond -> leg_start [style=invis]
+    }
+}

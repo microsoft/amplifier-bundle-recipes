@@ -1,0 +1,41 @@
+// Generates comprehensive test suites with unit, integration, and edge case tests.
+digraph test_generation_comprehensive {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Test Generation Pipeline\nAnalyzes code structure, designs test strategy, and writes runnable test code"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="363c3ba770fef73805eee758775655d4c0b3160ee2b15ebab1bc1044d04e2106"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_analyze_code_structure [label="Analyze Code Structure\n\"Identify testable components\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_design_test_strategy [label="Design Test Strategy\n\"Plan unit, integration, and edge cases\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:test-coverage"]
+    step_generate_test_code [label="Generate Test Code\n\"Write runnable test file\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:test-coverage"]
+
+    start -> step_analyze_code_structure
+    step_analyze_code_structure -> step_design_test_strategy
+    step_design_test_strategy -> step_generate_test_code
+    step_generate_test_code -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_start [style=invis]
+    }
+}

@@ -1,0 +1,53 @@
+// Demonstrates bash step capabilities — direct shell execution without AI overhead.
+digraph bash_step_example {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Bash Step Demo\nDemonstrates shell command execution within a recipe"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="2939b420d41532987920cdc99a194b9f1df2444857b668dbb5ebffc408a3abd3"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_simple_echo [label="Print Greeting\n\"Echo a simple message\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '{{greeting}}'"]
+    step_env_vars [label="Set Environment Variables\n\"Pass project name and user\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo 'Project: $PROJECT_NAME, User: $USER_NAME'"]
+    step_multi_line [label="Gather System Info\n\"Date, hostname, working directory\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '=== System Info ===' echo 'Date: $(date)' echo 'Hostname: $(hostname)' echo 'PWD: $(pwd)' "]
+    step_check_command [label="Check Directory\n\"Does /tmp exist?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="test -d /tmp"]
+    cond_step_report_success [label="Check passed?", shape=diamond, fillcolor="#fff9c4"]
+    step_report_success [label="Report Success\n\"Directory check passed\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo 'Directory check passed!'"]
+    step_list_tmp [label="List Files\n\"Show contents of /tmp\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="ls -la | head -5"]
+    step_summary [label="Print Summary\n\"Display all collected results\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '=== Bash Step Example Summary ===' echo 'Echo result: {{echo_result}}' echo 'Env result: {{env"]
+
+    start -> step_simple_echo
+    step_simple_echo -> step_env_vars
+    step_env_vars -> step_multi_line
+    step_multi_line -> step_check_command
+    step_check_command -> cond_step_report_success
+    cond_step_report_success -> step_report_success [label="check_code == '0'"]
+    step_check_command -> step_list_tmp
+    step_list_tmp -> step_summary
+    cond_step_report_success -> step_list_tmp [label="skip", style=dashed]
+    step_summary -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_bash [label="Script Step", shape=box, fillcolor="#bbdefb"]
+        leg_cond [label="Condition", shape=diamond, fillcolor="#fff9c4"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_bash -> leg_cond -> leg_start [style=invis]
+    }
+}

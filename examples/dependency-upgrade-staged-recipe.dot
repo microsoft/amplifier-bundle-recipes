@@ -1,0 +1,100 @@
+// Phased dependency upgrade with human approval gates between assessment, validation, and execution.
+digraph dependency_upgrade_staged {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Staged Dependency Upgrade\nUpgrades packages in phased stages with human approval at each checkpoint"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="1994784f0b2f28c1516183a293d643560c7d02ac7da1c977d08b4043daf23bc2"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    subgraph cluster_assessment {
+        label="Assessment\n\"Inventory and planning\""
+        style="filled,rounded"
+        fillcolor="#f9f9f9"
+        color="#999999"
+
+        step_audit_dependencies [label="Audit Dependencies\n\"Check versions and vulnerabilities\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:integration-specialist"]
+        step_plan_upgrade_strategy [label="Plan Upgrade Strategy\n\"Determine order and risk\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+        start -> step_audit_dependencies
+        step_audit_dependencies -> step_plan_upgrade_strategy
+    }
+
+    gate_validation [label="Human\nApproves?", shape=diamond, fillcolor="#ffe0b2", tooltip="DEPENDENCY AUDIT AND UPGRADE PLAN COMPLETE  Review the assessment before proceeding: - Audit: {{depe"]
+    step_plan_upgrade_strategy -> gate_validation
+    subgraph cluster_validation {
+        label="Validation\n\"Check compatibility before proceeding\""
+        style="filled,rounded"
+        fillcolor="#f9f9f9"
+        color="#999999"
+
+        step_validate_compatibility [label="Validate Compatibility\n\"Will anything break?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:integration-specialist"]
+
+        gate_validation -> step_validate_compatibility
+    }
+
+    gate_phase_1_security [label="Human\nApproves?", shape=diamond, fillcolor="#ffe0b2", tooltip="COMPATIBILITY VALIDATION COMPLETE  Review: {{compatibility_check}}  Ready to generate Phase 1 comman"]
+    step_validate_compatibility -> gate_phase_1_security
+    subgraph cluster_phase_1_security {
+        label="Phase 1: Security Fixes\n\"Critical vulnerabilities first\""
+        style="filled,rounded"
+        fillcolor="#f9f9f9"
+        color="#999999"
+
+        step_generate_phase1_commands [label="Generate Security Fix Commands\n\"Critical updates only\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:integration-specialist"]
+
+        gate_phase_1_security -> step_generate_phase1_commands
+    }
+
+    gate_phase_2_minor [label="Human\nApproves?", shape=diamond, fillcolor="#ffe0b2", tooltip="PHASE 1 COMMANDS GENERATED  Security fix commands: {{phase1_commands}}  Ready to generate Phase 2 co"]
+    step_generate_phase1_commands -> gate_phase_2_minor
+    subgraph cluster_phase_2_minor {
+        label="Phase 2: Minor Updates\n\"Low-risk version bumps\""
+        style="filled,rounded"
+        fillcolor="#f9f9f9"
+        color="#999999"
+
+        step_generate_phase2_commands [label="Generate Minor Update Commands\n\"Backward-compatible changes\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:integration-specialist"]
+
+        gate_phase_2_minor -> step_generate_phase2_commands
+    }
+
+    gate_phase_3_major [label="Human\nApproves?", shape=diamond, fillcolor="#ffe0b2", tooltip="PHASE 2 COMMANDS GENERATED  Minor update commands: {{phase2_commands}}  Ready to generate Phase 3 co"]
+    step_generate_phase2_commands -> gate_phase_3_major
+    subgraph cluster_phase_3_major {
+        label="Phase 3: Major Updates\n\"Breaking changes possible\""
+        style="filled,rounded"
+        fillcolor="#f9f9f9"
+        color="#999999"
+
+        step_generate_phase3_commands [label="Generate Major Update Commands\n\"May require code changes\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:integration-specialist"]
+
+        gate_phase_3_major -> step_generate_phase3_commands
+    }
+
+    step_generate_phase3_commands -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_gate [label="Approval Gate", shape=diamond, fillcolor="#ffe0b2"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_gate -> leg_start [style=invis]
+    }
+}

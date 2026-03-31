@@ -1,0 +1,43 @@
+// Systematic dependency upgrade with audit, planning, validation, and command generation.
+digraph dependency_upgrade_systematic {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Dependency Upgrade Pipeline\nAudits packages, plans upgrades, validates compatibility, generates commands"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="1b552faea79122e01b434cdba223782a54f0e25c6ef42ce43b2065e2be2b2aab"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_audit_dependencies [label="Audit Dependencies\n\"Check versions and known vulnerabilities\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:integration-specialist"]
+    step_plan_upgrade_strategy [label="Plan Upgrade Strategy\n\"Determine order, risk, and phases\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_validate_compatibility [label="Validate Compatibility\n\"Check for breaking changes\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:integration-specialist"]
+    step_generate_upgrade_commands [label="Generate Commands\n\"Create ready-to-run upgrade scripts\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:integration-specialist"]
+
+    start -> step_audit_dependencies
+    step_audit_dependencies -> step_plan_upgrade_strategy
+    step_plan_upgrade_strategy -> step_validate_compatibility
+    step_validate_compatibility -> step_generate_upgrade_commands
+    step_generate_upgrade_commands -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_start [style=invis]
+    }
+}

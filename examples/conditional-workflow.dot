@@ -1,0 +1,55 @@
+// Classifies input as simple or complex, then routes through the appropriate processing path.
+digraph conditional_workflow {
+    rankdir=TB
+    fontname="Helvetica"
+    fontsize=12
+    label="Conditional Workflow\nRoutes data processing based on classification results"
+    labelloc=t
+    labeljust=c
+    compound=true
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="bb29b1e9136ae21b89645e5d381119f8b4f957192f65563f63c0d7393187b006"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    start [label="Start", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+
+    step_classify [label="Classify Input\n\"Simple or complex?\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_simple_process [label="Simple?", shape=diamond, fillcolor="#fff9c4"]
+    step_simple_process [label="Process Directly\n\"Handle straightforward input\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_complex_analyze [label="Complex?", shape=diamond, fillcolor="#fff9c4"]
+    step_complex_analyze [label="Analyze in Depth\n\"Break into components\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    cond_step_complex_synthesize [label="Complex?", shape=diamond, fillcolor="#fff9c4"]
+    step_complex_synthesize [label="Synthesize Insights\n\"Combine component findings\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_report [label="Generate Report\n\"Summarize the results\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+
+    start -> step_classify
+    step_classify -> cond_step_simple_process
+    cond_step_simple_process -> step_simple_process [label="classification == 'simple"]
+    step_classify -> cond_step_complex_analyze
+    cond_step_complex_analyze -> step_complex_analyze [label="classification == 'comple"]
+    step_classify -> cond_step_complex_synthesize
+    cond_step_complex_synthesize -> step_complex_synthesize [label="classification == 'comple"]
+    step_classify -> step_report
+    cond_step_simple_process -> step_report [label="skip", style=dashed]
+    cond_step_complex_analyze -> step_report [label="skip", style=dashed]
+    cond_step_complex_synthesize -> step_report [label="skip", style=dashed]
+    step_report -> done
+
+    subgraph cluster_legend {
+        label="Legend"
+        style="filled,rounded"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=10
+        node [shape=box, fontsize=9, width=1.6]
+        leg_agent [label="AI Agent Step", shape=box, fillcolor="#c8e6c9"]
+        leg_cond [label="Condition", shape=diamond, fillcolor="#fff9c4"]
+        leg_start [label="Start / End", shape=oval, fillcolor="#e0e0e0"]
+        leg_agent -> leg_cond -> leg_start [style=invis]
+    }
+}

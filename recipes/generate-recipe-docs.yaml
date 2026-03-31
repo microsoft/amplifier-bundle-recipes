@@ -1,0 +1,363 @@
+name: generate-recipe-docs
+description: |
+  Generates DOT flowchart diagrams with accessible, non-technical language labels
+  for all recipe YAML files in a repository. Produces DOT+PNG pairs co-located
+  next to their source YAML files.
+
+  The generation pipeline:
+  1. Discovers all recipe YAML files
+  2. Generates deterministic structural DOT skeletons (via recipe_to_dot)
+  3. Enhances labels with accessible plain-language descriptions (via LLM)
+  4. Validates and writes final DOT+PNG files
+
+  DOT files include a source_hash attribute for freshness tracking.
+  The validate-recipes recipe checks this hash to detect stale diagrams.
+version: "1.0.0"
+author: "Amplifier Recipes Collection"
+tags: ["recipes", "documentation", "dot", "flowchart", "visualization"]
+
+context:
+  repo_path: ""              # Required: path to repository containing recipes
+  recipes_dir: "recipes"     # Optional: subdirectory to scan (default: "recipes")
+  force: "false"             # Optional: regenerate even if fresh (default: "false")
+
+steps:
+  # ============================================================================
+  # STEP 1: Discover recipes and generate structural DOT skeletons
+  # ============================================================================
+  - id: "discover-and-generate"
+    type: "bash"
+    command: |
+      python3 << 'PYEOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      repo_path = Path("{{repo_path}}").expanduser().resolve()
+      recipes_dir = "{{recipes_dir}}"
+      force = "{{force}}" == "true"
+
+      if not repo_path.exists():
+          print(json.dumps({"error": f"repo_path not found: {repo_path}", "recipes": []}))
+          sys.exit(0)
+
+      # Attempt to import recipe_to_dot
+      try:
+          from amplifier_module_tool_recipes.recipe_to_dot import recipe_to_dot
+      except ImportError:
+          print(json.dumps({
+              "error": "recipe_to_dot not available. Install amplifier_module_tool_recipes.",
+              "recipes": []
+          }))
+          sys.exit(0)
+
+      import yaml
+      import hashlib
+      import re
+
+      # Scan for recipe YAML files
+      scan_dirs = []
+      configured = repo_path / recipes_dir
+      if configured.exists():
+          scan_dirs.append(configured)
+      if recipes_dir != "examples":
+          examples = repo_path / "examples"
+          if examples.exists():
+              scan_dirs.append(examples)
+
+      recipes = []
+      for scan_dir in scan_dirs:
+          for yaml_path in sorted(scan_dir.rglob("*.yaml")):
+              # Skip test fixtures
+              rel = str(yaml_path.relative_to(repo_path))
+              if "/tests/" in f"/{rel}" or "/test_" in f"/{rel}":
+                  continue
+
+              try:
+                  data = yaml.safe_load(yaml_path.read_text())
+              except Exception:
+                  continue
+
+              if not isinstance(data, dict):
+                  continue
+              if not data.get("name"):
+                  continue
+              if "steps" not in data and "stages" not in data:
+                  continue
+
+              # It's a valid recipe — generate structural DOT
+              try:
+                  structural_dot = recipe_to_dot(str(yaml_path))
+              except Exception as exc:
+                  continue
+
+              # Determine output paths (co-located next to YAML)
+              dot_path = str(yaml_path).replace(".yaml", ".dot")
+
+              # Check if regeneration needed
+              needs_regen = force
+              if not needs_regen:
+                  if not Path(dot_path).exists():
+                      needs_regen = True
+                  else:
+                      # Check source_hash in existing DOT
+                      existing = Path(dot_path).read_text()
+                      hash_match = re.search(r'source_hash="([a-f0-9]+)"', existing)
+                      new_hash_match = re.search(r'source_hash="([a-f0-9]+)"', structural_dot)
+                      if hash_match and new_hash_match:
+                          needs_regen = hash_match.group(1) != new_hash_match.group(1)
+                      else:
+                          needs_regen = True
+
+              if not needs_regen:
+                  continue
+
+              # Collect step info for LLM enhancement
+              steps_info = []
+              all_steps = data.get("steps", [])
+              for stage in data.get("stages", []):
+                  if isinstance(stage, dict):
+                      all_steps.extend(stage.get("steps", []))
+
+              for step in all_steps:
+                  if not isinstance(step, dict):
+                      continue
+                  step_info = {
+                      "id": step.get("id", ""),
+                      "type": step.get("type", "agent"),
+                  }
+                  if step.get("agent"):
+                      step_info["agent"] = step["agent"]
+                  prompt_text = str(step.get("prompt", "") or "")
+                  if prompt_text:
+                      step_info["prompt_excerpt"] = prompt_text[:200]
+                  command_text = str(step.get("command", "") or "")
+                  if command_text:
+                      step_info["command_excerpt"] = command_text[:100]
+                  steps_info.append(step_info)
+
+              recipe_info = {
+                  "yaml_path": str(yaml_path),
+                  "relative_path": rel,
+                  "dot_path": dot_path,
+                  "name": data["name"],
+                  "description": str(data.get("description", ""))[:300],
+                  "structural_dot": structural_dot,
+                  "steps_info": steps_info,
+              }
+              recipes.append(recipe_info)
+
+      print(json.dumps({
+          "error": None,
+          "recipes": recipes,
+          "count": len(recipes),
+      }))
+      PYEOF
+    output: "discovery"
+    parse_json: true
+    timeout: 60
+
+  # ============================================================================
+  # STEP 2: Enhance labels with LLM (foreach recipe, bounded parallel)
+  # ============================================================================
+  - id: "enhance-labels"
+    agent: "foundation:zen-architect"
+    mode: "ARCHITECT"
+    depends_on: ["discover-and-generate"]
+    foreach: "{{discovery.recipes}}"
+    as: "recipe"
+    parallel: 3
+    collect: "enhanced_dots"
+    on_error: "continue"
+    timeout: 120
+    prompt: |
+      You are rewriting the labels of a DOT flowchart to be accessible and friendly.
+      The goal: a non-technical person should understand what each step does just
+      from reading the diagram.
+
+      ## Source Recipe
+      Name: {{recipe.name}}
+      Description: {{recipe.description}}
+
+      ## Steps in this recipe
+      ```json
+      {{recipe.steps_info}}
+      ```
+
+      ## Structural DOT (current auto-generated labels)
+      ```dot
+      {{recipe.structural_dot}}
+      ```
+
+      ## Your Task
+
+      Rewrite the DOT to have friendly, accessible labels. Rules:
+      1. Keep ALL structural elements unchanged: node IDs, edges, shapes, colors,
+         fillcolor, style, cluster subgraphs, legend — these are correct, don't touch them.
+      2. ONLY change `label="..."` values on nodes and subgraph clusters, AND the
+         graph-level `label=` title.
+      3. For the graph title: write a friendly name + subtitle, like:
+         "The Big Boss Recipe\nReads your profile, checks what changed, sends work to helper recipes"
+      4. For each step node: rewrite the label to clear, plain English that a
+         non-technical person would understand. Use the step's prompt/command to
+         infer what it does.
+         Example: "Audit Dependencies" → "Check Your Packages\n\"What needs updating?\""
+      5. For cluster subgraph labels: make them friendly too.
+         Example: "Assessment" → "Assessment\n\"What do we have?\""
+      6. For approval gates: keep "Human Approves?" but optionally add a subtitle.
+      7. For condition diamonds: simplify the condition text.
+      8. Keep labels to 2-3 lines max. Use \n for line breaks.
+      9. Add a short, friendly comment at the top of the DOT file (// line) that
+         explains what this recipe does in one sentence for a non-technical reader.
+      10. Keep the `source_hash="..."` graph attribute exactly as-is — do not change it.
+
+      Return ONLY the complete rewritten DOT. No explanation, no markdown fences,
+      just the raw DOT content starting with // and ending with }.
+
+      CRITICAL: Preserve every node ID, every edge, every shape/color/style attribute.
+      Only labels and the top comment change.
+    output: "enhanced_dot"
+    parse_json: false
+
+  # ============================================================================
+  # STEP 3: Write enhanced DOT files and render PNGs
+  # ============================================================================
+  - id: "write-and-render"
+    type: "bash"
+    depends_on: ["enhance-labels"]
+    on_error: "continue"
+    command: |
+      python3 << 'PYEOF'
+      import json
+      import subprocess
+      import re
+      from pathlib import Path
+
+      _discovery_raw = r"""{{discovery}}"""
+      _enhanced_raw = r"""{{enhanced_dots}}"""
+      discovery = json.loads(_discovery_raw)
+
+      # Parse enhanced DOTs — may be a JSON array of strings or structured
+      enhanced_list = []
+      try:
+          enhanced_list = json.loads(_enhanced_raw)
+      except (json.JSONDecodeError, TypeError):
+          # Fallback: try to parse as a single string
+          if isinstance(_enhanced_raw, str) and _enhanced_raw.strip():
+              enhanced_list = [_enhanced_raw.strip()]
+
+      recipes = discovery.get("recipes", [])
+      results = {"written": 0, "rendered": 0, "fallback": 0, "errors": []}
+
+      for i, recipe_info in enumerate(recipes):
+          dot_path = Path(recipe_info["dot_path"])
+          png_path = Path(str(dot_path).replace(".dot", ".png"))
+
+          # Get enhanced DOT or fall back to structural
+          dot_content = None
+          if i < len(enhanced_list) and enhanced_list[i]:
+              candidate = str(enhanced_list[i]).strip()
+              # Validate it's actually DOT content
+              if candidate.startswith("//") or candidate.startswith("digraph"):
+                  # Strip markdown fences if LLM wrapped them
+                  candidate = re.sub(r'^```(?:dot)?\s*\n', '', candidate)
+                  candidate = re.sub(r'\n```\s*$', '', candidate)
+                  dot_content = candidate
+              elif "digraph" in candidate:
+                  # Extract DOT from surrounding text
+                  match = re.search(r'((?://[^\n]*\n)*digraph\s+\w+\s*\{.*\})', candidate, re.DOTALL)
+                  if match:
+                      dot_content = match.group(1)
+
+          if not dot_content:
+              # Fallback to structural DOT
+              dot_content = recipe_info["structural_dot"]
+              results["fallback"] += 1
+
+          # Verify source_hash is preserved
+          if "source_hash" not in dot_content:
+              # Re-inject from structural
+              hash_match = re.search(r'source_hash="[a-f0-9]+"', recipe_info["structural_dot"])
+              if hash_match:
+                  dot_content = dot_content.replace(
+                      'bgcolor="white"',
+                      f'bgcolor="white"\n    {hash_match.group(0)}'
+                  )
+
+          # Write DOT
+          try:
+              dot_path.write_text(dot_content)
+              results["written"] += 1
+          except Exception as exc:
+              results["errors"].append(f"Write failed for {dot_path}: {exc}")
+              continue
+
+          # Render PNG
+          try:
+              proc = subprocess.run(
+                  ["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
+                  capture_output=True, text=True, timeout=15
+              )
+              if proc.returncode == 0:
+                  results["rendered"] += 1
+              else:
+                  # DOT invalid — fallback to structural and re-render
+                  dot_content = recipe_info["structural_dot"]
+                  dot_path.write_text(dot_content)
+                  results["fallback"] += 1
+                  proc2 = subprocess.run(
+                      ["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
+                      capture_output=True, text=True, timeout=15
+                  )
+                  if proc2.returncode == 0:
+                      results["rendered"] += 1
+                  else:
+                      results["errors"].append(f"Render failed for {dot_path}: {proc2.stderr[:100]}")
+          except Exception as exc:
+              results["errors"].append(f"Render error for {dot_path}: {exc}")
+
+      results["total"] = len(recipes)
+      print(json.dumps(results))
+      PYEOF
+    output: "write_results"
+    parse_json: true
+    timeout: 120
+
+  # ============================================================================
+  # STEP 4: Summary
+  # ============================================================================
+  - id: "summary"
+    type: "bash"
+    depends_on: ["write-and-render"]
+    on_error: "continue"
+    command: |
+      python3 << 'PYEOF'
+      import json
+
+      _discovery_raw = r"""{{discovery}}"""
+      _write_raw = r"""{{write_results}}"""
+      discovery = json.loads(_discovery_raw)
+      write_results = json.loads(_write_raw)
+
+      total = write_results.get("total", 0)
+      written = write_results.get("written", 0)
+      rendered = write_results.get("rendered", 0)
+      fallback = write_results.get("fallback", 0)
+      errors = write_results.get("errors", [])
+
+      print(f"\n{'='*60}")
+      print(f"Recipe Flow Generation Complete")
+      print(f"{'='*60}")
+      print(f"  Recipes processed:  {total}")
+      print(f"  DOT files written:  {written}")
+      print(f"  PNGs rendered:      {rendered}")
+      if fallback:
+          print(f"  Structural fallback: {fallback} (LLM output invalid, used auto-labels)")
+      if errors:
+          print(f"  Errors:             {len(errors)}")
+          for e in errors[:5]:
+              print(f"    - {e}")
+      print(f"{'='*60}")
+      print(f"\nDOT+PNG files written next to their source YAML files.")
+      PYEOF
+    timeout: 15

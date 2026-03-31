@@ -1874,3 +1874,159 @@ steps:
     output: "recipe_validation"
     parse_json: true
     timeout: 300
+
+  # ============================================================================
+  # PHASE 7: Recipe Flow DOT Freshness Check (optional)
+  # Checks that each recipe has a co-located DOT flowchart file (next to YAML)
+  # and that the DOT's embedded source_hash matches the current YAML structure.
+  # Supports LLM-enhanced DOTs — uses embedded source_hash rather than full
+  # content hash, so label enhancements don't trigger false staleness.
+  # Gracefully degrades if recipe_to_dot is not available.
+  # Produces RECIPE_DOT_MISSING and RECIPE_DOT_STALE findings.
+  # ============================================================================
+
+  - id: "dot-freshness-check"
+    type: "bash"
+    depends_on: ["recipe-discovery"]
+    on_error: "continue"
+    command: |
+      python3 << 'EOF'
+      import json
+      import re
+      from pathlib import Path
+
+      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      recipe_discovery = json.loads(_recipe_discovery_raw)
+      repo_path = Path(recipe_discovery.get("repo_path", "")).resolve()
+
+      # Check if recipe_to_dot is available
+      dot_available = False
+      try:
+          from amplifier_module_tool_recipes.recipe_to_dot import recipe_to_dot
+          dot_available = True
+      except ImportError:
+          pass
+
+      results = {
+          "phase": "dot_freshness",
+          "dot_available": dot_available,
+          "findings": [],
+          "summary": {
+              "total_recipes": 0,
+              "with_dot": 0,
+              "missing_dot": 0,
+              "stale_dot": 0,
+              "fresh_dot": 0,
+              "skipped": 0,
+          },
+      }
+
+      if not dot_available:
+          results["findings"].append({
+              "code": "DOT_TOOL_UNAVAILABLE",
+              "severity": "INFO",
+              "message": (
+                  "recipe_to_dot not available — skipping DOT freshness checks. "
+                  "Install amplifier_module_tool_recipes to enable."
+              ),
+              "detail": "",
+          })
+          print(json.dumps(results))
+          raise SystemExit(0)
+
+      for recipe_info in recipe_discovery.get("recipes", []):
+          if recipe_info.get("parse_error"):
+              results["summary"]["skipped"] += 1
+              continue
+
+          recipe_name = recipe_info.get("name")
+          recipe_path = recipe_info.get("path", "")
+          rel_path = recipe_info.get("relative_path", "")
+          results["summary"]["total_recipes"] += 1
+
+          if not recipe_name:
+              results["summary"]["skipped"] += 1
+              continue
+
+          # Co-location convention: DOT lives next to the YAML source file
+          # examples/foo.yaml → examples/foo.dot
+          dot_path = Path(recipe_path.replace(".yaml", ".dot"))
+          dot_rel = str(dot_path.relative_to(repo_path)) if dot_path.is_absolute() else str(dot_path)
+
+          if not dot_path.exists():
+              results["summary"]["missing_dot"] += 1
+              results["findings"].append({
+                  "code": "RECIPE_DOT_MISSING",
+                  "severity": "SUGGESTION",
+                  "message": (
+                      f"Recipe '{recipe_name}' ({rel_path}) has no flow diagram. "
+                      f"Expected: {dot_rel}"
+                  ),
+                  "detail": dot_rel,
+                  "recipe_name": recipe_name,
+                  "recipe_path": rel_path,
+              })
+              continue
+
+          # DOT file exists — check source_hash for structural freshness.
+          # This works with LLM-enhanced DOTs because source_hash tracks
+          # YAML structure, not DOT label content.
+          try:
+              # Generate fresh structural DOT to get current source_hash
+              fresh_dot = recipe_to_dot(recipe_path)
+              fresh_match = re.search(r'source_hash="([a-f0-9]+)"', fresh_dot)
+
+              # Read existing DOT and extract its embedded source_hash
+              existing_dot = dot_path.read_text()
+              existing_match = re.search(r'source_hash="([a-f0-9]+)"', existing_dot)
+
+              if fresh_match and existing_match:
+                  if fresh_match.group(1) == existing_match.group(1):
+                      results["summary"]["fresh_dot"] += 1
+                      results["summary"]["with_dot"] += 1
+                  else:
+                      results["summary"]["stale_dot"] += 1
+                      results["summary"]["with_dot"] += 1
+                      results["findings"].append({
+                          "code": "RECIPE_DOT_STALE",
+                          "severity": "WARNING",
+                          "message": (
+                              f"Recipe '{recipe_name}' ({rel_path}) DOT is stale "
+                              f"(YAML structure changed). Regenerate: {dot_rel}"
+                          ),
+                          "detail": dot_rel,
+                          "recipe_name": recipe_name,
+                          "recipe_path": rel_path,
+                      })
+              elif not existing_match:
+                  # Old-format DOT without source_hash — treat as stale
+                  results["summary"]["stale_dot"] += 1
+                  results["summary"]["with_dot"] += 1
+                  results["findings"].append({
+                      "code": "RECIPE_DOT_STALE",
+                      "severity": "WARNING",
+                      "message": (
+                          f"Recipe '{recipe_name}' ({rel_path}) DOT has no "
+                          f"source_hash — regenerate to enable freshness tracking"
+                      ),
+                      "detail": dot_rel,
+                      "recipe_name": recipe_name,
+                      "recipe_path": rel_path,
+                  })
+              else:
+                  results["summary"]["fresh_dot"] += 1
+                  results["summary"]["with_dot"] += 1
+          except Exception as exc:
+              results["summary"]["skipped"] += 1
+              results["findings"].append({
+                  "code": "DOT_CHECK_ERROR",
+                  "severity": "INFO",
+                  "message": f"Error checking DOT for '{recipe_name}': {exc}",
+                  "detail": str(exc),
+              })
+
+      print(json.dumps(results))
+      EOF
+    output: "dot_freshness"
+    parse_json: true
+    timeout: 60
