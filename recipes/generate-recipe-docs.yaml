@@ -128,6 +128,8 @@ steps:
                   }
                   if step.get("agent"):
                       step_info["agent"] = step["agent"]
+                  if step.get("recipe"):
+                      step_info["recipe"] = step["recipe"]
                   prompt_text = str(step.get("prompt", "") or "")
                   if prompt_text:
                       step_info["prompt_excerpt"] = prompt_text[:200]
@@ -210,6 +212,16 @@ steps:
       9. Add a short, friendly comment at the top of the DOT file (// line) that
          explains what this recipe does in one sentence for a non-technical reader.
       10. Keep the `source_hash="..."` graph attribute exactly as-is — do not change it.
+      11. For sub-recipe call nodes (gray dashed boxes with style "filled,rounded,dashed"):
+          ALWAYS include the recipe filename (without extension) on the last line of the
+          label, in parentheses. The recipe filename is in the tooltip attribute of the
+          node, OR in the "recipe" field in steps_info for that step.
+          Strip the path and extension — use just the bare filename.
+          Format: "Friendly Description\n(recipe-filename)"
+          Example: step that calls dotfiles-prescan.yaml →
+            "Quick Scan\nEach Repo\n(dotfiles-prescan)"
+          This lets users find the .dot, .png, or .yaml file by appending the extension
+          of their choice.
 
       Return ONLY the complete rewritten DOT. No explanation, no markdown fences,
       just the raw DOT content starting with // and ending with }.
