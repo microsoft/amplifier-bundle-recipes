@@ -73,7 +73,7 @@ steps:
   - id: "environment-check"
     type: "bash"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import sys
       from pathlib import Path
@@ -150,7 +150,7 @@ steps:
     type: "bash"
     depends_on: ["environment-check"]
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       from pathlib import Path
 
@@ -359,7 +359,7 @@ steps:
     depends_on: ["recipe-discovery"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       from pathlib import Path
@@ -733,7 +733,7 @@ steps:
     depends_on: ["recipe-discovery"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       from pathlib import Path
@@ -1232,7 +1232,7 @@ steps:
     depends_on: ["recipe-discovery"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       from fnmatch import fnmatch
       from pathlib import Path
@@ -1592,7 +1592,7 @@ steps:
     depends_on: ["structural-validation", "best-practices-check", "semantic-validation"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
 
       _structural_results_raw = r"""{{structural_results}}"""
@@ -1754,7 +1754,7 @@ steps:
     condition: "{{quality_classification.requires_llm_analysis}} == false"
     depends_on: ["quality-classification"]
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
 
       _quality_classification_raw = r"""{{quality_classification}}"""
@@ -1892,7 +1892,7 @@ steps:
     depends_on: ["recipe-discovery"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
       import re
       from pathlib import Path

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 import uuid
 from dataclasses import dataclass
 from dataclasses import field
@@ -2732,6 +2733,11 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
         # Build environment variables
         env = os.environ.copy()
+        # Inject current Python interpreter so recipe bash heredocs can use
+        # ${AMPLIFIER_PYTHON:-python3} to reliably reach the Amplifier venv's
+        # Python (which has recipe modules like recipe_to_dot installed), rather
+        # than the bare `python3` that resolves to the system Python.
+        env["AMPLIFIER_PYTHON"] = sys.executable
         if step.env:
             for key, value in step.env.items():
                 # Substitute variables in env values

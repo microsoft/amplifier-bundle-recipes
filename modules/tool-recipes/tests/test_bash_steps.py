@@ -1,6 +1,5 @@
 """Tests for bash step type - direct shell execution without LLM overhead."""
 
-import asyncio
 import os
 from pathlib import Path
 
@@ -104,32 +103,45 @@ class TestBashStepModel:
 
     def test_bash_step_cannot_have_agent_config(self):
         """Bash step cannot have agent_config field."""
-        step = Step(id="test", type="bash", command="echo hello", agent_config={"key": "value"})
+        step = Step(
+            id="test", type="bash", command="echo hello", agent_config={"key": "value"}
+        )
         errors = step.validate()
         assert any("agent_config" in e.lower() for e in errors)
 
     def test_bash_step_cannot_have_recipe(self):
         """Bash step cannot have recipe field."""
-        step = Step(id="test", type="bash", command="echo hello", recipe="some-recipe.yaml")
+        step = Step(
+            id="test", type="bash", command="echo hello", recipe="some-recipe.yaml"
+        )
         errors = step.validate()
         assert any("recipe" in e.lower() for e in errors)
 
     def test_bash_step_output_exit_code_validation(self):
         """output_exit_code must be valid variable name."""
-        step = Step(id="test", type="bash", command="echo hello", output_exit_code="valid_name")
+        step = Step(
+            id="test", type="bash", command="echo hello", output_exit_code="valid_name"
+        )
         errors = step.validate()
         assert not any("output_exit_code" in e.lower() for e in errors)
 
     def test_bash_step_output_exit_code_invalid_name(self):
         """output_exit_code with invalid chars should fail."""
-        step = Step(id="test", type="bash", command="echo hello", output_exit_code="invalid-name!")
+        step = Step(
+            id="test",
+            type="bash",
+            command="echo hello",
+            output_exit_code="invalid-name!",
+        )
         errors = step.validate()
         assert any("output_exit_code" in e.lower() for e in errors)
 
     def test_bash_step_output_exit_code_reserved_name(self):
         """output_exit_code cannot use reserved names."""
         for reserved in ["recipe", "session", "step"]:
-            step = Step(id="test", type="bash", command="echo hello", output_exit_code=reserved)
+            step = Step(
+                id="test", type="bash", command="echo hello", output_exit_code=reserved
+            )
             errors = step.validate()
             assert any("reserved" in e.lower() for e in errors)
 
@@ -148,7 +160,9 @@ class TestBashStepExecution:
         return tmp_path
 
     @pytest.mark.asyncio
-    async def test_execute_simple_command(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_simple_command(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Simple echo command should return stdout."""
         step = Step(id="test", type="bash", command="echo hello")
         context: dict = {}
@@ -160,7 +174,9 @@ class TestBashStepExecution:
         assert result.exit_code == 0
 
     @pytest.mark.asyncio
-    async def test_execute_with_variable_substitution(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_with_variable_substitution(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Variables in command should be substituted."""
         step = Step(id="test", type="bash", command="echo {{message}}")
         context = {"message": "world"}
@@ -170,9 +186,13 @@ class TestBashStepExecution:
         assert result.stdout.strip() == "world"
 
     @pytest.mark.asyncio
-    async def test_execute_with_env_variables(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_with_env_variables(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Environment variables should be passed to command."""
-        step = Step(id="test", type="bash", command="echo $MY_VAR", env={"MY_VAR": "from_env"})
+        step = Step(
+            id="test", type="bash", command="echo $MY_VAR", env={"MY_VAR": "from_env"}
+        )
         context: dict = {}
 
         result = await executor._execute_bash_step(step, context, project_path)
@@ -180,9 +200,13 @@ class TestBashStepExecution:
         assert result.stdout.strip() == "from_env"
 
     @pytest.mark.asyncio
-    async def test_execute_with_env_variable_substitution(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_with_env_variable_substitution(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Variables in env values should be substituted."""
-        step = Step(id="test", type="bash", command="echo $MY_VAR", env={"MY_VAR": "{{value}}"})
+        step = Step(
+            id="test", type="bash", command="echo $MY_VAR", env={"MY_VAR": "{{value}}"}
+        )
         context = {"value": "substituted"}
 
         result = await executor._execute_bash_step(step, context, project_path)
@@ -203,7 +227,9 @@ class TestBashStepExecution:
         assert result.stdout.strip() == str(subdir)
 
     @pytest.mark.asyncio
-    async def test_execute_with_cwd_variable_substitution(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_with_cwd_variable_substitution(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Variables in cwd should be substituted."""
         subdir = project_path / "mydir"
         subdir.mkdir()
@@ -216,7 +242,9 @@ class TestBashStepExecution:
         assert result.stdout.strip() == str(subdir)
 
     @pytest.mark.asyncio
-    async def test_execute_with_relative_cwd(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_with_relative_cwd(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Relative cwd should be resolved from project path."""
         subdir = project_path / "relative"
         subdir.mkdir()
@@ -229,7 +257,9 @@ class TestBashStepExecution:
         assert result.stdout.strip() == str(subdir)
 
     @pytest.mark.asyncio
-    async def test_execute_nonexistent_cwd_fails(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_nonexistent_cwd_fails(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Command with non-existent cwd should fail."""
         step = Step(id="test", type="bash", command="pwd", cwd="/nonexistent/path")
         context: dict = {}
@@ -240,7 +270,9 @@ class TestBashStepExecution:
         assert "cwd does not exist" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_execute_nonzero_exit_code(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_nonzero_exit_code(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Non-zero exit code should raise error with on_error=fail."""
         step = Step(id="test", type="bash", command="exit 1", on_error="fail")
         context: dict = {}
@@ -251,7 +283,9 @@ class TestBashStepExecution:
         assert "exit code 1" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_execute_nonzero_exit_code_continue(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_nonzero_exit_code_continue(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Non-zero exit code with on_error=continue should return result."""
         step = Step(id="test", type="bash", command="exit 42", on_error="continue")
         context: dict = {}
@@ -261,9 +295,13 @@ class TestBashStepExecution:
         assert result.exit_code == 42
 
     @pytest.mark.asyncio
-    async def test_execute_captures_stderr(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_captures_stderr(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Stderr should be captured."""
-        step = Step(id="test", type="bash", command="echo error >&2", on_error="continue")
+        step = Step(
+            id="test", type="bash", command="echo error >&2", on_error="continue"
+        )
         context: dict = {}
 
         result = await executor._execute_bash_step(step, context, project_path)
@@ -282,7 +320,9 @@ class TestBashStepExecution:
         assert "timed out" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_execute_multiline_command(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_multiline_command(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Multiline commands should work."""
         step = Step(
             id="test",
@@ -300,7 +340,9 @@ class TestBashStepExecution:
         assert result.stdout.strip() == "3"
 
     @pytest.mark.asyncio
-    async def test_execute_pipe_command(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_pipe_command(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Piped commands should work."""
         step = Step(id="test", type="bash", command="echo 'a\nb\nc' | wc -l")
         context: dict = {}
@@ -310,7 +352,9 @@ class TestBashStepExecution:
         assert result.stdout.strip() == "3"
 
     @pytest.mark.asyncio
-    async def test_execute_inherits_environment(self, executor: RecipeExecutor, project_path: Path):
+    async def test_execute_inherits_environment(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
         """Command should inherit parent environment."""
         # Set a unique env var to test inheritance
         os.environ["TEST_BASH_STEP_VAR"] = "inherited"
@@ -323,6 +367,54 @@ class TestBashStepExecution:
             assert result.stdout.strip() == "inherited"
         finally:
             del os.environ["TEST_BASH_STEP_VAR"]
+
+    @pytest.mark.asyncio
+    async def test_execute_injects_amplifier_python(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
+        """AMPLIFIER_PYTHON env var should be injected with the current Python executable."""
+        step = Step(id="test", type="bash", command="echo $AMPLIFIER_PYTHON")
+        context: dict = {}
+
+        result = await executor._execute_bash_step(step, context, project_path)
+
+        amplifier_python = result.stdout.strip()
+        assert amplifier_python != "", "AMPLIFIER_PYTHON must be set (not empty)"
+        assert "python" in amplifier_python.lower(), (
+            f"AMPLIFIER_PYTHON should point to a Python executable, got: {amplifier_python}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_amplifier_python_is_current_interpreter(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
+        """AMPLIFIER_PYTHON should match sys.executable of the current process."""
+        import sys
+
+        step = Step(id="test", type="bash", command="echo $AMPLIFIER_PYTHON")
+        context: dict = {}
+
+        result = await executor._execute_bash_step(step, context, project_path)
+
+        assert result.stdout.strip() == sys.executable
+
+    @pytest.mark.asyncio
+    async def test_amplifier_python_not_overridden_by_step_env(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
+        """Step-level env should be able to override AMPLIFIER_PYTHON if explicitly set."""
+        step = Step(
+            id="test",
+            type="bash",
+            command="echo $AMPLIFIER_PYTHON",
+            env={"AMPLIFIER_PYTHON": "/custom/python"},
+        )
+        context: dict = {}
+
+        result = await executor._execute_bash_step(step, context, project_path)
+
+        # Step env overrides the injected value (step env is applied after injection)
+        assert result.stdout.strip() == "/custom/python"
 
 
 class TestBashStepYamlParsing:

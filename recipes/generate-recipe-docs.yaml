@@ -28,7 +28,7 @@ steps:
   - id: "discover-and-generate"
     type: "bash"
     command: |
-      python3 << 'PYEOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'PYEOF'
       import json
       import sys
       from pathlib import Path
@@ -227,7 +227,7 @@ steps:
     depends_on: ["enhance-labels"]
     on_error: "continue"
     command: |
-      python3 << 'PYEOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'PYEOF'
       import json
       import subprocess
       import re
@@ -331,7 +331,7 @@ steps:
     depends_on: ["write-and-render"]
     on_error: "continue"
     command: |
-      python3 << 'PYEOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'PYEOF'
       import json
 
       _discovery_raw = r"""{{discovery}}"""
