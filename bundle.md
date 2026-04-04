@@ -42,7 +42,7 @@ Example recipes are available in `@recipes:examples/`:
 - `code-review-recipe.yaml` - Multi-stage review with conditional execution
 - `dependency-upgrade-staged-recipe.yaml` - Workflow with human approval gates
 
-For a complete catalog, see @recipes:docs/EXAMPLES_CATALOG.md
+For a complete catalog, see `recipes:docs/EXAMPLES_CATALOG.md`
 
 ---
 
