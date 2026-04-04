@@ -1,8 +1,9 @@
+// Workflow Recipes — the multi-step AI agent workflow engine for Amplifier
 digraph recipes {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="recipes v1.0.0 — bundle repo"
+    label="Workflow Recipes\nMulti-step AI agent workflow engine"
     labelloc=t
     labeljust=c
     nodesep=0.6
@@ -13,45 +14,45 @@ digraph recipes {
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root_recipes [label="recipes v1.0.0\n0 tools · 0 agents\n~9782 tok aggregate", shape=box, fillcolor="#80cbc4", style="filled,rounded,bold", penwidth=2]
+    root_recipes [label="Workflow Recipes v1.0.0\n0 tools · 0 agents\n~9782 tok aggregate", shape=box, fillcolor="#80cbc4", style="filled,rounded,bold", penwidth=2]
 
     subgraph cluster_behaviors {
-        label="Behaviors"
+        label="Packaged Capabilities"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        beh_recipes_behavior [label="recipes-behavior\n1 tools · 1 ctx\n~1393 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_recipes_behavior [label="Recipe Capabilities\n1 tools · 1 ctx\n~1393 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
     }
 
     subgraph cluster_agents {
-        label="Agents"
+        label="Specialist Agents"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        agt_recipe_author [label="recipe-author\n~408 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_result_validator [label="result-validator\n~396 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_recipe_author [label="Recipe Author\nDesigns & validates workflows\n~408 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_result_validator [label="Result Validator\nVerifies workflow outcomes\n~396 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
     }
 
     subgraph cluster_modules {
-        label="Modules"
+        label="Tool Modules"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        mod_tool_recipes [label="tool-recipes\n1 tool · ~680 tok", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        mod_tool_recipes [label="Recipe Runner\n1 tool · ~680 tok", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
     }
 
     subgraph cluster_context {
-        label="Context Files"
+        label="Knowledge & Reference Files"
         style="filled"
         fillcolor="#f9f9f9"
         color="#999999"
 
-        ctx_recipe_awareness_md [label="recipe-awareness.md\n~460 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        ctx_recipe_instructions_md [label="recipe-instructions.md\n~2001 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        ctx_EXAMPLES_CATALOG_md [label="EXAMPLES_CATALOG.md\n~7406 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        ctx_recipe_awareness_md [label="Recipe Overview\nrecipe-awareness.md\n~460 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        ctx_recipe_instructions_md [label="Authoring Guide\nrecipe-instructions.md\n~2001 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        ctx_EXAMPLES_CATALOG_md [label="Example Catalog\nEXAMPLES_CATALOG.md\n~7406 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
     }
 
     subgraph cluster_legend {
@@ -75,7 +76,7 @@ digraph recipes {
 
     disclaimer [label="Token estimates: ~4 chars/token\nSolid border = local (counted)\nDashed + red = external, hidden cost (not counted)\nDashed + muted = external, no cost\nExcludes: sub-session costs, runtime-dynamic", shape=note, fillcolor="#eceff1", style="filled", fontsize=9]
 
-    ext_githttps___github_com_microsoft_amplifier_foundation_main [label="amplifier-foundation\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
+    ext_githttps___github_com_microsoft_amplifier_foundation_main [label="Amplifier Foundation\n(external, cost)", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2]
 
     root_recipes -> ext_githttps___github_com_microsoft_amplifier_foundation_main [style=dashed]
     root_recipes -> beh_recipes_behavior [label="composes"]
