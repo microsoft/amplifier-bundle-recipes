@@ -94,7 +94,13 @@ class SessionManager:
         slug = get_project_slug(project_path)
         return self.base_dir / slug / "recipe-sessions"
 
-    def create_session(self, recipe: Recipe, project_path: Path, recipe_path: Path | None = None) -> str:
+    def create_session(
+        self,
+        recipe: Recipe,
+        project_path: Path,
+        recipe_path: Path | None = None,
+        parent_session_id: str | None = None,
+    ) -> str:
         """
         Create new session.
 
@@ -102,6 +108,7 @@ class SessionManager:
             recipe: Recipe being executed
             project_path: Current project directory
             recipe_path: Optional path to recipe file (will be copied to session)
+            parent_session_id: Session ID of parent recipe (for sub-recipe lineage tracking)
 
         Returns:
             session_id: Unique session identifier
@@ -128,6 +135,7 @@ class SessionManager:
             "context": recipe.context.copy(),
             "completed_steps": [],
             "project_path": str(project_path.resolve()),
+            "parent_session_id": parent_session_id,
         }
 
         # Save initial state

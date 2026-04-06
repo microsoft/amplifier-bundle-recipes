@@ -500,7 +500,7 @@ class RecipeExecutor:
                 session_started = state["started"]
             else:
                 session_id = self.session_manager.create_session(
-                    recipe, project_path, recipe_path
+                    recipe, project_path, recipe_path, parent_session_id=parent_session_id
                 )
                 context = {**recipe.context, **context_vars}
                 session_started = datetime.datetime.now().isoformat()
@@ -586,7 +586,7 @@ class RecipeExecutor:
                         self.session_manager.save_state(session_id, project_path, state)
         else:
             session_id = self.session_manager.create_session(
-                recipe, project_path, recipe_path
+                recipe, project_path, recipe_path, parent_session_id=parent_session_id
             )
             current_step_index = 0
             context = {**recipe.context, **context_vars}
