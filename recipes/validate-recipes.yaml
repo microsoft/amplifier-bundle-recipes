@@ -2047,7 +2047,7 @@ steps:
     depends_on: ["dot-freshness-check"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json, yaml, sys
       from pathlib import Path
       raw = r"""{{dot_freshness}}"""
@@ -2146,7 +2146,7 @@ steps:
     depends_on: ["dot-regen-enhance"]
     on_error: "continue"
     command: |
-      python3 << 'EOF'
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json, subprocess, re, sys
       from pathlib import Path
       regen_targets = json.loads(r"""{{regen_targets}}""")
