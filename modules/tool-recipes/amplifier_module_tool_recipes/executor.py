@@ -443,7 +443,7 @@ class RecipeExecutor:
         recursion_state: RecursionState | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,
+        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute recipe with checkpointing and resumption.
@@ -861,7 +861,7 @@ class RecipeExecutor:
         is_resuming: bool,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,
+        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute a staged recipe with approval gates.
@@ -1288,7 +1288,7 @@ class RecipeExecutor:
         step_in_stage: int,
         completed_stages: list[str],
         completed_steps: list[str],
-        parent_session_id: str | None = None,
+        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> None:
         """Save state for staged recipe execution."""
         state = {
@@ -2456,7 +2456,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         parent_recipe_path: Path | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,
+        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute a recipe composition step by loading and running a sub-recipe.
