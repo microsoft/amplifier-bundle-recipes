@@ -443,7 +443,7 @@ class RecipeExecutor:
         recursion_state: RecursionState | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,
+        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute recipe with checkpointing and resumption.
@@ -527,6 +527,7 @@ class RecipeExecutor:
                 is_resuming=is_resuming,
                 rate_limiter=rate_limiter,
                 orchestrator_config=orchestrator_config,
+                parent_session_id=parent_session_id,
             )
 
         # Flat recipe state loading (uses current_step_index)
@@ -696,6 +697,7 @@ class RecipeExecutor:
                             "context": self._trim_context_for_checkpoint(context),
                             "completed_steps": completed_steps,
                             "project_path": str(project_path.resolve()),
+                            "parent_session_id": parent_session_id,
                         }
                         self.session_manager.save_state(session_id, project_path, state)
                         continue
@@ -755,6 +757,7 @@ class RecipeExecutor:
                         "context": self._trim_context_for_checkpoint(context),
                         "completed_steps": completed_steps,
                         "project_path": str(project_path.resolve()),
+                        "parent_session_id": parent_session_id,
                     }
 
                     # Checkpoint after each step
@@ -779,6 +782,7 @@ class RecipeExecutor:
                         "context": self._trim_context_for_checkpoint(context),
                         "completed_steps": completed_steps,
                         "project_path": str(project_path.resolve()),
+                        "parent_session_id": parent_session_id,
                         "pending_child_approval": {
                             "child_session_id": e.session_id,
                             "child_stage_name": e.stage_name,
@@ -857,6 +861,7 @@ class RecipeExecutor:
         is_resuming: bool,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
+        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute a staged recipe with approval gates.
@@ -1020,6 +1025,7 @@ class RecipeExecutor:
                                 step_idx + 1,
                                 completed_stages,
                                 completed_steps,
+                                parent_session_id=parent_session_id,
                             )
                             continue
                         except SkipRemainingError:
@@ -1077,6 +1083,7 @@ class RecipeExecutor:
                             step_idx + 1,
                             completed_stages,
                             completed_steps,
+                            parent_session_id=parent_session_id,
                         )
 
                     except SkipRemainingError:
@@ -1092,6 +1099,7 @@ class RecipeExecutor:
                             step_idx,
                             completed_stages,
                             completed_steps,
+                            parent_session_id=parent_session_id,
                         )
                         # (2) Create compound stage name
                         compound_stage = f"{stage.name}/{e.stage_name}"
@@ -1140,6 +1148,7 @@ class RecipeExecutor:
                         0,
                         completed_stages,
                         completed_steps,
+                        parent_session_id=parent_session_id,
                     )
 
                     # Set pending approval AFTER saving state (this loads, modifies, saves)
@@ -1208,6 +1217,7 @@ class RecipeExecutor:
                     0,
                     completed_stages,
                     completed_steps,
+                    parent_session_id=parent_session_id,
                 )
 
         except ApprovalGatePausedError:
@@ -1229,6 +1239,7 @@ class RecipeExecutor:
                 current_step_in_stage,
                 completed_stages,
                 completed_steps,
+                parent_session_id=parent_session_id,
             )
             await self._show_progress(
                 f"⚠️ Recipe cancelled at step: {e.current_step or 'unknown'}",
@@ -1246,6 +1257,7 @@ class RecipeExecutor:
                 current_step_in_stage,
                 completed_stages,
                 completed_steps,
+                parent_session_id=parent_session_id,
             )
             raise
 
@@ -1276,6 +1288,7 @@ class RecipeExecutor:
         step_in_stage: int,
         completed_stages: list[str],
         completed_steps: list[str],
+        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> None:
         """Save state for staged recipe execution."""
         state = {
@@ -1289,6 +1302,7 @@ class RecipeExecutor:
             "completed_stages": completed_stages,
             "completed_steps": completed_steps,
             "project_path": str(project_path.resolve()),
+            "parent_session_id": parent_session_id,
             "is_staged": True,
         }
         self.session_manager.save_state(session_id, project_path, state)
@@ -2442,7 +2456,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         parent_recipe_path: Path | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,
+        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute a recipe composition step by loading and running a sub-recipe.
