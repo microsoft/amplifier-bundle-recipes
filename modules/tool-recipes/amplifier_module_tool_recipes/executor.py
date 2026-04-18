@@ -1430,15 +1430,29 @@ class RecipeExecutor:
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # Strategy 2: Extract from markdown code block
-        json_match = re.search(
-            r"```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```", output_stripped, re.DOTALL
-        )
-        if json_match:
-            try:
-                return json.loads(json_match.group(1))
-            except (json.JSONDecodeError, ValueError):
-                pass
+        # Strategy 2: Extract from markdown code block.
+        # The old approach used a non-greedy regex (r"```(?:json)?\s*(\[.*?\]|
+        # \{.*?\})\s*```") whose .*? could truncate at the first inner } / ]
+        # instead of matching the full balanced structure.  We now find the
+        # opening fence, locate the closing fence, and apply JSONDecoder.
+        # raw_decode on the fenced content so balanced-brace handling is done
+        # correctly by the JSON parser itself.
+        fence_match = re.search(r"```(?:json)?\s*", output_stripped)
+        if fence_match:
+            fence_start = fence_match.end()
+            end_fence_idx = output_stripped.find("```", fence_start)
+            if end_fence_idx != -1:
+                fenced_content = output_stripped[fence_start:end_fence_idx].strip()
+                if fenced_content:
+                    try:
+                        s2_decoder = json.JSONDecoder()
+                        parsed_s2, _ = s2_decoder.raw_decode(fenced_content)
+                        if parsed_s2 not in ({}, []):
+                            return parsed_s2
+                        # Trivial structure ({} / []) — fall through to
+                        # Strategy 3 in case something richer comes later.
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # fall through to Strategy 3
 
         # Strategy 3: Find JSON embedded in text (position-ordered, skip trivial)
         # Scan for [ and { in document order so the first real JSON wins,
