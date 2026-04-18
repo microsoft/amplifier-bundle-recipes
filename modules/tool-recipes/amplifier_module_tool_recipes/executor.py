@@ -42,6 +42,12 @@ _RECIPE_INTERNAL_KEYS: frozenset[str] = frozenset(
 # 100 KB per value is generous for typical recipe outputs.
 _CHECKPOINT_TRIM_THRESHOLD_BYTES: int = 100_000
 
+# Deduplication set for depends_on deprecation warnings.
+# Keyed by (recipe_name, step_id) so each unique step in each recipe logs the
+# warning at most once per process lifetime regardless of how many times the
+# recipe is executed or resumed.
+_warned_depends_on_steps: set[tuple[str, str]] = set()
+
 
 @dataclass
 class BashResult:
@@ -254,6 +260,44 @@ class RateLimiter:
         delay = self.backoff.current_delay_ms
         if delay > 0:
             await asyncio.sleep(delay / 1000)
+
+
+def _warn_depends_on_unenforced(recipe: "Recipe") -> None:
+    """Log a WARNING for every step that declares depends_on.
+
+    ``Step.depends_on`` is validated and documented but the executor runs
+    steps in declaration order — it does **not** reorder or gate steps based
+    on the ``depends_on`` list.  Callers relying on it for ordering would
+    experience silent mis-ordering.
+
+    The warning is emitted at most once per ``(recipe_name, step_id)`` pair
+    per process lifetime (controlled by the module-level
+    ``_warned_depends_on_steps`` set).  Both flat steps and steps nested
+    inside stages are checked.
+
+    Args:
+        recipe: The Recipe object about to be executed.
+    """
+    # Collect all steps (flat recipes have recipe.steps; staged recipes put
+    # steps inside recipe.stages[n].steps — check both).
+    all_steps = list(recipe.steps or [])
+    for stage in recipe.stages or []:
+        all_steps.extend(stage.steps or [])
+
+    for step in all_steps:
+        if step.depends_on:
+            key = (recipe.name, step.id)
+            if key not in _warned_depends_on_steps:
+                _warned_depends_on_steps.add(key)
+                logger.warning(
+                    "Step '%s' in recipe '%s' declares depends_on=%r but the "
+                    "recipe engine does not currently enforce dependency "
+                    "ordering. Steps execute in declaration order. This may "
+                    "become enforced in a future version.",
+                    step.id,
+                    recipe.name,
+                    step.depends_on,
+                )
 
 
 class RecipeExecutor:
@@ -488,6 +532,11 @@ class RecipeExecutor:
         # Like rate_limiter, created at root recipe and inherited by sub-recipes
         if orchestrator_config is None and recipe.orchestrator:
             orchestrator_config = recipe.orchestrator
+
+        # Warn (once per unique step, per process lifetime) when a step declares
+        # depends_on — the field is validated and documented but the executor does
+        # NOT enforce it; steps always execute in declaration order.
+        _warn_depends_on_unenforced(recipe)
 
         # Create or resume session
         is_resuming = session_id is not None
