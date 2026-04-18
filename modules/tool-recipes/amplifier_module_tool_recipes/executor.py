@@ -443,7 +443,8 @@ class RecipeExecutor:
         recursion_state: RecursionState | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
+        parent_session_id: str
+        | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute recipe with checkpointing and resumption.
@@ -500,7 +501,10 @@ class RecipeExecutor:
                 session_started = state["started"]
             else:
                 session_id = self.session_manager.create_session(
-                    recipe, project_path, recipe_path, parent_session_id=parent_session_id
+                    recipe,
+                    project_path,
+                    recipe_path,
+                    parent_session_id=parent_session_id,
                 )
                 context = {**recipe.context, **context_vars}
                 session_started = datetime.datetime.now().isoformat()
@@ -861,7 +865,8 @@ class RecipeExecutor:
         is_resuming: bool,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
+        parent_session_id: str
+        | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute a staged recipe with approval gates.
@@ -1288,7 +1293,8 @@ class RecipeExecutor:
         step_in_stage: int,
         completed_stages: list[str],
         completed_steps: list[str],
-        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
+        parent_session_id: str
+        | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> None:
         """Save state for staged recipe execution."""
         state = {
@@ -2456,7 +2462,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         parent_recipe_path: Path | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
+        parent_session_id: str
+        | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute a recipe composition step by loading and running a sub-recipe.
@@ -2608,8 +2615,18 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         """
         Recursively substitute {{variable}} references in nested structures.
 
+        When a string consists of exactly one whole-variable reference (e.g.
+        ``"{{current_task}}"`` or ``"{{a.b.c}}"`` with no surrounding text),
+        the native Python value is returned instead of a string — preserving
+        dicts, lists, ints, booleans, etc.  This prevents dict→JSON-string
+        coercion when passing structured context values to sub-recipes via
+        foreach loops and fixes the "Cannot access 'x' on str, not dict"
+        error that occurred when a dict variable was forwarded through a
+        ``context:`` block.
+
         Handles:
-        - Strings: Direct variable substitution
+        - Strings: Type-preserving substitution for whole-variable refs;
+          normal string substitution for composite/partial strings.
         - Dicts: Recursively process all values
         - Lists: Recursively process all items
         - Other types: Pass through unchanged
@@ -2619,9 +2636,49 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             context: Dict with variable values
 
         Returns:
-            Value with all variables substituted
+            Value with all variables substituted, preserving native types
+            for whole-variable string references.
         """
         if isinstance(value, str):
+            # When the string is exactly one whole-variable reference (e.g.
+            # "{{current_task}}" or "{{a.b.c}}" — optional surrounding
+            # whitespace only), resolve and return the native Python object so
+            # that dicts, lists, ints, etc. are NOT serialised to JSON strings.
+            whole_var = re.fullmatch(r"\s*\{\{(\w+(?:\.\w+)*)\}\}\s*", value)
+            if whole_var:
+                var_ref = whole_var.group(1)
+                if "." in var_ref:
+                    # Dotted path — resolve step-by-step from context root
+                    parts = var_ref.split(".")
+                    resolved: Any = context
+                    path_so_far: list[str] = []
+                    for part in parts:
+                        path_so_far.append(part)
+                        if isinstance(resolved, dict) and part in resolved:
+                            resolved = resolved[part]
+                        elif isinstance(resolved, dict):
+                            raise ValueError(
+                                f"Undefined variable: {{{{{var_ref}}}}}. "
+                                f"Key '{part}' not found. "
+                                f"Available keys at "
+                                f"'{'.'.join(path_so_far[:-1]) or 'root'}': "
+                                f"{', '.join(sorted(resolved.keys()))}"
+                            )
+                        else:
+                            parent_path = ".".join(path_so_far[:-1])
+                            raise ValueError(
+                                f"Cannot access '{part}' on "
+                                f"{{{{{parent_path}}}}} — "
+                                f"it's a {type(resolved).__name__}, not a dict."
+                            )
+                    return resolved  # native Python type preserved
+                else:
+                    # Simple (non-dotted) variable reference
+                    if var_ref in context:
+                        return context[var_ref]  # native Python type preserved
+                    # Variable not found — fall through to substitute_variables
+                    # which will raise a descriptive ValueError.
+            # Composite string (surrounding text, multiple refs, or unknown var)
             return self.substitute_variables(value, context)
         elif isinstance(value, dict):
             return {
