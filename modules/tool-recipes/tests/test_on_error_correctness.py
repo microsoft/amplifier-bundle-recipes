@@ -407,3 +407,86 @@ class TestBashOnErrorSkipRemaining:
 
         with pytest.raises(ValueError, match="exit code"):
             await executor._execute_bash_step(step, {}, project_path)
+
+
+# ===========================================================================
+# Class 3: Integration — bash step on_error=skip_remaining inside foreach
+# ===========================================================================
+
+
+class TestBashForeachSkipRemainingIntegration:
+    """Integration: bash step on_error=skip_remaining nested inside a foreach loop.
+
+    Tests the joint execution path where both fixes interact:
+
+    Fix 2 (_execute_bash_step raises SkipRemainingError on non-zero exit) produces
+    the exception that Fix 1's handler (_execute_loop_sequential's
+    ``except SkipRemainingError: raise`` block) must propagate without swallowing.
+
+    Neither fix tested in isolation guarantees the combined path works correctly;
+    this class provides the missing end-to-end coverage COE flagged on PR #63.
+    """
+
+    # -----------------------------------------------------------------------
+    # 9. bash skip_remaining inside foreach → SkipRemainingError propagates
+    #    and later iterations never execute — INTEGRATION TEST (COE concern)
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_foreach_with_bash_step_skip_remaining_propagates(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
+        """Integration: bash step on_error=skip_remaining inside foreach propagates.
+
+        Recipe structure (via _execute_loop_sequential directly):
+          - foreach over [item1, item2, item3]
+          - body: bash step that fails on item2 (on_error=skip_remaining)
+
+        Expected behaviour:
+          - iteration 0 (item1): bash succeeds, marker file written
+          - iteration 1 (item2): bash exits non-zero →
+              _execute_bash_step raises SkipRemainingError (Fix 2) →
+              _execute_loop_sequential's ``except SkipRemainingError: raise``
+              propagates it (Fix 1)
+          - iteration 2 (item3): never executes
+
+        RED without Fix 2: bash silently returns BashResult (no exception),
+          all three iterations run, no SkipRemainingError raised.
+        RED without Fix 1: SkipRemainingError is caught and re-raised as
+          ValueError, wrong exception type propagates.
+        GREEN after both fixes: SkipRemainingError raised, item3 never touched.
+        """
+        marker_dir = project_path  # fresh tmp_path per test
+
+        step = Step(
+            id="bash-foreach",
+            type="bash",
+            # Fail on item2; on success write a per-item marker file so we
+            # can prove which iterations actually ran after the exception.
+            command=(
+                "[ '{{item}}' = 'item2' ] && exit 1 "
+                "|| touch " + str(marker_dir) + "/{{item}}.done"
+            ),
+            foreach="{{items}}",
+            on_error="skip_remaining",
+        )
+
+        with pytest.raises(SkipRemainingError):
+            await executor._execute_loop_sequential(
+                step=step,
+                context={},
+                items=["item1", "item2", "item3"],
+                loop_var="item",
+                project_path=project_path,
+                recursion_state=RecursionState(),
+            )
+
+        # iteration 0 (item1) ran and completed successfully
+        assert (marker_dir / "item1.done").exists(), (
+            "item1 iteration should have completed — marker file missing"
+        )
+        # iteration 2 (item3) was never reached
+        assert not (marker_dir / "item3.done").exists(), (
+            "item3 iteration should never have executed — "
+            "SkipRemainingError must halt the loop after item2 fails"
+        )
