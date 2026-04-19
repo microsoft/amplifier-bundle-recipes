@@ -1981,8 +1981,20 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 # Propagate cancellation
                 raise
             except Exception as e:
-                # Fail fast - no partial completion in MVP
-                raise ValueError(f"Step '{step.id}' iteration {idx} failed: {e}") from e
+                if step.on_error == "continue":
+                    logger.warning(
+                        "Step '%s' iteration %d failed (on_error=continue): %s",
+                        step.id,
+                        idx,
+                        str(e)[:200],
+                    )
+                    results.append(None)
+                elif step.on_error == "skip_remaining":
+                    raise SkipRemainingError() from e
+                else:
+                    raise ValueError(
+                        f"Step '{step.id}' iteration {idx} failed: {e}"
+                    ) from e
             finally:
                 # Clean up loop variable (scoped to loop only)
                 if loop_var in context:
