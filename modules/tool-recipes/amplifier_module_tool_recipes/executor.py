@@ -2813,8 +2813,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
                 if step.on_error == "fail":
                     raise ValueError(error_msg)
-                # For "continue" and "skip_remaining", we return the result
-                # and let the caller handle it
+                elif step.on_error == "skip_remaining":
+                    raise SkipRemainingError(error_msg)
+                # For "continue", return the result as-is
 
             return result
 
