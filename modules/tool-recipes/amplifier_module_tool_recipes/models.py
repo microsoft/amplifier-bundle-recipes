@@ -253,6 +253,7 @@ class Step:
     as_var: str | None = None  # Maps to 'as' in YAML (as is Python reserved)
     collect: str | None = None
     parallel: bool | int = False  # False=sequential, True=unbounded, int=max concurrent
+    checkpoint_iterations: bool = False  # Save progress after each foreach iteration for resumability
     max_iterations: int = 100
     timeout: int = 600
     retry: dict[str, Any] | None = None
@@ -517,6 +518,18 @@ class Step:
                 errors.append(
                     f"Step '{self.id}': parallel must be true, false, or a positive integer, "
                     f"got {self.parallel}"
+                )
+
+        # checkpoint_iterations validation
+        if self.checkpoint_iterations:
+            if not self.foreach:
+                errors.append(
+                    f"Step '{self.id}': checkpoint_iterations requires foreach"
+                )
+            if self.parallel:
+                errors.append(
+                    f"Step '{self.id}': checkpoint_iterations cannot be used with parallel "
+                    "(parallel is all-or-nothing)"
                 )
 
         # Provider/model validation (only valid for agent steps)
