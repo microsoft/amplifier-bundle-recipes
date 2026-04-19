@@ -1880,6 +1880,31 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Get loop variable name
         loop_var = step.as_var or "item"
 
+        # Check for checkpoint if checkpoint_iterations enabled
+        start_index = 0
+        pre_results: list = []
+        if step.checkpoint_iterations and session_id:
+            state = self.session_manager.load_state(session_id, project_path)
+            foreach_progress = state.get("foreach_progress")
+            if foreach_progress and foreach_progress.get("step_id") == step.id:
+                start_index = foreach_progress.get("completed_iterations", 0)
+                pre_results = foreach_progress.get("collected_results", []) or []
+                saved_total = foreach_progress.get("total_items", len(items))
+                if saved_total != len(items):
+                    logger.warning(
+                        "Foreach items count changed (was %d, now %d). "
+                        "Resuming from iteration %d — verify item ordering is stable.",
+                        saved_total,
+                        len(items),
+                        start_index,
+                    )
+                if start_index >= len(items):
+                    logger.info(
+                        "Foreach '%s': all %d iterations already completed (resume)",
+                        step.id,
+                        len(items),
+                    )
+
         if step.parallel:
             # Parallel execution: run all iterations concurrently
             results = await self._execute_loop_parallel(
@@ -1907,6 +1932,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 rate_limiter,
                 orchestrator_config,
                 session_id,
+                start_index=start_index,
+                pre_results=pre_results,
             )
 
         # Store results
@@ -1927,11 +1954,17 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
         session_id: str | None = None,
+        start_index: int = 0,
+        pre_results: list | None = None,
     ) -> list[Any]:
         """Execute loop iterations sequentially."""
-        results = []
+        results = list(pre_results) if pre_results else []
 
         for idx, item in enumerate(items):
+            # Skip iterations already completed in a previous run
+            if idx < start_index:
+                continue
+
             # Check for cancellation before each iteration
             if session_id and project_path:
                 self._check_coordinator_cancellation(session_id, project_path)
@@ -1988,7 +2021,50 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 if loop_var in context:
                     del context[loop_var]
 
+            # Save per-iteration checkpoint so the loop is resumable on restart
+            if step.checkpoint_iterations and session_id and project_path:
+                self._save_foreach_checkpoint(
+                    session_id, project_path, step, idx + 1, results, len(items), context
+                )
+
         return results
+
+    def _save_foreach_checkpoint(
+        self,
+        session_id: str,
+        project_path: Path,
+        step: Step,
+        completed_iterations: int,
+        results: list[Any],
+        total_items: int,
+        context: dict[str, Any],
+    ) -> None:
+        """Save per-iteration checkpoint for a foreach step.
+
+        Writes ``foreach_progress`` into the session state so that a resumed
+        run can skip already-completed iterations and restore collected results.
+
+        Args:
+            session_id: Active session identifier.
+            project_path: Project directory (used to locate state file).
+            step: The foreach Step being executed.
+            completed_iterations: How many iterations have finished (1-based count).
+            results: Accumulated results list at this point in the loop.
+            total_items: Total number of items in the foreach list.
+            context: Current execution context (snapshot saved alongside progress).
+        """
+        state = self.session_manager.load_state(session_id, project_path)
+        progress: dict[str, Any] = {
+            "step_id": step.id,
+            "completed_iterations": completed_iterations,
+            "total_items": total_items,
+        }
+        if step.collect:
+            progress["collected_results"] = results
+        state["foreach_progress"] = progress
+        # Update context snapshot so a resumed run has the latest variable state
+        state["context"] = self._trim_context_for_checkpoint(context)
+        self.session_manager.save_state(session_id, project_path, state)
 
     async def _execute_single_step_body(
         self,
