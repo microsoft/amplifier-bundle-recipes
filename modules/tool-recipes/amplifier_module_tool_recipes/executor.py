@@ -42,6 +42,12 @@ _RECIPE_INTERNAL_KEYS: frozenset[str] = frozenset(
 # 100 KB per value is generous for typical recipe outputs.
 _CHECKPOINT_TRIM_THRESHOLD_BYTES: int = 100_000
 
+# Deduplication set for depends_on deprecation warnings.
+# Keyed by (recipe_name, step_id) so each unique step in each recipe logs the
+# warning at most once per process lifetime regardless of how many times the
+# recipe is executed or resumed.
+_warned_depends_on_steps: set[tuple[str, str]] = set()
+
 
 @dataclass
 class BashResult:
@@ -256,6 +262,44 @@ class RateLimiter:
             await asyncio.sleep(delay / 1000)
 
 
+def _warn_depends_on_unenforced(recipe: "Recipe") -> None:
+    """Log a WARNING for every step that declares depends_on.
+
+    ``Step.depends_on`` is validated and documented but the executor runs
+    steps in declaration order — it does **not** reorder or gate steps based
+    on the ``depends_on`` list.  Callers relying on it for ordering would
+    experience silent mis-ordering.
+
+    The warning is emitted at most once per ``(recipe_name, step_id)`` pair
+    per process lifetime (controlled by the module-level
+    ``_warned_depends_on_steps`` set).  Both flat steps and steps nested
+    inside stages are checked.
+
+    Args:
+        recipe: The Recipe object about to be executed.
+    """
+    # Collect all steps (flat recipes have recipe.steps; staged recipes put
+    # steps inside recipe.stages[n].steps — check both).
+    all_steps = list(recipe.steps or [])
+    for stage in recipe.stages or []:
+        all_steps.extend(stage.steps or [])
+
+    for step in all_steps:
+        if step.depends_on:
+            key = (recipe.name, step.id)
+            if key not in _warned_depends_on_steps:
+                _warned_depends_on_steps.add(key)
+                logger.warning(
+                    "Step '%s' in recipe '%s' declares depends_on=%r but the "
+                    "recipe engine does not currently enforce dependency "
+                    "ordering. Steps execute in declaration order. This may "
+                    "become enforced in a future version.",
+                    step.id,
+                    recipe.name,
+                    step.depends_on,
+                )
+
+
 class RecipeExecutor:
     """Executes recipe workflows with checkpointing and resumption."""
 
@@ -443,7 +487,8 @@ class RecipeExecutor:
         recursion_state: RecursionState | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
+        parent_session_id: str
+        | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute recipe with checkpointing and resumption.
@@ -488,6 +533,11 @@ class RecipeExecutor:
         if orchestrator_config is None and recipe.orchestrator:
             orchestrator_config = recipe.orchestrator
 
+        # Warn (once per unique step, per process lifetime) when a step declares
+        # depends_on — the field is validated and documented but the executor does
+        # NOT enforce it; steps always execute in declaration order.
+        _warn_depends_on_unenforced(recipe)
+
         # Create or resume session
         is_resuming = session_id is not None
 
@@ -500,7 +550,10 @@ class RecipeExecutor:
                 session_started = state["started"]
             else:
                 session_id = self.session_manager.create_session(
-                    recipe, project_path, recipe_path, parent_session_id=parent_session_id
+                    recipe,
+                    project_path,
+                    recipe_path,
+                    parent_session_id=parent_session_id,
                 )
                 context = {**recipe.context, **context_vars}
                 session_started = datetime.datetime.now().isoformat()
@@ -861,7 +914,8 @@ class RecipeExecutor:
         is_resuming: bool,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
+        parent_session_id: str
+        | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute a staged recipe with approval gates.
@@ -1288,7 +1342,8 @@ class RecipeExecutor:
         step_in_stage: int,
         completed_stages: list[str],
         completed_steps: list[str],
-        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
+        parent_session_id: str
+        | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> None:
         """Save state for staged recipe execution."""
         state = {
@@ -1424,15 +1479,29 @@ class RecipeExecutor:
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # Strategy 2: Extract from markdown code block
-        json_match = re.search(
-            r"```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```", output_stripped, re.DOTALL
-        )
-        if json_match:
-            try:
-                return json.loads(json_match.group(1))
-            except (json.JSONDecodeError, ValueError):
-                pass
+        # Strategy 2: Extract from markdown code block.
+        # The old approach used a non-greedy regex (r"```(?:json)?\s*(\[.*?\]|
+        # \{.*?\})\s*```") whose .*? could truncate at the first inner } / ]
+        # instead of matching the full balanced structure.  We now find the
+        # opening fence, locate the closing fence, and apply JSONDecoder.
+        # raw_decode on the fenced content so balanced-brace handling is done
+        # correctly by the JSON parser itself.
+        fence_match = re.search(r"```(?:json)?\s*", output_stripped)
+        if fence_match:
+            fence_start = fence_match.end()
+            end_fence_idx = output_stripped.find("```", fence_start)
+            if end_fence_idx != -1:
+                fenced_content = output_stripped[fence_start:end_fence_idx].strip()
+                if fenced_content:
+                    try:
+                        s2_decoder = json.JSONDecoder()
+                        parsed_s2, _ = s2_decoder.raw_decode(fenced_content)
+                        if parsed_s2 not in ({}, []):
+                            return parsed_s2
+                        # Trivial structure ({} / []) — fall through to
+                        # Strategy 3 in case something richer comes later.
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # fall through to Strategy 3
 
         # Strategy 3: Find JSON embedded in text (position-ordered, skip trivial)
         # Scan for [ and { in document order so the first real JSON wins,
@@ -2456,7 +2525,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         parent_recipe_path: Path | None = None,
         rate_limiter: RateLimiter | None = None,
         orchestrator_config: OrchestratorConfig | None = None,
-        parent_session_id: str | None = None,  # optional: keyword-passed at call sites per Python convention
+        parent_session_id: str
+        | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> dict[str, Any]:
         """
         Execute a recipe composition step by loading and running a sub-recipe.
@@ -2608,8 +2678,18 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         """
         Recursively substitute {{variable}} references in nested structures.
 
+        When a string consists of exactly one whole-variable reference (e.g.
+        ``"{{current_task}}"`` or ``"{{a.b.c}}"`` with no surrounding text),
+        the native Python value is returned instead of a string — preserving
+        dicts, lists, ints, booleans, etc.  This prevents dict→JSON-string
+        coercion when passing structured context values to sub-recipes via
+        foreach loops and fixes the "Cannot access 'x' on str, not dict"
+        error that occurred when a dict variable was forwarded through a
+        ``context:`` block.
+
         Handles:
-        - Strings: Direct variable substitution
+        - Strings: Type-preserving substitution for whole-variable refs;
+          normal string substitution for composite/partial strings.
         - Dicts: Recursively process all values
         - Lists: Recursively process all items
         - Other types: Pass through unchanged
@@ -2619,9 +2699,49 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             context: Dict with variable values
 
         Returns:
-            Value with all variables substituted
+            Value with all variables substituted, preserving native types
+            for whole-variable string references.
         """
         if isinstance(value, str):
+            # When the string is exactly one whole-variable reference (e.g.
+            # "{{current_task}}" or "{{a.b.c}}" — optional surrounding
+            # whitespace only), resolve and return the native Python object so
+            # that dicts, lists, ints, etc. are NOT serialised to JSON strings.
+            whole_var = re.fullmatch(r"\s*\{\{(\w+(?:\.\w+)*)\}\}\s*", value)
+            if whole_var:
+                var_ref = whole_var.group(1)
+                if "." in var_ref:
+                    # Dotted path — resolve step-by-step from context root
+                    parts = var_ref.split(".")
+                    resolved: Any = context
+                    path_so_far: list[str] = []
+                    for part in parts:
+                        path_so_far.append(part)
+                        if isinstance(resolved, dict) and part in resolved:
+                            resolved = resolved[part]
+                        elif isinstance(resolved, dict):
+                            raise ValueError(
+                                f"Undefined variable: {{{{{var_ref}}}}}. "
+                                f"Key '{part}' not found. "
+                                f"Available keys at "
+                                f"'{'.'.join(path_so_far[:-1]) or 'root'}': "
+                                f"{', '.join(sorted(resolved.keys()))}"
+                            )
+                        else:
+                            parent_path = ".".join(path_so_far[:-1])
+                            raise ValueError(
+                                f"Cannot access '{part}' on "
+                                f"{{{{{parent_path}}}}} — "
+                                f"it's a {type(resolved).__name__}, not a dict."
+                            )
+                    return resolved  # native Python type preserved
+                else:
+                    # Simple (non-dotted) variable reference
+                    if var_ref in context:
+                        return context[var_ref]  # native Python type preserved
+                    # Variable not found — fall through to substitute_variables
+                    # which will raise a descriptive ValueError.
+            # Composite string (surrounding text, multiple refs, or unknown var)
             return self.substitute_variables(value, context)
         elif isinstance(value, dict):
             return {
