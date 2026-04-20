@@ -195,7 +195,9 @@ class TestCheckpointIterationsExecutor:
 
         checkpoint_saves = [s for s in captured if "foreach_progress" in s]
         assert len(checkpoint_saves) == 3
-        counts = [s["foreach_progress"]["completed_iterations"] for s in checkpoint_saves]
+        counts = [
+            s["foreach_progress"]["completed_iterations"] for s in checkpoint_saves
+        ]
         assert counts == [1, 2, 3]
 
     # ------------------------------------------------------------------
@@ -275,7 +277,9 @@ class TestCheckpointIterationsExecutor:
         captured = _capture_saves(mock_session_manager)
 
         executor = RecipeExecutor(mock_coordinator, mock_session_manager)
-        recipe = _make_foreach_recipe(items=["a", "b", "c"], checkpoint_iterations=False)
+        recipe = _make_foreach_recipe(
+            items=["a", "b", "c"], checkpoint_iterations=False
+        )
         await executor.execute_recipe(recipe, {}, temp_dir)
 
         # No foreach_progress in any save
@@ -324,7 +328,10 @@ class TestCheckpointIterationsExecutor:
         assert len(checkpoint_saves) == 3
 
         # Second checkpoint records None for the failed iteration
-        assert checkpoint_saves[1]["foreach_progress"]["collected_results"] == ["r1", None]
+        assert checkpoint_saves[1]["foreach_progress"]["collected_results"] == [
+            "r1",
+            None,
+        ]
 
         # Final output preserves the None
         assert result["results"] == ["r1", None, "r3"]
@@ -527,11 +534,17 @@ class TestCheckpointIterationsExecutor:
 
         # Three successful iterations each wrote a checkpoint before the crash
         cp_saves_1 = [s for s in phase1_saves if "foreach_progress" in s]
-        assert len(cp_saves_1) == 3, "Phase 1 should produce 3 per-iteration checkpoints"
+        assert len(cp_saves_1) == 3, (
+            "Phase 1 should produce 3 per-iteration checkpoints"
+        )
 
         last_checkpoint = cp_saves_1[2]
         assert last_checkpoint["foreach_progress"]["completed_iterations"] == 3
-        assert last_checkpoint["foreach_progress"]["collected_results"] == ["r1", "r2", "r3"]
+        assert last_checkpoint["foreach_progress"]["collected_results"] == [
+            "r1",
+            "r2",
+            "r3",
+        ]
 
         # ── Phase 2: simulate resume from the last checkpoint ──────────
         mock_spawn.reset_mock()
@@ -559,7 +572,230 @@ class TestCheckpointIterationsExecutor:
         assert result["results"] == ["r1", "r2", "r3", "r4", "r5"]
 
         # Step-completion checkpoint in phase 2 must not contain foreach_progress
-        step_completion_saves = [
-            s for s in phase2_saves if "foreach_progress" not in s
-        ]
+        step_completion_saves = [s for s in phase2_saves if "foreach_progress" not in s]
         assert len(step_completion_saves) >= 1
+
+
+# ============================================================================
+# Composition Tests (3): session_id resume + foreach_progress
+# ============================================================================
+
+
+class TestCheckpointIterationsResumeComposition:
+    """Integration tests for session_id resume + foreach_progress composition.
+
+    PR #64's full_resume_cycle test simulated a crash but did NOT pass
+    session_id to execute_recipe, so the is_resuming=True path was never
+    exercised in combination with foreach_progress skipping.  These tests
+    close that gap.
+
+    The composition path requires BOTH mechanisms to cooperate:
+      - current_step_index skip (via is_resuming=True in execute_recipe)
+      - foreach_progress skip    (via checkpoint in _execute_loop)
+
+    Each test passes session_id="resume-session-*" to execute_recipe to
+    trigger is_resuming=True and verify the two mechanisms compose correctly.
+    """
+
+    @staticmethod
+    def _make_composition_recipe() -> Recipe:
+        """3-step recipe: agent / foreach-with-checkpoint / agent."""
+        return Recipe(
+            name="test-composition",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(id="step-0", agent="a", prompt="first", output="step0_result"),
+                Step(
+                    id="loop-step",
+                    foreach="{{items}}",
+                    agent="a",
+                    prompt="p {{item}}",
+                    collect="results",
+                    checkpoint_iterations=True,
+                ),
+                Step(
+                    id="step-2", agent="a", prompt="after {{results}}", output="final"
+                ),
+            ],
+            context={"items": ["a", "b", "c", "d"]},
+        )
+
+    # ------------------------------------------------------------------
+    # PRIMARY: mid-foreach crash, resume with session_id
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_resume_with_session_id_and_foreach_progress(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """PRIMARY: 3-step recipe, crash mid-foreach (after 2 of 4), resume with session_id.
+
+        Verifies that current_step_index skip AND foreach_progress skip compose
+        correctly when session_id is passed to execute_recipe (is_resuming=True).
+
+        Step-0 is skipped (current_step_index=1).
+        Foreach items 0-1 are skipped (foreach_progress.completed_iterations=2).
+        Items 2-3 execute (spawn calls: "r2", "r3").
+        Step-2 executes (spawn call: "step2_final").
+        Total spawn calls: 3 (NOT 4+1).
+        """
+        recipe = self._make_composition_recipe()
+
+        # Simulated crash state: crashed after completing 2 of 4 foreach iterations.
+        # Note: when is_resuming=True the executor uses state["context"] as-is (does
+        # NOT merge recipe.context), so "items" must be present in the saved context.
+        crash_state = {
+            "current_step_index": 1,  # step-0 done; resume at loop-step (index 1)
+            "context": {
+                "step0_result": "done",
+                "items": [
+                    "a",
+                    "b",
+                    "c",
+                    "d",
+                ],  # required for foreach variable resolution
+            },
+            "completed_steps": ["step-0"],
+            "started": "2025-01-01T00:00:00",
+            "foreach_progress": {
+                "step_id": "loop-step",
+                "completed_iterations": 2,
+                "total_items": 4,
+                "collected_results": ["r0", "r1"],
+            },
+        }
+
+        # Every load_state call returns a fresh deep copy of the crash state
+        mock_session_manager.load_state.side_effect = lambda *a, **k: copy.deepcopy(
+            crash_state
+        )
+
+        # 2 foreach remaining (items c, d) + 1 step-2 = 3 total
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.side_effect = ["r2", "r3", "step2_final"]
+
+        captured = _capture_saves(mock_session_manager)
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        result = await executor.execute_recipe(
+            recipe, {}, temp_dir, session_id="resume-session-123"
+        )
+
+        # We resumed — create_session must NOT have been called
+        mock_session_manager.create_session.assert_not_called()
+
+        # Only 2 foreach iterations + 1 step-2 (NOT 4 foreach + 1 step-2)
+        assert mock_spawn.call_count == 3
+
+        # Pre-populated results merged with the 2 new results
+        assert result["results"] == ["r0", "r1", "r2", "r3"]
+
+        # Step-2 ran after the foreach completed
+        assert result["final"] == "step2_final"
+
+        # At least one save must not contain foreach_progress (step completion save)
+        assert any("foreach_progress" not in s for s in captured)
+
+    # ------------------------------------------------------------------
+    # EDGE 1: foreach already completed on resume
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_resume_after_foreach_completed(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """EDGE: Resume from state where foreach already completed (4 of 4 iterations done).
+
+        The entire foreach step should be skipped (zero new spawns); only step-2
+        executes.  The pre-populated collected_results must be propagated to the
+        context so step-2 can reference {{results}}.
+        """
+        recipe = self._make_composition_recipe()
+
+        crash_state = {
+            "current_step_index": 1,
+            "context": {
+                "step0_result": "done",
+                "items": ["a", "b", "c", "d"],
+            },
+            "completed_steps": ["step-0"],
+            "started": "2025-01-01T00:00:00",
+            "foreach_progress": {
+                "step_id": "loop-step",
+                "completed_iterations": 4,
+                "total_items": 4,
+                "collected_results": ["r0", "r1", "r2", "r3"],
+            },
+        }
+
+        mock_session_manager.load_state.side_effect = lambda *a, **k: copy.deepcopy(
+            crash_state
+        )
+
+        # Only step-2 should execute
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.side_effect = ["step2_final"]
+
+        _capture_saves(mock_session_manager)
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        result = await executor.execute_recipe(
+            recipe, {}, temp_dir, session_id="resume-session-456"
+        )
+
+        # Foreach entirely skipped — only the step-2 agent was spawned
+        assert mock_spawn.call_count == 1
+
+        # Step-2 ran
+        assert result["final"] == "step2_final"
+
+        # Pre-populated results are intact in the final context
+        assert result["results"] == ["r0", "r1", "r2", "r3"]
+
+    # ------------------------------------------------------------------
+    # EDGE 2: resume at step after foreach (no foreach_progress key)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_resume_at_step_after_foreach(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """EDGE: Resume from state where foreach completed in a prior run and was cleared.
+
+        current_step_index=2 means both step-0 and loop-step are skipped by the
+        step index check (not by foreach_progress).  No foreach_progress key is
+        present because it is cleared when the foreach step completes normally.
+        Only step-2 executes.
+        """
+        recipe = self._make_composition_recipe()
+
+        crash_state = {
+            "current_step_index": 2,
+            "context": {
+                "step0_result": "done",
+                "results": ["r0", "r1", "r2", "r3"],
+            },
+            "completed_steps": ["step-0", "loop-step"],
+            "started": "2025-01-01T00:00:00",
+            # No foreach_progress key — cleared on loop-step completion
+        }
+
+        mock_session_manager.load_state.side_effect = lambda *a, **k: copy.deepcopy(
+            crash_state
+        )
+
+        # Only step-2 should execute
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.side_effect = ["step2_final"]
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        result = await executor.execute_recipe(
+            recipe, {}, temp_dir, session_id="resume-session-789"
+        )
+
+        # Only step-2 — step-0 and loop-step both skipped by current_step_index
+        assert mock_spawn.call_count == 1
+
+        # Step-2 ran with the pre-restored results in context
+        assert result["final"] == "step2_final"
