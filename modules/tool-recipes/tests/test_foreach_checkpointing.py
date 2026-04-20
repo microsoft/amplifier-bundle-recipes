@@ -575,6 +575,61 @@ class TestCheckpointIterationsExecutor:
         step_completion_saves = [s for s in phase2_saves if "foreach_progress" not in s]
         assert len(step_completion_saves) >= 1
 
+    # ------------------------------------------------------------------
+    # 18. large accumulated results trigger write-amplification warning
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_large_results_logs_warning(
+        self, mock_coordinator, mock_session_manager, temp_dir, caplog
+    ):
+        """Warning is logged when foreach_progress exceeds 10 MB."""
+        import logging
+
+        mock_spawn = mock_coordinator.get_capability.return_value
+        big_result = "x" * (1024 * 1024)  # ~1 MB string per iteration
+        mock_spawn.side_effect = [
+            big_result
+        ] * 12  # 12 iterations -> >10 MB accumulated
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = _make_foreach_recipe(
+            items=[str(i) for i in range(12)],
+            collect="results",
+            checkpoint_iterations=True,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            await executor.execute_recipe(recipe, {}, temp_dir)
+
+        assert "write amplification" in caplog.text
+
+    # ------------------------------------------------------------------
+    # 19. small results do NOT trigger the warning (regression guard)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_small_results_no_warning(
+        self, mock_coordinator, mock_session_manager, temp_dir, caplog
+    ):
+        """No warning is logged when foreach_progress is well under 10 MB."""
+        import logging
+
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.side_effect = ["r1", "r2", "r3"]
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = _make_foreach_recipe(
+            items=["a", "b", "c"],
+            collect="results",
+            checkpoint_iterations=True,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            await executor.execute_recipe(recipe, {}, temp_dir)
+
+        assert "write amplification" not in caplog.text
+
 
 # ============================================================================
 # Composition Tests (3): session_id resume + foreach_progress
