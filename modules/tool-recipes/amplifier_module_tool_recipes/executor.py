@@ -42,6 +42,15 @@ _RECIPE_INTERNAL_KEYS: frozenset[str] = frozenset(
 # 100 KB per value is generous for typical recipe outputs.
 _CHECKPOINT_TRIM_THRESHOLD_BYTES: int = 100_000
 
+# Foreach progress size warning threshold (bytes).  When the foreach_progress
+# dict (including accumulated collected_results) exceeds this size, a WARNING
+# is logged to alert users to O(N²) write amplification.  No data is dropped —
+# this is a warn-only signal.  10 MB is chosen as a generous ceiling; a typical
+# foreach with 100 iterations and 10 KB results writes only ~50 MB total, but
+# results that push past 10 MB per checkpoint write indicate a recipe design
+# that should be revisited (e.g. use 'output' instead of 'collect').
+_FOREACH_PROGRESS_WARN_BYTES: int = 10_000_000  # 10 MB
+
 # Deduplication set for depends_on deprecation warnings.
 # Keyed by (recipe_name, step_id) so each unique step in each recipe logs the
 # warning at most once per process lifetime regardless of how many times the
@@ -2105,7 +2114,13 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             # Save per-iteration checkpoint so the loop is resumable on restart
             if step.checkpoint_iterations and session_id and project_path:
                 self._save_foreach_checkpoint(
-                    session_id, project_path, step, idx + 1, results, len(items), context
+                    session_id,
+                    project_path,
+                    step,
+                    idx + 1,
+                    results,
+                    len(items),
+                    context,
                 )
 
         return results
@@ -2142,6 +2157,23 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         }
         if step.collect:
             progress["collected_results"] = results
+            # Warn on large accumulated results to alert users about O(N²) write amplification
+            try:
+                progress_size = len(json.dumps(progress, ensure_ascii=False))
+                if progress_size > _FOREACH_PROGRESS_WARN_BYTES:
+                    size_mb = progress_size / (1024 * 1024)
+                    logger.warning(
+                        "Foreach '%s': checkpoint foreach_progress is %.1f MB "
+                        "after %d/%d iterations. This causes O(N\u00b2) write amplification. "
+                        "Consider removing 'collect' (use 'output' for last result only) "
+                        "or reducing iteration count.",
+                        step.id,
+                        size_mb,
+                        completed_iterations,
+                        total_items,
+                    )
+            except (TypeError, ValueError):
+                pass  # Non-serializable results — save_state will surface the error
         state["foreach_progress"] = progress
         # Update context snapshot so a resumed run has the latest variable state
         state["context"] = self._trim_context_for_checkpoint(context)
