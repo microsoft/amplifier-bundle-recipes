@@ -2760,6 +2760,50 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 raise ValueError(f"Undefined variable in foreach: {foreach}")
         return value
 
+    def _resolve_dotted_path(self, var_ref: str, context: dict[str, Any]) -> Any:
+        """Resolve a dotted variable reference against a context dict.
+
+        Walks dot-separated segments through nested dicts and returns the
+        native Python value at the leaf.
+
+        Args:
+            var_ref: Dotted path, e.g. ``"current_task.task_id"``.
+            context: Root context dict.
+
+        Returns:
+            The value at the resolved path (preserving native type).
+
+        Raises:
+            ValueError: If a key is missing or an intermediate value is not a dict.
+        """
+        parts = var_ref.split(".")
+        current: Any = context
+        path_so_far: list[str] = []
+        for part in parts:
+            path_so_far.append(part)
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            elif isinstance(current, dict):
+                raise ValueError(
+                    f"Undefined variable: {{{{{var_ref}}}}}. "
+                    f"Key '{part}' not found. "
+                    f"Available keys at "
+                    f"'{'.'.join(path_so_far[:-1]) or 'root'}': "
+                    f"{', '.join(sorted(current.keys()))}"
+                )
+            else:
+                parent_path = ".".join(path_so_far[:-1])
+                raise ValueError(
+                    f"Cannot access '{part}' on "
+                    f"{{{{{parent_path}}}}} - "
+                    f"it's a {type(current).__name__}, not a dict. "
+                    f"Hint: The step producing '{parent_path}' may have "
+                    f"failed to parse JSON. "
+                    f"Check that the bash command outputs clean JSON "
+                    f"or add 'parse_json: true'."
+                )
+        return current
+
     def _substitute_variables_recursive(
         self, value: Any, context: dict[str, Any]
     ) -> Any:
@@ -2799,30 +2843,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             if whole_var:
                 var_ref = whole_var.group(1)
                 if "." in var_ref:
-                    # Dotted path — resolve step-by-step from context root
-                    parts = var_ref.split(".")
-                    resolved: Any = context
-                    path_so_far: list[str] = []
-                    for part in parts:
-                        path_so_far.append(part)
-                        if isinstance(resolved, dict) and part in resolved:
-                            resolved = resolved[part]
-                        elif isinstance(resolved, dict):
-                            raise ValueError(
-                                f"Undefined variable: {{{{{var_ref}}}}}. "
-                                f"Key '{part}' not found. "
-                                f"Available keys at "
-                                f"'{'.'.join(path_so_far[:-1]) or 'root'}': "
-                                f"{', '.join(sorted(resolved.keys()))}"
-                            )
-                        else:
-                            parent_path = ".".join(path_so_far[:-1])
-                            raise ValueError(
-                                f"Cannot access '{part}' on "
-                                f"{{{{{parent_path}}}}} — "
-                                f"it's a {type(resolved).__name__}, not a dict."
-                            )
-                    return resolved  # native Python type preserved
+                    return self._resolve_dotted_path(var_ref, context)
                 else:
                     # Simple (non-dotted) variable reference
                     if var_ref in context:
@@ -2866,30 +2887,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
             # Handle nested references (recipe.name, session.id, etc.)
             if "." in var_ref:
-                parts = var_ref.split(".")
-                value = context
-                path_so_far = []
-                for part in parts:
-                    path_so_far.append(part)
-                    if isinstance(value, dict) and part in value:
-                        value = value[part]
-                    elif isinstance(value, dict):
-                        # Key doesn't exist in dict
-                        raise ValueError(
-                            f"Undefined variable: {{{{{var_ref}}}}}. "
-                            f"Key '{part}' not found. "
-                            f"Available keys at '{'.'.join(path_so_far[:-1]) or 'root'}': {', '.join(sorted(value.keys()))}"
-                        )
-                    else:
-                        # Parent is not a dict (likely a string from failed JSON parsing)
-                        parent_path = ".".join(path_so_far[:-1])
-                        raise ValueError(
-                            f"Cannot access '{part}' on {{{{{parent_path}}}}} - "
-                            f"it's a {type(value).__name__}, not a dict. "
-                            f"Hint: The step producing '{parent_path}' may have failed to parse JSON. "
-                            f"Check that the bash command outputs clean JSON or add 'parse_json: true'."
-                        )
-                # Use json.dumps for dict/list to produce valid JSON, not Python repr
+                value = self._resolve_dotted_path(var_ref, context)
                 if isinstance(value, bool):
                     return "true" if value else "false"
                 if isinstance(value, (dict, list)):
