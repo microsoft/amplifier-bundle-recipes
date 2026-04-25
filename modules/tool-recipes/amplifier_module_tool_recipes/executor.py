@@ -20,6 +20,7 @@ from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
 from amplifier_foundation import ProviderPreference
 from amplifier_foundation import resolve_model_pattern
+from amplifier_foundation import sanitize_for_json
 from .models import BackoffConfig
 from .models import OrchestratorConfig
 from .models import RateLimitingConfig
@@ -56,6 +57,14 @@ _FOREACH_PROGRESS_WARN_BYTES: int = 10_000_000  # 10 MB
 # warning at most once per process lifetime regardless of how many times the
 # recipe is executed or resumed.
 _warned_depends_on_steps: set[tuple[str, str]] = set()
+
+
+def _sanitize_for_json_default(obj: Any) -> Any:
+    """``json.dumps`` *default* hook: convert non-serializable objects."""
+    result = sanitize_for_json(obj)
+    if result is None:
+        return f"[non-serializable: {type(obj).__name__}]"
+    return result
 
 
 @dataclass
@@ -1582,9 +1591,10 @@ class RecipeExecutor:
                 else:
                     trimmed[key] = value
             except (TypeError, ValueError):
-                # Value is not JSON-serialisable — keep as-is so save_state can
-                # surface the error naturally rather than silently dropping data.
-                trimmed[key] = value
+                # Value is not JSON-serialisable — sanitize to a JSON-safe
+                # representation rather than passing the raw object through
+                # to crash save_state.
+                trimmed[key] = sanitize_for_json(value)
         return trimmed
 
     def _process_step_result(self, result: Any, step: Step) -> Any:
@@ -2174,7 +2184,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     )
             except (TypeError, ValueError):
                 pass  # Non-serializable results — save_state will surface the error
-        state["foreach_progress"] = progress
+        state["foreach_progress"] = json.loads(
+            json.dumps(progress, default=_sanitize_for_json_default)
+        )
         # Update context snapshot so a resumed run has the latest variable state
         state["context"] = self._trim_context_for_checkpoint(context)
         self.session_manager.save_state(session_id, project_path, state)
@@ -2923,7 +2935,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 if isinstance(value, bool):
                     return "true" if value else "false"
                 if isinstance(value, (dict, list)):
-                    return json.dumps(value)
+                    return json.dumps(value, default=_sanitize_for_json_default)
                 return str(value)
 
             # Handle direct references
@@ -2938,7 +2950,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             if isinstance(value, bool):
                 return "true" if value else "false"
             if isinstance(value, (dict, list)):
-                return json.dumps(value)
+                return json.dumps(value, default=_sanitize_for_json_default)
             return str(value)
 
         return re.sub(pattern, replace, template)
