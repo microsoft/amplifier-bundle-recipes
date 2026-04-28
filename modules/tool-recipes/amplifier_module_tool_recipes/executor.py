@@ -354,6 +354,23 @@ class RecipeExecutor:
             if hooks is not None:
                 await hooks.emit(event_name, event_data)
 
+    async def _emit_iteration_failed(
+        self, step_id: str, idx: int, exc: BaseException
+    ) -> None:
+        """Emit recipe:iteration_failed so observers see exceptions swallowed by on_error=continue."""
+        hooks = getattr(self.coordinator, "hooks", None)
+        if hooks is None:
+            return
+        await hooks.emit(
+            "recipe:iteration_failed",
+            {
+                "step_id": step_id,
+                "iteration": idx,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
+
     def _build_steps_status(
         self,
         steps: list[Any],
@@ -2099,6 +2116,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         idx,
                         str(e)[:200],
                     )
+                    await self._emit_iteration_failed(step.id, idx, e)
                     results.append(None)
                 elif step.on_error == "skip_remaining":
                     raise SkipRemainingError() from e
@@ -2442,6 +2460,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     idx,
                     str(result)[:200],
                 )
+                await self._emit_iteration_failed(step.id, idx, result)
                 failures.append((idx, result))
                 results.append(None)
             else:
