@@ -1533,7 +1533,7 @@ class RecipeExecutor:
                 if first_parsed is None:
                     first_parsed = parsed
                 # Return first non-trivial JSON found
-                if parsed not in ({}, []):
+                if parsed != {} and parsed != []:
                     return parsed
             except (json.JSONDecodeError, ValueError):
                 pass

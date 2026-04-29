@@ -270,6 +270,11 @@ Recipes follow Amplifier's core principles:
 
 See [Troubleshooting Guide](docs/TROUBLESHOOTING.md) for complete solutions.
 
+## Design Decisions
+
+Engineering decisions and deliberate WONTFIX rationales are documented in
+[`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md).
+
 ## Contributing
 
 > [!NOTE]
