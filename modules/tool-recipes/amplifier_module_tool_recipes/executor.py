@@ -1106,6 +1106,7 @@ class RecipeExecutor:
                                 step_idx + 1,
                                 completed_stages,
                                 completed_steps,
+                                recipe_path=recipe_path,
                                 parent_session_id=parent_session_id,
                             )
                             continue
@@ -1164,6 +1165,7 @@ class RecipeExecutor:
                             step_idx + 1,
                             completed_stages,
                             completed_steps,
+                            recipe_path=recipe_path,
                             parent_session_id=parent_session_id,
                         )
 
@@ -1180,6 +1182,7 @@ class RecipeExecutor:
                             step_idx,
                             completed_stages,
                             completed_steps,
+                            recipe_path=recipe_path,
                             parent_session_id=parent_session_id,
                         )
                         # (2) Create compound stage name
@@ -1229,6 +1232,7 @@ class RecipeExecutor:
                         0,
                         completed_stages,
                         completed_steps,
+                        recipe_path=recipe_path,
                         parent_session_id=parent_session_id,
                     )
 
@@ -1298,6 +1302,7 @@ class RecipeExecutor:
                     0,
                     completed_stages,
                     completed_steps,
+                    recipe_path=recipe_path,
                     parent_session_id=parent_session_id,
                 )
 
@@ -1320,6 +1325,7 @@ class RecipeExecutor:
                 current_step_in_stage,
                 completed_stages,
                 completed_steps,
+                recipe_path=recipe_path,
                 parent_session_id=parent_session_id,
             )
             await self._show_progress(
@@ -1338,6 +1344,7 @@ class RecipeExecutor:
                 current_step_in_stage,
                 completed_stages,
                 completed_steps,
+                recipe_path=recipe_path,
                 parent_session_id=parent_session_id,
             )
             raise
@@ -1369,6 +1376,7 @@ class RecipeExecutor:
         step_in_stage: int,
         completed_stages: list[str],
         completed_steps: list[str],
+        recipe_path: Path | None = None,
         parent_session_id: str
         | None = None,  # optional: keyword-passed at call sites per Python convention
     ) -> None:
@@ -1386,6 +1394,7 @@ class RecipeExecutor:
             "project_path": str(project_path.resolve()),
             "parent_session_id": parent_session_id,
             "is_staged": True,
+            "recipe_path": str(recipe_path) if recipe_path else None,
         }
         self.session_manager.save_state(session_id, project_path, state)
 

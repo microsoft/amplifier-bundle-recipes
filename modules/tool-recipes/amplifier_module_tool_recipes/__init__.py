@@ -488,13 +488,16 @@ Example:
                 error={"message": f"Session not found: {session_id}"},
             )
 
-        # Validate session exists
+        # Validate session exists and recover recipe_path for sub-recipe resolution
         try:
-            _ = self.session_manager.load_state(session_id, project_path)
+            state = self.session_manager.load_state(session_id, project_path)
         except Exception as e:
             return ToolResult(
                 success=False, error={"message": f"Failed to load session: {str(e)}"}
             )
+
+        recipe_path_str = state.get("recipe_path")
+        original_recipe_path = Path(recipe_path_str) if recipe_path_str else None
 
         # Load recipe from session
         session_dir = self.session_manager.get_session_dir(session_id, project_path)
@@ -514,13 +517,14 @@ Example:
                 error={"message": f"Failed to load recipe from session: {str(e)}"},
             )
 
-        # Resume execution
+        # Resume execution (recipe_path recovered from state for sub-recipe resolution)
         try:
             final_context = await self.executor.execute_recipe(
                 recipe,
                 context_vars={},
                 project_path=project_path,
                 session_id=session_id,
+                recipe_path=original_recipe_path,
             )
 
             # Extract compact summary instead of returning full context
