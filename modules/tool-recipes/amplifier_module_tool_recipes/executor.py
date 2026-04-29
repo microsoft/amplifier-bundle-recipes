@@ -663,11 +663,12 @@ class RecipeExecutor:
         # Show recipe start progress
         total_steps = len(recipe.steps)
         steps_status = self._build_steps_status(recipe.steps, 0, [])
+        extra = {"parent_session_id": parent_session_id} if parent_session_id else {}
         await self._show_progress(
             f"📋 Starting recipe: {recipe.name} ({total_steps} steps)",
             event_name="recipe:start",
             event_data=self._build_recipe_event_data(
-                recipe, 0, steps_status, "running"
+                recipe, 0, steps_status, "running", **extra
             ),
         )
 

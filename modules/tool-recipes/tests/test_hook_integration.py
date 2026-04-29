@@ -6,7 +6,7 @@ events are properly emitted and can be observed by external systems.
 
 import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 from amplifier_core.hooks import HookRegistry
@@ -194,7 +194,6 @@ steps:
     @pytest.mark.asyncio
     async def test_hook_emit_uses_correct_api(
         self,
-        hooks_registry: HookRegistry,
         coordinator: MagicMock,
         session_manager: SessionManager,
         temp_project: Path,
@@ -205,17 +204,11 @@ steps:
         Previously, executor called hooks.fire() which doesn't exist.
         Now it correctly calls hooks.emit().
         """
-        # Track method calls on real HookRegistry
-        original_emit = hooks_registry.emit
-        emit_called = []
-
-        async def tracked_emit(event: str, data: dict) -> HookResult:
-            """Wrapper that tracks emit() calls."""
-            emit_called.append((event, data))
-            return await original_emit(event, data)
-
-        # Patch emit to track calls
-        hooks_registry.emit = tracked_emit
+        # Replace coordinator.hooks with a trackable mock
+        # (Cannot monkey-patch Rust-backed HookRegistry.emit attribute directly)
+        mock_hooks = MagicMock()
+        mock_hooks.emit = AsyncMock(return_value=None)
+        coordinator.hooks = mock_hooks
 
         # Create minimal recipe
         recipe_yaml = """
@@ -247,11 +240,120 @@ steps:
         await asyncio.sleep(0.1)
 
         # Verify emit() was called (proving fire() is not being called)
-        assert len(emit_called) > 0, (
+        assert mock_hooks.emit.called, (
             "HookRegistry.emit() was never called - fix may not be working"
         )
 
         # Verify it would fail with fire()
-        assert not hasattr(hooks_registry, "fire"), (
+        real_hooks = HookRegistry()
+        assert not hasattr(real_hooks, "fire"), (
             "HookRegistry should not have fire() method - this test validates the bug fix"
         )
+
+
+class TestRecipeStartParentSessionId:
+    """Verify recipe:start event payload includes parent_session_id only for sub-recipes."""
+
+    RECIPE_YAML = """\
+name: test-parent-id
+version: 1.0.0
+description: Test recipe for parent_session_id in recipe:start
+
+steps:
+  - id: step1
+    agent: test-agent
+    prompt: "Test step"
+    output: result1
+"""
+
+    @pytest.fixture
+    def temp_project(self, tmp_path: Path) -> Path:
+        project = tmp_path / "test_project"
+        project.mkdir()
+        return project
+
+    @pytest.fixture
+    def session_manager(self, tmp_path: Path) -> SessionManager:
+        sessions_dir = tmp_path / ".amplifier" / "projects"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        return SessionManager(base_dir=sessions_dir, auto_cleanup_days=7)
+
+    @pytest.fixture
+    def coordinator(self) -> MagicMock:
+        coordinator = MagicMock()
+        coordinator.hooks = HookRegistry()
+        coordinator.display_system = None
+        coordinator.cancellation = None
+
+        async def mock_spawn(**kwargs):
+            return {"output": "Mock result"}
+
+        coordinator.get_capability = MagicMock(return_value=mock_spawn)
+        coordinator.session = MagicMock()
+        coordinator.config = {"agents": {}}
+        return coordinator
+
+    async def _run_and_capture_start_event(
+        self,
+        coordinator: MagicMock,
+        session_manager: SessionManager,
+        temp_project: Path,
+        parent_session_id: str | None,
+    ) -> dict:
+        """Execute a recipe and return the captured recipe:start event data."""
+        captured = []
+
+        async def capture(event: str, data: dict) -> HookResult:
+            if event == "recipe:start":
+                captured.append(data)
+            return HookResult(action="continue")
+
+        coordinator.hooks.register("recipe:start", capture)
+
+        recipe_file = temp_project / "test-recipe.yaml"
+        recipe_file.write_text(self.RECIPE_YAML)
+        recipe = Recipe.from_yaml(recipe_file)
+        executor = RecipeExecutor(coordinator, session_manager)
+
+        await executor.execute_recipe(
+            recipe=recipe,
+            context_vars={},
+            project_path=temp_project,
+            recipe_path=recipe_file,
+            parent_session_id=parent_session_id,
+        )
+
+        assert len(captured) == 1, "Expected exactly one recipe:start event"
+        return captured[0]
+
+    @pytest.mark.asyncio
+    async def test_top_level_recipe_start_has_no_parent_session_id(
+        self,
+        coordinator: MagicMock,
+        session_manager: SessionManager,
+        temp_project: Path,
+    ):
+        """Top-level recipe (parent_session_id=None) must NOT emit parent_session_id."""
+        data = await self._run_and_capture_start_event(
+            coordinator, session_manager, temp_project, parent_session_id=None
+        )
+        assert "parent_session_id" not in data, (
+            "recipe:start for a top-level recipe must not contain parent_session_id"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sub_recipe_start_includes_parent_session_id(
+        self,
+        coordinator: MagicMock,
+        session_manager: SessionManager,
+        temp_project: Path,
+    ):
+        """Sub-recipe (parent_session_id set) must emit parent_session_id in recipe:start."""
+        data = await self._run_and_capture_start_event(
+            coordinator, session_manager, temp_project,
+            parent_session_id="test-parent-session",
+        )
+        assert "parent_session_id" in data, (
+            "recipe:start for a sub-recipe must contain parent_session_id"
+        )
+        assert data["parent_session_id"] == "test-parent-session"
