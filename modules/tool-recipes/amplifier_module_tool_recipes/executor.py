@@ -1782,6 +1782,11 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Mirrors tool-delegate's pattern (amplifier-foundation lines 834-841).
         if provider_preferences is None:
             agent_cfg = agents.get(step.agent, {})
+            if not isinstance(agent_cfg, dict):
+                # Guard: agent config may be stored as a plain string (e.g. a description
+                # or a bare agent-name reference).  Treat non-dict values as "no config"
+                # so that the .get() calls below don't raise AttributeError.
+                agent_cfg = {}
             agent_default_prefs = agent_cfg.get("provider_preferences", [])
             if agent_default_prefs:
                 provider_preferences = [
@@ -1795,6 +1800,10 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # amplifier_hooks_routing because that module lives in a separate venv.
         if provider_preferences is None:
             agent_cfg = agents.get(step.agent, {})
+            if not isinstance(agent_cfg, dict):
+                # Guard: same defensive check as the fallback above — a non-dict
+                # agent config value (e.g. a plain string) has no model_role.
+                agent_cfg = {}
             agent_model_role = agent_cfg.get("model_role")
             if agent_model_role:
                 routing_state = (
