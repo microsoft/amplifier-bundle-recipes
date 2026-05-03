@@ -1750,7 +1750,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             )
             if routing_state:
                 try:
-                    from amplifier_hooks_routing.resolver import resolve_model_role
+                    from amplifier_module_hooks_routing.resolver import resolve_model_role
 
                     roles = (
                         [step.model_role]
@@ -1767,7 +1767,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         ]
                 except ImportError:
                     logger.warning(
-                        "model_role '%s' specified but amplifier_hooks_routing not available",
+                        "model_role '%s' specified but amplifier_module_hooks_routing not available",
                         step.model_role,
                     )
 
@@ -1823,8 +1823,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Fallback 2: if agent has model_role but routing hook hasn't fired yet
         # (session:start is lazy — first step may execute before hooks populate
         # provider_preferences), resolve the role directly against the routing matrix.
-        # NOTE: We inline the resolution here instead of importing from
-        # amplifier_hooks_routing because that module lives in a separate venv.
+        # NOTE: This duplicates amplifier_module_hooks_routing.resolver.resolve_model_role
+        # (without its glob-pattern model resolution). Sharing the resolver is a
+        # follow-up refactor.
         if provider_preferences is None:
             agent_cfg = agents.get(step.agent, {})
             if not isinstance(agent_cfg, dict):

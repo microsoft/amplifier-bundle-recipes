@@ -1,5 +1,7 @@
 """Tests for agent-level provider_preferences fallback in recipe executor."""
 
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -237,8 +239,9 @@ class TestAgentProviderPreferencesFallback:
             context={},
         )
 
-        # No sys.modules patching needed — inline resolution doesn't import
-        # from amplifier_hooks_routing (which lives in a separate venv).
+        # No sys.modules patching needed — the agent-level fallback (Fallback 2)
+        # inlines the resolution rather than importing from
+        # amplifier_module_hooks_routing.resolver.
         executor = RecipeExecutor(coordinator, mock_session_manager)
         await executor.execute_recipe(recipe, {}, temp_dir)
 
@@ -253,3 +256,93 @@ class TestAgentProviderPreferencesFallback:
         assert len(prefs) == 1
         assert prefs[0].provider == "anthropic"
         assert prefs[0].model == "claude-sonnet-4-6"
+
+    async def test_step_model_role_resolved_against_routing_matrix(
+        self, mock_session_manager, temp_dir
+    ):
+        """Step-level model_role resolves via amplifier_module_hooks_routing.resolver.
+
+        Regression test: prior to the import-name fix, the executor imported from
+        ``amplifier_hooks_routing.resolver`` (typo) instead of
+        ``amplifier_module_hooks_routing.resolver``. The ImportError was caught
+        silently, a warning was logged, and ``provider_preferences`` stayed None,
+        so any recipe with a step-level ``model_role`` silently fell through to
+        the session's default provider. This test exercises that code path with
+        a sys.modules-injected mock resolver: if the executor imports the wrong
+        name, the import fails, the mock is never called, and the assertion below
+        catches the regression.
+        """
+        coordinator = _make_coordinator(
+            agents={
+                "coding-agent": {
+                    "description": "A coding agent",
+                    # No agent-level model_role or provider_preferences —
+                    # role is set on the step, not the agent.
+                }
+            },
+        )
+        coordinator.session_state = {
+            "routing_matrix": {
+                "name": "balanced",
+                "roles": {
+                    "coding": {
+                        "candidates": [
+                            {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+                        ]
+                    },
+                },
+            }
+        }
+        coordinator.get.return_value = {"anthropic": MagicMock()}
+        mock_spawn = coordinator.get_capability.return_value
+        mock_spawn.return_value = "step result"
+
+        # Inject a mock amplifier_module_hooks_routing.resolver module so the
+        # executor's import succeeds without requiring the real routing-matrix
+        # bundle to be installed in the test environment. If the executor regresses
+        # to the wrong import name, the import will fail (ImportError caught
+        # silently) and provider_preferences will stay None — failing the assertion.
+        mock_resolve = AsyncMock(
+            return_value=[{"provider": "anthropic", "model": "claude-sonnet-4-6"}]
+        )
+        fake_pkg = types.ModuleType("amplifier_module_hooks_routing")
+        fake_resolver = types.ModuleType("amplifier_module_hooks_routing.resolver")
+        fake_resolver.resolve_model_role = mock_resolve
+        fake_pkg.resolver = fake_resolver
+        sys.modules["amplifier_module_hooks_routing"] = fake_pkg
+        sys.modules["amplifier_module_hooks_routing.resolver"] = fake_resolver
+        try:
+            recipe = Recipe(
+                name="test-recipe",
+                description="Test step-level model_role resolution",
+                version="1.0.0",
+                steps=[
+                    Step(
+                        id="do-work",
+                        agent="coding-agent",
+                        prompt="Write some code",
+                        model_role="coding",
+                        output="result",
+                    ),
+                ],
+                context={},
+            )
+
+            executor = RecipeExecutor(coordinator, mock_session_manager)
+            await executor.execute_recipe(recipe, {}, temp_dir)
+        finally:
+            sys.modules.pop("amplifier_module_hooks_routing.resolver", None)
+            sys.modules.pop("amplifier_module_hooks_routing", None)
+
+        mock_spawn.assert_called_once()
+        call_kwargs = mock_spawn.call_args[1]
+        prefs = call_kwargs["provider_preferences"]
+
+        assert prefs is not None, (
+            "Expected step-level model_role to resolve via the routing matrix, "
+            "got None — likely an ImportError on the resolver module name."
+        )
+        assert len(prefs) == 1
+        assert prefs[0].provider == "anthropic"
+        assert prefs[0].model == "claude-sonnet-4-6"
+        mock_resolve.assert_called_once()
