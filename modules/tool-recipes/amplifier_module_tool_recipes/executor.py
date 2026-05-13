@@ -1740,36 +1740,29 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Build provider preferences from step configuration
         provider_preferences = None
 
-        # Resolve model_role via routing matrix (takes priority over legacy fields,
-        # but provider_preferences on the step is more explicit and wins)
+        # Resolve model_role via the model_role_resolver capability (takes priority
+        # over legacy fields, but provider_preferences on the step is more
+        # explicit and wins). The capability is duck-typed:
+        #     async def resolve(model_role) -> list[ProviderPreference]
+        # whichever routing bundle (matrix-based, cost-aware, etc.) is active
+        # registers it.
         if step.model_role and not step.provider_preferences:
-            routing_state = (
-                self.coordinator.session_state.get("routing_matrix")
-                if hasattr(self.coordinator, "session_state")
+            resolver = (
+                self.coordinator.get_capability("model_role_resolver")
+                if hasattr(self.coordinator, "get_capability")
                 else None
             )
-            if routing_state:
-                try:
-                    from amplifier_module_hooks_routing.resolver import resolve_model_role
-
-                    roles = (
-                        [step.model_role]
-                        if isinstance(step.model_role, str)
-                        else step.model_role
-                    )
-                    matrix = routing_state.get("roles", {})
-                    providers = self.coordinator.get("providers") or {}
-                    resolved = await resolve_model_role(roles, matrix, providers)
-                    if resolved:
-                        provider_preferences = [
-                            ProviderPreference(provider=r["provider"], model=r["model"])
-                            for r in resolved
-                        ]
-                except ImportError:
-                    logger.warning(
-                        "model_role '%s' specified but amplifier_module_hooks_routing not available",
-                        step.model_role,
-                    )
+            if resolver is None:
+                logger.warning(
+                    "step '%s' set model_role '%s' but no model_role_resolver "
+                    "capability is registered",
+                    step.id,
+                    step.model_role,
+                )
+            else:
+                resolved = await resolver.resolve(step.model_role)
+                if resolved:
+                    provider_preferences = list(resolved)
 
         if step.provider_preferences:
             # New: Use explicit provider_preferences list with fallback order
@@ -1820,60 +1813,29 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     ProviderPreference.from_dict(p) for p in agent_default_prefs
                 ]
 
-        # Fallback 2: if agent has model_role but routing hook hasn't fired yet
-        # (session:start is lazy — first step may execute before hooks populate
-        # provider_preferences), resolve the role directly against the routing matrix.
-        # NOTE: This duplicates amplifier_module_hooks_routing.resolver.resolve_model_role
-        # (without its glob-pattern model resolution). Sharing the resolver is a
-        # follow-up refactor.
+        # Fallback 2: if agent has model_role but neither step-level config nor
+        # agent-level provider_preferences resolved, ask the model_role_resolver
+        # capability directly. This used to walk the matrix dict by hand
+        # (duplicating routing-matrix resolver logic); under the new contract
+        # the resolver handles strategy details (matrix, cost-aware, etc.) and
+        # we just call .resolve().
         if provider_preferences is None:
             agent_cfg = agents.get(step.agent, {})
             if not isinstance(agent_cfg, dict):
-                # Guard: same defensive check as the fallback above — a non-dict
-                # agent config value (e.g. a plain string) has no model_role.
+                # Guard: a non-dict agent config value (e.g. a plain string)
+                # has no model_role.
                 agent_cfg = {}
             agent_model_role = agent_cfg.get("model_role")
             if agent_model_role:
-                routing_state = (
-                    self.coordinator.session_state.get("routing_matrix")
-                    if hasattr(self.coordinator, "session_state")
+                resolver = (
+                    self.coordinator.get_capability("model_role_resolver")
+                    if hasattr(self.coordinator, "get_capability")
                     else None
                 )
-                if routing_state:
-                    roles = (
-                        [agent_model_role]
-                        if isinstance(agent_model_role, str)
-                        else agent_model_role
-                    )
-                    matrix = routing_state.get("roles", {})
-                    installed_providers = self.coordinator.get("providers") or {}
-                    for role in roles:
-                        role_data = matrix.get(role)
-                        if role_data is None:
-                            continue
-                        for candidate in role_data.get("candidates", []):
-                            provider_type = candidate.get("provider", "")
-                            # Flexible provider name matching (e.g. "anthropic" matches
-                            # "provider-anthropic" and vice versa)
-                            provider_match = any(
-                                provider_type
-                                in (
-                                    pn,
-                                    pn.replace("provider-", ""),
-                                    f"provider-{provider_type}",
-                                )
-                                for pn in installed_providers
-                            )
-                            if provider_match:
-                                provider_preferences = [
-                                    ProviderPreference(
-                                        provider=provider_type,
-                                        model=candidate.get("model", ""),
-                                    )
-                                ]
-                                break
-                        if provider_preferences is not None:
-                            break
+                if resolver is not None:
+                    resolved = await resolver.resolve(agent_model_role)
+                    if resolved:
+                        provider_preferences = list(resolved)
 
         # Build session metadata for child session tracking (navigation graph support)
         recipe_info = context.get("recipe", {})
