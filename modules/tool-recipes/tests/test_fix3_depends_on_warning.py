@@ -1,18 +1,26 @@
-"""Tests for Fix 3: depends_on deprecation warning.
+"""Tests for Fix 3: depends_on advisory warning (per-recipe, not per-step).
 
 Root cause: Step.depends_on is declared, validated, and documented but the
 executor runs steps strictly in declaration order — it never reorders or gates
 steps based on the depends_on list. Users who rely on it for ordering would
 experience silent mis-ordering at runtime.
 
-Fix: Log a WARNING once per unique (recipe_name, step_id) pair per process
-lifetime when a step with depends_on is encountered during execute_recipe().
+Fix (original): Log a WARNING once per unique (recipe_name, step_id) pair per
+process lifetime.
+
+Fix (updated — this PR): Collapse to ONE warning per recipe per process
+lifetime.  The single message names the recipe and the count of steps that
+declare depends_on.  This preserves the alerting intent without flooding logs
+on recipes with many steps (e.g. validate-bundle-repo with 30 depends_on
+steps used to emit 30 warnings — now emits 1).
 
 These tests verify:
-  - A recipe with depends_on steps emits a WARNING log entry
-  - The warning message names the step and the recipe
+  - A recipe with depends_on steps emits exactly ONE WARNING log entry
+  - The warning message names the recipe (not individual step IDs)
+  - The warning includes the count of steps that declare depends_on
   - The warning fires at recipe load (execute_recipe), not per step run
-  - Deduplication: the same step in the same recipe only warns once
+  - Deduplication: calling the helper twice for the same recipe warns only once
+  - Different recipes each get their own warning
   - Steps without depends_on do not trigger the warning
 """
 
@@ -24,7 +32,7 @@ import pytest
 from amplifier_module_tool_recipes.executor import (
     RecipeExecutor,
     _warn_depends_on_unenforced,
-    _warned_depends_on_steps,
+    _warned_depends_on_recipes,
 )
 from amplifier_module_tool_recipes.models import Recipe, Step
 
@@ -37,9 +45,9 @@ from amplifier_module_tool_recipes.models import Recipe, Step
 @pytest.fixture(autouse=True)
 def clear_warned_set():
     """Reset the module-level deduplication set before every test."""
-    _warned_depends_on_steps.clear()
+    _warned_depends_on_recipes.clear()
     yield
-    _warned_depends_on_steps.clear()
+    _warned_depends_on_recipes.clear()
 
 
 @pytest.fixture
@@ -81,7 +89,7 @@ class TestWarnDependsOnUnenforced:
     """Direct unit tests for the module-level warning helper."""
 
     def test_warning_emitted_for_step_with_depends_on(self, caplog):
-        """A step with depends_on triggers a WARNING log entry."""
+        """A recipe with a depends_on step triggers exactly one WARNING log entry."""
         recipe = Recipe(
             name="test-recipe",
             description="test",
@@ -100,12 +108,13 @@ class TestWarnDependsOnUnenforced:
         )
         record = caplog.records[0]
         assert record.levelno == logging.WARNING
-        assert "step-a" in record.getMessage()
+        # New recipe-level message: names the recipe and count, not individual steps
         assert "test-recipe" in record.getMessage()
+        assert "1" in record.getMessage()  # count of depends_on steps
         assert "does not currently enforce" in record.getMessage()
 
-    def test_warning_mentions_depends_on_values(self, caplog):
-        """The warning message includes the declared depends_on list."""
+    def test_warning_mentions_recipe_name_and_count(self, caplog):
+        """The warning message names the recipe and the count of depends_on steps."""
         recipe = Recipe(
             name="my-recipe",
             description="test",
@@ -123,8 +132,11 @@ class TestWarnDependsOnUnenforced:
             _warn_depends_on_unenforced(recipe)
 
         msg = caplog.records[0].getMessage()
-        assert "step-a" in msg or "step-b" in msg, (
-            f"Warning should mention depends_on values; got: {msg!r}"
+        assert "my-recipe" in msg, (
+            f"Warning should mention the recipe name; got: {msg!r}"
+        )
+        assert "1" in msg, (
+            f"Warning should mention the count of depends_on steps (1); got: {msg!r}"
         )
 
     def test_no_warning_for_steps_without_depends_on(self, caplog):
@@ -196,8 +208,14 @@ class TestWarnDependsOnUnenforced:
             f"Expected 2 warnings (one per recipe), got {len(depends_on_warnings)}"
         )
 
-    def test_multiple_depends_on_steps_each_warn_once(self, caplog):
-        """Multiple steps in one recipe each generate their own warning."""
+    def test_multiple_depends_on_steps_produce_one_recipe_warning(self, caplog):
+        """Multiple depends_on steps in one recipe produce exactly ONE recipe-level warning.
+
+        Previously this test asserted two warnings (one per step).  After the
+        fix the warning is collapsed to one-per-recipe, so the expected count
+        is 1.  The single message should mention the count (2 steps) not
+        individual step IDs.
+        """
         recipe = Recipe(
             name="multi-dep-recipe",
             description="test",
@@ -214,13 +232,14 @@ class TestWarnDependsOnUnenforced:
         depends_on_warnings = [
             r for r in caplog.records if "does not currently enforce" in r.getMessage()
         ]
-        assert len(depends_on_warnings) == 2, (
-            f"Expected 2 warnings (step-a, step-b), got {len(depends_on_warnings)}: "
+        assert len(depends_on_warnings) == 1, (
+            f"Expected 1 recipe-level warning (not one per step), "
+            f"got {len(depends_on_warnings)}: "
             f"{[r.getMessage() for r in depends_on_warnings]}"
         )
-        warning_texts = " ".join(r.getMessage() for r in depends_on_warnings)
-        assert "step-a" in warning_texts
-        assert "step-b" in warning_texts
+        msg = depends_on_warnings[0].getMessage()
+        assert "multi-dep-recipe" in msg, f"Warning should name the recipe; got: {msg!r}"
+        assert "2" in msg, f"Warning should mention 2 (step count); got: {msg!r}"
 
     def test_warning_mentions_declaration_order_note(self, caplog):
         """Warning text explicitly mentions declaration order execution."""
@@ -236,6 +255,132 @@ class TestWarnDependsOnUnenforced:
         msg = caplog.records[0].getMessage()
         assert "declaration order" in msg, (
             f"Warning should mention 'declaration order'; got: {msg!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# New-behavior tests: one warning per recipe (not per step)
+# These tests FAIL with the current per-step implementation and will PASS
+# once _warn_depends_on_unenforced() is changed to warn once per recipe.
+# ---------------------------------------------------------------------------
+
+
+class TestWarnPerRecipeNotPerStep:
+    """New behaviour: exactly one warning per recipe regardless of step count."""
+
+    def test_three_steps_with_depends_on_emit_one_warning_not_three(self, caplog):
+        """A recipe with 3 depends_on steps must produce exactly ONE warning, not 3."""
+        recipe = Recipe(
+            name="three-dep-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(id="step-z", agent="a", prompt="p"),
+                Step(id="step-a", agent="a", prompt="p", depends_on=["step-z"]),
+                Step(id="step-b", agent="a", prompt="p", depends_on=["step-a"]),
+                Step(id="step-c", agent="a", prompt="p", depends_on=["step-b"]),
+            ],
+        )
+        with caplog.at_level(logging.WARNING, logger="amplifier_module_tool_recipes.executor"):
+            _warn_depends_on_unenforced(recipe)
+
+        depends_on_warnings = [
+            r for r in caplog.records if "does not currently enforce" in r.getMessage()
+        ]
+        assert len(depends_on_warnings) == 1, (
+            f"Expected exactly 1 recipe-level warning for 3 depends_on steps, "
+            f"got {len(depends_on_warnings)}: {[r.getMessage() for r in depends_on_warnings]}"
+        )
+        msg = depends_on_warnings[0].getMessage()
+        assert "three-dep-recipe" in msg, f"Warning should name the recipe; got: {msg!r}"
+        # Recipe-level message must NOT contain individual step IDs
+        assert "step-a" not in msg, f"Recipe-level warning should not name step-a; got: {msg!r}"
+        assert "step-b" not in msg, f"Recipe-level warning should not name step-b; got: {msg!r}"
+        assert "step-c" not in msg, f"Recipe-level warning should not name step-c; got: {msg!r}"
+
+    def test_same_recipe_called_twice_emits_one_warning_total(self, caplog):
+        """Calling the helper twice for the same recipe must emit exactly ONE warning."""
+        recipe = Recipe(
+            name="twice-called-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(id="step-b", agent="a", prompt="p"),
+                Step(id="step-a", agent="a", prompt="p", depends_on=["step-b"]),
+                Step(id="step-c", agent="a", prompt="p", depends_on=["step-a"]),
+            ],
+        )
+        with caplog.at_level(logging.WARNING, logger="amplifier_module_tool_recipes.executor"):
+            _warn_depends_on_unenforced(recipe)
+            _warn_depends_on_unenforced(recipe)  # second call — must be silent
+
+        depends_on_warnings = [
+            r for r in caplog.records if "does not currently enforce" in r.getMessage()
+        ]
+        assert len(depends_on_warnings) == 1, (
+            f"Expected exactly 1 warning across two calls for the same recipe, "
+            f"got {len(depends_on_warnings)}"
+        )
+
+    def test_two_different_recipes_emit_one_warning_each(self, caplog):
+        """Two distinct recipes, each called once, produce exactly 2 total warnings."""
+        recipe_x = Recipe(
+            name="recipe-X",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(id="a", agent="a", prompt="p"),
+                Step(id="b", agent="a", prompt="p", depends_on=["a"]),
+                Step(id="c", agent="a", prompt="p", depends_on=["b"]),
+            ],
+        )
+        recipe_y = Recipe(
+            name="recipe-Y",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(id="a", agent="a", prompt="p"),
+                Step(id="b", agent="a", prompt="p", depends_on=["a"]),
+                Step(id="c", agent="a", prompt="p", depends_on=["b"]),
+            ],
+        )
+        with caplog.at_level(logging.WARNING, logger="amplifier_module_tool_recipes.executor"):
+            _warn_depends_on_unenforced(recipe_x)
+            _warn_depends_on_unenforced(recipe_y)
+
+        depends_on_warnings = [
+            r for r in caplog.records if "does not currently enforce" in r.getMessage()
+        ]
+        assert len(depends_on_warnings) == 2, (
+            f"Expected 2 warnings (one per recipe), got {len(depends_on_warnings)}"
+        )
+        warning_texts = " ".join(r.getMessage() for r in depends_on_warnings)
+        assert "recipe-X" in warning_texts, "Missing recipe-X in warning texts"
+        assert "recipe-Y" in warning_texts, "Missing recipe-Y in warning texts"
+
+    def test_warning_message_mentions_depends_on_step_count(self, caplog):
+        """The single recipe warning must mention the count of steps that declare depends_on."""
+        recipe = Recipe(
+            name="count-test-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(id="z", agent="a", prompt="p"),
+                Step(id="a", agent="a", prompt="p", depends_on=["z"]),
+                Step(id="b", agent="a", prompt="p", depends_on=["a"]),
+            ],
+        )
+        with caplog.at_level(logging.WARNING, logger="amplifier_module_tool_recipes.executor"):
+            _warn_depends_on_unenforced(recipe)
+
+        depends_on_warnings = [
+            r for r in caplog.records if "does not currently enforce" in r.getMessage()
+        ]
+        assert len(depends_on_warnings) == 1
+        msg = depends_on_warnings[0].getMessage()
+        # The message should mention 2 (the count of steps that declare depends_on)
+        assert "2" in msg, (
+            f"Warning should mention the count of depends_on steps (2); got: {msg!r}"
         )
 
 
@@ -281,13 +426,14 @@ class TestDependsOnWarningViaExecuteRecipe:
             for r in caplog.records
             if "does not currently enforce" in r.getMessage()
         ]
-        assert len(depends_on_warnings) >= 1, (
-            "Expected at least one depends_on warning from execute_recipe(), "
-            f"got none. All records: {[r.getMessage() for r in caplog.records]}"
+        assert len(depends_on_warnings) == 1, (
+            "Expected exactly one depends_on warning from execute_recipe(), "
+            f"got {len(depends_on_warnings)}. All records: {[r.getMessage() for r in caplog.records]}"
         )
         msg = depends_on_warnings[0].getMessage()
-        assert "step-a" in msg
+        # New recipe-level message: names the recipe and count (not individual step IDs)
         assert "warn-test-recipe" in msg
+        assert "1" in msg  # count of depends_on steps
 
     @pytest.mark.asyncio
     async def test_execute_recipe_no_warning_without_depends_on(
