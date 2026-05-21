@@ -51,11 +51,11 @@ _CHECKPOINT_TRIM_THRESHOLD_BYTES: int = 100_000
 # that should be revisited (e.g. use 'output' instead of 'collect').
 _FOREACH_PROGRESS_WARN_BYTES: int = 10_000_000  # 10 MB
 
-# Deduplication set for depends_on deprecation warnings.
-# Keyed by (recipe_name, step_id) so each unique step in each recipe logs the
-# warning at most once per process lifetime regardless of how many times the
-# recipe is executed or resumed.
-_warned_depends_on_steps: set[tuple[str, str]] = set()
+# Deduplication set for depends_on advisory warnings.
+# Keyed by recipe_name so each recipe emits at most one warning per process
+# lifetime regardless of how many steps declare depends_on or how many times
+# the recipe is executed or resumed.
+_warned_depends_on_recipes: set[str] = set()
 
 
 @dataclass
@@ -272,41 +272,45 @@ class RateLimiter:
 
 
 def _warn_depends_on_unenforced(recipe: "Recipe") -> None:
-    """Log a WARNING for every step that declares depends_on.
+    """Log a single WARNING per recipe when any step declares depends_on.
 
     ``Step.depends_on`` is validated and documented but the executor runs
     steps in declaration order — it does **not** reorder or gate steps based
     on the ``depends_on`` list.  Callers relying on it for ordering would
     experience silent mis-ordering.
 
-    The warning is emitted at most once per ``(recipe_name, step_id)`` pair
-    per process lifetime (controlled by the module-level
-    ``_warned_depends_on_steps`` set).  Both flat steps and steps nested
-    inside stages are checked.
+    One warning is emitted per recipe per process lifetime (controlled by the
+    module-level ``_warned_depends_on_recipes`` set).  The message names the
+    recipe and the count of steps that declare depends_on, giving enough
+    context for debugging without flooding logs on recipes with many steps.
+    Both flat steps and steps nested inside stages are checked.
 
     Args:
         recipe: The Recipe object about to be executed.
     """
+    # Dedup: warn at most once per recipe per process lifetime.
+    if recipe.name in _warned_depends_on_recipes:
+        return
+
     # Collect all steps (flat recipes have recipe.steps; staged recipes put
     # steps inside recipe.stages[n].steps — check both).
     all_steps = list(recipe.steps or [])
     for stage in recipe.stages or []:
         all_steps.extend(stage.steps or [])
 
-    for step in all_steps:
-        if step.depends_on:
-            key = (recipe.name, step.id)
-            if key not in _warned_depends_on_steps:
-                _warned_depends_on_steps.add(key)
-                logger.warning(
-                    "Step '%s' in recipe '%s' declares depends_on=%r but the "
-                    "recipe engine does not currently enforce dependency "
-                    "ordering. Steps execute in declaration order. This may "
-                    "become enforced in a future version.",
-                    step.id,
-                    recipe.name,
-                    step.depends_on,
-                )
+    dep_count = sum(1 for step in all_steps if step.depends_on)
+    if dep_count == 0:
+        return
+
+    _warned_depends_on_recipes.add(recipe.name)
+    logger.warning(
+        "Recipe '%s' has %d step(s) that declare depends_on, but the "
+        "recipe engine does not currently enforce dependency ordering. "
+        "Steps execute in declaration order. This may become enforced "
+        "in a future version.",
+        recipe.name,
+        dep_count,
+    )
 
 
 class RecipeExecutor:
