@@ -72,7 +72,9 @@ class TestSubstituteVariables:
         assert "undefined" in str(exc_info.value).lower()
         assert "Undefined variable" in str(exc_info.value)
 
-    def test_substitute_undefined_nested_variable_raises(self, executor: RecipeExecutor):
+    def test_substitute_undefined_nested_variable_raises(
+        self, executor: RecipeExecutor
+    ):
         """Undefined nested variable should raise ValueError."""
         template = "Value: {{data.unknown}}"
         context = {"data": {"known": "value"}}
@@ -153,3 +155,30 @@ Line 3: c"""
         assert "Available variables" in error_msg
         # Should list both available variables
         assert "name" in error_msg or "greeting" in error_msg
+
+
+class TestTimeoutResolution:
+    """Tests for templated timeout resolution via substitute_variables."""
+
+    @pytest.fixture
+    def executor(self) -> RecipeExecutor:
+        """Create executor with mock dependencies."""
+        return RecipeExecutor(MockCoordinator(), MockSessionManager())  # type: ignore[arg-type]
+
+    def test_template_timeout_resolves_to_int(self, executor: RecipeExecutor):
+        """Templated timeout resolves to the correct integer value."""
+        from amplifier_module_tool_recipes.models import Step
+
+        step = Step(id="test", agent="a", prompt="p", timeout="{{my_timeout}}")
+        context = {"my_timeout": "1800"}
+        effective = int(executor.substitute_variables(str(step.timeout), context))
+        assert effective == 1800
+
+    def test_literal_int_timeout_roundtrips_unchanged(self, executor: RecipeExecutor):
+        """Literal int timeout passes through str→substitute→int unchanged."""
+        from amplifier_module_tool_recipes.models import Step
+
+        step = Step(id="test", agent="a", prompt="p", timeout=1800)
+        context: dict = {}  # no variables needed for a literal int
+        effective = int(executor.substitute_variables(str(step.timeout), context))
+        assert effective == 1800

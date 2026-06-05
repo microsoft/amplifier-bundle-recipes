@@ -2258,17 +2258,22 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 env=env,
             )
 
+            # Resolve templated timeout (e.g. "{{browser_timeout}}") to an int.
+            # Literal ints round-trip through str/substitute/int unchanged.
+            effective_timeout = int(
+                self.substitute_variables(str(step.timeout), context)
+            )
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=step.timeout,
+                    timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
                 # Kill the process on timeout
                 process.kill()
                 await process.wait()
                 raise ValueError(
-                    f"Step '{step.id}': command timed out after {step.timeout}s"
+                    f"Step '{step.id}': command timed out after {effective_timeout}s"
                 ) from None
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")

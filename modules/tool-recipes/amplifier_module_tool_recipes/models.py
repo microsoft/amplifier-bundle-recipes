@@ -255,7 +255,9 @@ class Step:
     collect: str | None = None
     parallel: bool | int = False  # False=sequential, True=unbounded, int=max concurrent
     max_iterations: int = 100
-    timeout: int = 600
+    timeout: int | str = (
+        600  # int or unresolved template string e.g. "{{browser_timeout}}"
+    )
     retry: dict[str, Any] | None = None
     on_error: str = "fail"
     depends_on: list[str] = field(default_factory=list)
@@ -392,8 +394,13 @@ class Step:
             )
 
         # Field constraints (common to both types)
-        if self.timeout <= 0:
+        if isinstance(self.timeout, int) and self.timeout <= 0:
             errors.append(f"Step '{self.id}': timeout must be positive")
+        elif isinstance(self.timeout, str) and "{{" not in self.timeout:
+            # Non-templated string is never valid as a timeout value
+            errors.append(
+                f"Step '{self.id}': timeout must be a positive integer or a template string (e.g. '{{{{browser_timeout}}}}')"
+            )
 
         if self.on_error not in ("fail", "continue", "skip_remaining"):
             errors.append(
@@ -591,6 +598,16 @@ class Recipe:
                     ProviderPreferenceConfig(**p) if isinstance(p, dict) else p
                     for p in prefs_data
                 ]
+
+        # Normalise timeout: plain numeric string → int; templated string → keep as str.
+        # Literal ints pass through unchanged (the common case).
+        if "timeout" in step_data_copy:
+            raw_timeout = step_data_copy["timeout"]
+            if isinstance(raw_timeout, str) and "{{" not in raw_timeout:
+                try:
+                    step_data_copy["timeout"] = int(raw_timeout)
+                except ValueError:
+                    pass  # Leave as-is; Step.validate() will reject it
 
         return Step(**step_data_copy)
 

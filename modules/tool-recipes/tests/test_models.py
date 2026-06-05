@@ -49,6 +49,55 @@ class TestStep:
         errors = step.validate()
         assert any("timeout" in e.lower() for e in errors)
 
+    def test_step_validation_zero_timeout(self):
+        """Step with timeout=0 should fail validation (not positive)."""
+        step = Step(id="test", agent="test", prompt="test", timeout=0)
+        errors = step.validate()
+        assert any("timeout" in e.lower() for e in errors)
+
+    def test_step_timeout_template_passes_validate(self):
+        """Step with a templated timeout string passes validation (resolved at execution)."""
+        step = Step(
+            id="test", agent="test", prompt="test", timeout="{{browser_timeout}}"
+        )
+        errors = step.validate()
+        assert not any("timeout" in e.lower() for e in errors)
+
+    def test_step_timeout_literal_int_validates(self):
+        """Literal int timeout still validates and is stored as int."""
+        step = Step(id="test", agent="test", prompt="test", timeout=1800)
+        assert step.timeout == 1800
+        errors = step.validate()
+        assert not any("timeout" in e.lower() for e in errors)
+
+    def test_step_timeout_non_templated_string_invalid(self):
+        """Non-templated, non-numeric string timeout fails validation."""
+        step = Step(id="test", agent="test", prompt="test", timeout="notanumber")  # type: ignore[arg-type]
+        errors = step.validate()
+        assert any("timeout" in e.lower() for e in errors)
+
+    def test_parse_step_plain_numeric_string_coerced(self):
+        """_parse_step coerces a plain numeric string timeout to int."""
+        step = Recipe._parse_step(
+            {"id": "t", "type": "agent", "agent": "a", "prompt": "p", "timeout": "900"}
+        )
+        assert step.timeout == 900
+        assert isinstance(step.timeout, int)
+
+    def test_parse_step_template_string_preserved(self):
+        """_parse_step preserves a templated timeout string verbatim."""
+        step = Recipe._parse_step(
+            {
+                "id": "t",
+                "type": "agent",
+                "agent": "a",
+                "prompt": "p",
+                "timeout": "{{my_timeout}}",
+            }
+        )
+        assert step.timeout == "{{my_timeout}}"
+        assert isinstance(step.timeout, str)
+
     def test_step_validation_invalid_on_error(self):
         """Step with invalid on_error should fail validation."""
         step = Step(id="test", agent="test", prompt="test", on_error="invalid")
@@ -83,7 +132,12 @@ class TestStep:
 
     def test_step_validation_retry_invalid_backoff(self):
         """Step with invalid retry backoff should fail."""
-        step = Step(id="test", agent="test", prompt="test", retry={"max_attempts": 3, "backoff": "invalid"})
+        step = Step(
+            id="test",
+            agent="test",
+            prompt="test",
+            retry={"max_attempts": 3, "backoff": "invalid"},
+        )
         errors = step.validate()
         assert any("backoff" in e.lower() for e in errors)
 
@@ -122,7 +176,9 @@ class TestRecipe:
 
     def test_recipe_validation_invalid_name(self):
         """Recipe with invalid name characters should fail."""
-        recipe = Recipe(name="test@recipe!", description="test", version="1.0.0", steps=[])
+        recipe = Recipe(
+            name="test@recipe!", description="test", version="1.0.0", steps=[]
+        )
         errors = recipe.validate()
         assert any("name" in e.lower() and "alphanumeric" in e.lower() for e in errors)
 
@@ -137,7 +193,9 @@ class TestRecipe:
                 steps=[Step(id="s1", agent="a", prompt="p")],
             )
             errors = recipe.validate()
-            name_errors = [e for e in errors if "name" in e.lower() and "alphanumeric" in e.lower()]
+            name_errors = [
+                e for e in errors if "name" in e.lower() and "alphanumeric" in e.lower()
+            ]
             assert not name_errors, f"Name '{name}' should be valid"
 
     def test_recipe_validation_version_format(self):
@@ -151,7 +209,9 @@ class TestRecipe:
                 steps=[Step(id="s1", agent="a", prompt="p")],
             )
             errors = recipe.validate()
-            assert any("version" in e.lower() for e in errors), f"Version '{version}' should be invalid"
+            assert any("version" in e.lower() for e in errors), (
+                f"Version '{version}' should be invalid"
+            )
 
     def test_recipe_validation_no_steps(self):
         """Recipe with no steps should fail validation."""
@@ -248,14 +308,18 @@ class TestRecipeFromYaml:
     def test_from_yaml_steps_not_list(self, temp_dir: Path):
         """YAML where steps is not a list should raise ValueError."""
         bad_file = temp_dir / "bad_steps.yaml"
-        bad_file.write_text("name: test\ndescription: test\nversion: 1.0.0\nsteps: not-a-list")
+        bad_file.write_text(
+            "name: test\ndescription: test\nversion: 1.0.0\nsteps: not-a-list"
+        )
         with pytest.raises(ValueError, match="steps.*must be a list"):
             Recipe.from_yaml(bad_file)
 
     def test_from_yaml_step_not_dict(self, temp_dir: Path):
         """YAML where step is not a dict should raise ValueError."""
         bad_file = temp_dir / "bad_step.yaml"
-        bad_file.write_text("name: test\ndescription: test\nversion: 1.0.0\nsteps:\n  - just-a-string")
+        bad_file.write_text(
+            "name: test\ndescription: test\nversion: 1.0.0\nsteps:\n  - just-a-string"
+        )
         with pytest.raises(ValueError, match="step must be a dictionary"):
             Recipe.from_yaml(bad_file)
 
