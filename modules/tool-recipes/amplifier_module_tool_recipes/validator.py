@@ -43,6 +43,10 @@ def validate_recipe(recipe: Recipe, coordinator: Any = None) -> ValidationResult
         agent_warnings = check_agent_availability(recipe, coordinator)
         warnings.extend(agent_warnings)
 
+    # Agent steps that silently discard their response (no `output:`)
+    output_warnings = check_agent_output_capture(recipe)
+    warnings.extend(output_warnings)
+
     # Dependency validation
     dep_errors = check_step_dependencies(recipe)
     errors.extend(dep_errors)
@@ -313,40 +317,101 @@ def extract_variables(template: str) -> set[str]:
     return set(matches)
 
 
+def _enumerate_available_agents(coordinator: Any) -> set[str] | None:
+    """Best-effort enumeration of registered agent names from a coordinator.
+
+    Returns a set of agent names, or ``None`` when the coordinator does not
+    expose a recognizable agent registry. Returning ``None`` (rather than an
+    empty set) tells the caller to *skip* existence checking entirely, so we
+    never emit false-positive "agent may not be available" warnings against a
+    registry we could not actually read.
+    """
+    if coordinator is None:
+        return None
+    try:
+        available_agents = getattr(coordinator, "available_agents", None)
+        if callable(available_agents):
+            available_agents = available_agents()
+        if isinstance(available_agents, dict):
+            return set(available_agents.keys())
+        if isinstance(available_agents, (list, set, tuple)):
+            return set(available_agents)
+    except Exception:
+        # Any failure to introspect the coordinator -> skip the check.
+        return None
+    return None
+
+
 def check_agent_availability(recipe: Recipe, coordinator: Any) -> list[str]:
     """
     Check if agents referenced in recipe are available.
 
     Note: This returns warnings, not errors, since agent availability
-    may vary by environment and profile.
+    may vary by environment and profile. If the coordinator does not expose
+    a recognizable agent registry, the check is skipped (no warnings) rather
+    than guessing.
     """
     warnings = []
 
-    # Get available agents from coordinator (if supported)
-    # This is a best-effort check
-    try:
-        available_agents = getattr(coordinator, "available_agents", None)
-        if available_agents is None:
-            # Can't check - skip this validation
-            return warnings
+    available_agents = _enumerate_available_agents(coordinator)
+    if available_agents is None:
+        # Can't determine the agent registry - skip (best effort).
+        return warnings
 
-        if callable(available_agents):
-            available_agents = available_agents()
+    for step in recipe.get_all_steps():
+        agent = step.agent
+        # "self" is a valid pseudo-agent (spawn the current agent), and steps
+        # with no agent reference are handled by structure validation.
+        if not agent or agent == "self":
+            continue
+        if agent not in available_agents:
+            warnings.append(
+                f"Step '{step.id}': Agent '{agent}' may not be available. "
+                f"Ensure it's installed before running this recipe."
+            )
 
-        # Type guard for available_agents
-        if not isinstance(available_agents, list | set | dict):
-            return warnings
+    return warnings
 
-        for step in recipe.get_all_steps():
-            if step.agent not in available_agents:
-                warnings.append(
-                    f"Step '{step.id}': Agent '{step.agent}' may not be available. "
-                    f"Ensure it's installed before running this recipe."
-                )
 
-    except Exception:
-        # Agent availability check failed - not critical
-        pass
+def check_agent_output_capture(recipe: Recipe) -> list[str]:
+    """Warn when an agent step does not capture its response via ``output:``.
+
+    Agent steps without an ``output:`` field still run the agent, but the
+    response is not bound to a variable -- later steps and the final recipe
+    rendering never see it. This is a common cause of "my recipe ran but
+    produced no summary" bugs (a real one bit long-running summary steps that
+    silently emitted nothing).
+
+    These are warnings, not errors: a side-effecting agent step may legitimately
+    not need to capture output. To silence the warning while making that intent
+    explicit, set ``output: discard`` (any non-empty ``output`` value suppresses
+    it). ``foreach`` agent steps that gather results via ``collect:`` are also
+    treated as capturing output.
+    """
+    warnings = []
+
+    for step in recipe.get_all_steps():
+        if step.type != "agent":
+            continue
+        # Compound container steps (foreach/while with nested while_steps) do
+        # not run an agent directly -- their sub-steps carry agent/prompt/output.
+        is_compound = bool(step.while_steps and (step.foreach or step.while_condition))
+        if is_compound:
+            continue
+        # A real agent step missing its `agent` reference is already an error
+        # (structure validation); don't pile on a duplicate warning here.
+        if not step.agent:
+            continue
+        # `output` captures the reply; `collect` captures per-iteration outputs.
+        if step.output or step.collect:
+            continue
+        warnings.append(
+            f"Step '{step.id}': agent step has no `output:` field -- the "
+            f"agent's response will be silently discarded (later steps and the "
+            f"final result will not see it). Add `output: <variable_name>` to "
+            f"capture the reply, or `output: discard` to mark the no-output "
+            f"behavior intentional."
+        )
 
     return warnings
 
