@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import uuid
 from dataclasses import dataclass
@@ -28,6 +29,28 @@ from .models import RecursionConfig
 from .models import Step
 from .session import ApprovalStatus
 from .session import SessionManager
+
+def _resolve_bash() -> str:
+    """Resolve a bash executable, cross-platform.
+
+    Recipe ``type: bash`` steps require real bash (pipefail, arrays, brace
+    expansion, ``&>`` redirects). On POSIX that is ``/bin/bash``. On Windows
+    there is no ``/bin/bash``: Git for Windows and WSL both ship a ``bash`` on
+    PATH, so we resolve it via ``shutil.which`` (which honours ``PATHEXT`` and
+    finds ``bash.exe``). Fail loud with actionable guidance if none is found,
+    rather than the raw ``FileNotFoundError`` for a non-existent ``/bin/bash``.
+    """
+    if os.name != "nt":
+        return "/bin/bash"
+    resolved = shutil.which("bash")
+    if resolved:
+        return resolved
+    raise ValueError(
+        "bash steps require a bash executable, which was not found on PATH. "
+        "On Windows, install Git for Windows (which provides bash) or enable WSL, "
+        "and ensure `bash` is on PATH."
+    )
+
 
 # Keys injected by execute_recipe() itself into every sub-recipe context.
 # These are never meaningful "outputs" from a sub-recipe — they are infrastructure
@@ -3006,7 +3029,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # The default shell (/bin/sh) is often dash on Ubuntu which lacks these.
         try:
             process = await asyncio.create_subprocess_exec(
-                "/bin/bash",
+                _resolve_bash(),
                 "-c",
                 command,
                 stdout=asyncio.subprocess.PIPE,
