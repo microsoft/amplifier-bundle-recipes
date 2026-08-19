@@ -3129,10 +3129,12 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 # Substitute variables in env values
                 env[key] = self.substitute_variables(str(value), context)
 
-        # Execute command with timeout
-        # Use /bin/bash explicitly since recipe bash steps may use bash-specific
-        # features like pipefail, &> redirects, brace expansion, arrays, etc.
-        # The default shell (/bin/sh) is often dash on Ubuntu which lacks these.
+        # Execute command with timeout.
+        # Spawn a resolved bash explicitly rather than the platform default
+        # shell: recipe bash steps may use bash-specific features like
+        # pipefail, &> redirects, brace expansion and arrays, and /bin/sh is
+        # often dash on Ubuntu, which lacks these. See _resolve_bash() for how
+        # this is resolved per-platform (and why WSL is rejected on Windows).
         try:
             process = await asyncio.create_subprocess_exec(
                 _resolve_bash(),
