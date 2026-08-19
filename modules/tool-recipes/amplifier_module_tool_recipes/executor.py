@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import uuid
 from dataclasses import dataclass
@@ -28,6 +29,134 @@ from .models import RecursionConfig
 from .models import Step
 from .session import ApprovalStatus
 from .session import SessionManager
+
+# Relative path from a Git for Windows install root to its bash executable.
+_GIT_BASH_RELATIVE = r"\bin\bash.exe"
+
+# Environment variables that may point at a Program Files root on Windows.
+# ProgramW6432 is the 64-bit root even from a 32-bit process; the other two
+# vary by process bitness. We probe all of them plus the per-user install root.
+_WINDOWS_PROGRAM_ROOT_VARS = (
+    "ProgramW6432",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+)
+
+
+def _is_wsl_bash(path: str) -> bool:
+    """True if ``path`` is the WSL launcher rather than a real Windows bash.
+
+    ``C:\\Windows\\System32\\bash.exe`` (and its Sysnative alias) is not a bash
+    at all -- it is a shim that starts a Linux VM. Recipe bash steps cannot use
+    it; see ``_resolve_bash`` for why.
+    """
+    lowered = path.lower().replace("/", "\\")
+    return "\\system32\\" in lowered or "\\sysnative\\" in lowered
+
+
+def _find_git_bash() -> str | None:
+    """Locate a Git for Windows bash by probing install locations on disk.
+
+    Deliberately does *not* use ``shutil.which``: on a default Windows install
+    the first ``bash`` on PATH is the WSL launcher in System32, so PATH lookup
+    finds precisely the wrong thing. We probe the known install roots directly,
+    and only fall back to PATH for non-standard installs.
+    """
+    candidates: list[str] = []
+
+    for var in _WINDOWS_PROGRAM_ROOT_VARS:
+        root = os.environ.get(var)
+        if root:
+            candidates.append(root + r"\Git" + _GIT_BASH_RELATIVE)
+
+    # Per-user install (winget / "install for me only")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(local_app_data + r"\Programs\Git" + _GIT_BASH_RELATIVE)
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    # Non-standard install location: derive it from git.exe, which users with a
+    # working Git install reliably have on PATH. <root>\cmd\git.exe -> <root>\bin\bash.exe
+    git_exe = shutil.which("git")
+    if git_exe:
+        git_root = os.path.dirname(os.path.dirname(git_exe))
+        derived = git_root + _GIT_BASH_RELATIVE
+        if os.path.isfile(derived):
+            return derived
+
+    # Last resort: a bash on PATH that is not the WSL shim.
+    path_bash = shutil.which("bash")
+    if path_bash and not _is_wsl_bash(path_bash):
+        return path_bash
+
+    return None
+
+
+def _resolve_bash() -> str:
+    """Resolve a bash executable for recipe ``type: bash`` steps.
+
+    Recipe bash steps require real bash (pipefail, arrays, brace expansion,
+    ``&>`` redirects). On POSIX that is ``/bin/bash``, unchanged.
+
+    On Windows there is no ``/bin/bash``, and the two available bash-like
+    programs are *not* interchangeable here:
+
+    - **Git for Windows bash** is a normal Windows process. It inherits the
+      Windows environment, so the ``AMPLIFIER_PYTHON`` we inject (a Windows
+      path to the Amplifier venv interpreter) resolves and runs. This works.
+    - **WSL** is effectively a separate machine with its own filesystem and an
+      environment firewall. A Windows interpreter path is meaningless inside
+      it and the variable does not cross without explicit ``WSLENV`` plumbing.
+      Recipes that rely on ``${AMPLIFIER_PYTHON:-python3}`` would silently fall
+      back to a *different* Python that lacks the recipe modules, and fail
+      later with a confusing ImportError instead of a clear message here.
+
+    So WSL is not a lower-priority option for recipe steps -- it is never
+    correct. We reject it explicitly rather than let it produce a puzzling
+    downstream failure.
+    """
+    if os.name != "nt":
+        return "/bin/bash"
+
+    git_bash = _find_git_bash()
+    if git_bash:
+        return git_bash
+
+    path_bash = shutil.which("bash")
+    if path_bash and _is_wsl_bash(path_bash):
+        raise ValueError(
+            "Recipe bash steps require Git for Windows bash, but the only bash "
+            f"found is the WSL launcher ({path_bash}).\n"
+            "WSL cannot be used here: recipe steps run the Amplifier interpreter "
+            f"at {sys.executable}, which is a Windows path that does not exist "
+            "inside WSL.\n"
+            "Fix: install Git for Windows (https://git-scm.com/download/win), "
+            "which provides a compatible bash."
+        )
+
+    raise ValueError(
+        "Recipe bash steps require a bash executable, but none was found.\n"
+        "Fix: install Git for Windows (https://git-scm.com/download/win), "
+        "which provides bash at "
+        r"C:\Program Files\Git\bin\bash.exe."
+    )
+
+
+def _resolve_amplifier_python() -> str:
+    """Return ``sys.executable`` in a form the resolved bash can execute.
+
+    On Windows ``sys.executable`` uses backslashes (``C:\\...\\python.exe``).
+    Git Bash handles forward slashes reliably in every quoting context, while
+    backslashes are an escape character in bash and survive only inside double
+    quotes. Recipes are not required to quote defensively, so normalise here.
+    """
+    if os.name != "nt":
+        return sys.executable
+    return sys.executable.replace("\\", "/")
+
 
 # Keys injected by execute_recipe() itself into every sub-recipe context.
 # These are never meaningful "outputs" from a sub-recipe — they are infrastructure
@@ -2994,19 +3123,21 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # ${AMPLIFIER_PYTHON:-python3} to reliably reach the Amplifier venv's
         # Python (which has recipe modules like recipe_to_dot installed), rather
         # than the bare `python3` that resolves to the system Python.
-        env["AMPLIFIER_PYTHON"] = sys.executable
+        env["AMPLIFIER_PYTHON"] = _resolve_amplifier_python()
         if step.env:
             for key, value in step.env.items():
                 # Substitute variables in env values
                 env[key] = self.substitute_variables(str(value), context)
 
-        # Execute command with timeout
-        # Use /bin/bash explicitly since recipe bash steps may use bash-specific
-        # features like pipefail, &> redirects, brace expansion, arrays, etc.
-        # The default shell (/bin/sh) is often dash on Ubuntu which lacks these.
+        # Execute command with timeout.
+        # Spawn a resolved bash explicitly rather than the platform default
+        # shell: recipe bash steps may use bash-specific features like
+        # pipefail, &> redirects, brace expansion and arrays, and /bin/sh is
+        # often dash on Ubuntu, which lacks these. See _resolve_bash() for how
+        # this is resolved per-platform (and why WSL is rejected on Windows).
         try:
             process = await asyncio.create_subprocess_exec(
-                "/bin/bash",
+                _resolve_bash(),
                 "-c",
                 command,
                 stdout=asyncio.subprocess.PIPE,
