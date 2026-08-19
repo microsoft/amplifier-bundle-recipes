@@ -1,11 +1,11 @@
 """Tests for bash step type - direct shell execution without LLM overhead."""
 
+import ntpath
 import os
 import sys
 from pathlib import Path
 
 import pytest
-
 from amplifier_module_tool_recipes import executor as executor_mod
 from amplifier_module_tool_recipes.executor import BashResult, RecipeExecutor
 from amplifier_module_tool_recipes.models import Recipe, Step
@@ -559,9 +559,7 @@ class TestBashResolution:
         git_bash = r"C:\Program Files\Git\bin\bash.exe"
         monkeypatch.setattr(executor_mod.os, "name", "nt")
         monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
-        monkeypatch.setattr(
-            executor_mod.os.path, "isfile", lambda p: p == git_bash
-        )
+        monkeypatch.setattr(executor_mod.os.path, "isfile", lambda p: p == git_bash)
         # PATH lookup would find the WSL shim first -- must be ignored.
         monkeypatch.setattr(
             executor_mod.shutil,
@@ -579,9 +577,7 @@ class TestBashResolution:
         monkeypatch.delenv("ProgramW6432", raising=False)
         monkeypatch.delenv("ProgramFiles(x86)", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\dev\AppData\Local")
-        monkeypatch.setattr(
-            executor_mod.os.path, "isfile", lambda p: p == git_bash
-        )
+        monkeypatch.setattr(executor_mod.os.path, "isfile", lambda p: p == git_bash)
         monkeypatch.setattr(executor_mod.shutil, "which", lambda _name: None)
 
         assert executor_mod._resolve_bash() == git_bash
@@ -593,22 +589,24 @@ class TestBashResolution:
         git_exe = r"D:\tools\Git\cmd\git.exe"
         git_bash = r"D:\tools\Git\bin\bash.exe"
         monkeypatch.setattr(executor_mod.os, "name", "nt")
-        for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        for var in (
+            "ProgramFiles",
+            "ProgramW6432",
+            "ProgramFiles(x86)",
+            "LOCALAPPDATA",
+        ):
             monkeypatch.delenv(var, raising=False)
-        monkeypatch.setattr(
-            executor_mod.os.path, "isfile", lambda p: p == git_bash
-        )
+        monkeypatch.setattr(executor_mod.os.path, "isfile", lambda p: p == git_bash)
         monkeypatch.setattr(
             executor_mod.shutil,
             "which",
             lambda name: git_exe if name == "git" else None,
         )
-        # dirname twice on a Windows path -- emulate ntpath on POSIX hosts.
-        monkeypatch.setattr(
-            executor_mod.os.path,
-            "dirname",
-            lambda p: p.rsplit("\\", 1)[0] if "\\" in p else "",
-        )
+        # On Windows, os.path IS ntpath. On POSIX hosts os.path is posixpath,
+        # which cannot split backslash-separated paths. Substitute the real
+        # ntpath.dirname (stdlib, importable everywhere) rather than an
+        # approximation, so this exercises genuine Windows path semantics.
+        monkeypatch.setattr(executor_mod.os.path, "dirname", ntpath.dirname)
 
         assert executor_mod._resolve_bash() == git_bash
 
@@ -617,7 +615,12 @@ class TestBashResolution:
     ):
         """WSL-only is rejected loudly: it cannot reach the Amplifier interpreter."""
         monkeypatch.setattr(executor_mod.os, "name", "nt")
-        for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        for var in (
+            "ProgramFiles",
+            "ProgramW6432",
+            "ProgramFiles(x86)",
+            "LOCALAPPDATA",
+        ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(executor_mod.os.path, "isfile", lambda _p: False)
         monkeypatch.setattr(
@@ -636,7 +639,12 @@ class TestBashResolution:
     def test_windows_no_bash_at_all_errors(self, monkeypatch: pytest.MonkeyPatch):
         """No bash anywhere produces a clear install instruction."""
         monkeypatch.setattr(executor_mod.os, "name", "nt")
-        for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        for var in (
+            "ProgramFiles",
+            "ProgramW6432",
+            "ProgramFiles(x86)",
+            "LOCALAPPDATA",
+        ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(executor_mod.os.path, "isfile", lambda _p: False)
         monkeypatch.setattr(executor_mod.shutil, "which", lambda _name: None)
