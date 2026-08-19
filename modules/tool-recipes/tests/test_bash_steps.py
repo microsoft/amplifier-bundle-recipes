@@ -1,10 +1,12 @@
 """Tests for bash step type - direct shell execution without LLM overhead."""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
+from amplifier_module_tool_recipes import executor as executor_mod
 from amplifier_module_tool_recipes.executor import BashResult, RecipeExecutor
 from amplifier_module_tool_recipes.models import Recipe, Step
 
@@ -388,15 +390,18 @@ class TestBashStepExecution:
     async def test_amplifier_python_is_current_interpreter(
         self, executor: RecipeExecutor, project_path: Path
     ):
-        """AMPLIFIER_PYTHON should match sys.executable of the current process."""
-        import sys
+        """AMPLIFIER_PYTHON should match the current interpreter.
 
+        On POSIX this is byte-identical to ``sys.executable``. On Windows the
+        path is normalised to forward slashes so bash can execute it, so
+        compare against the normalised form rather than raw ``sys.executable``.
+        """
         step = Step(id="test", type="bash", command="echo $AMPLIFIER_PYTHON")
         context: dict = {}
 
         result = await executor._execute_bash_step(step, context, project_path)
 
-        assert result.stdout.strip() == sys.executable
+        assert result.stdout.strip() == executor_mod._resolve_amplifier_python()
 
     @pytest.mark.asyncio
     async def test_amplifier_python_not_overridden_by_step_env(
@@ -524,3 +529,149 @@ steps:
         assert recipe.steps[0].type == "agent"
         assert recipe.steps[1].type == "bash"
         assert recipe.steps[2].type == "agent"
+
+
+class TestBashResolution:
+    """Tests for cross-platform bash executable resolution.
+
+    These patch platform state rather than requiring a real Windows host, so
+    the Windows behaviour is exercised on every CI platform.
+    """
+
+    def test_posix_returns_bin_bash(self, monkeypatch: pytest.MonkeyPatch):
+        """On POSIX, resolution is unchanged: always /bin/bash."""
+        monkeypatch.setattr(executor_mod.os, "name", "posix")
+        assert executor_mod._resolve_bash() == "/bin/bash"
+
+    def test_posix_ignores_windows_env(self, monkeypatch: pytest.MonkeyPatch):
+        """POSIX path must not consult Program Files or PATH at all."""
+        monkeypatch.setattr(executor_mod.os, "name", "posix")
+        monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+
+        def _fail(*_args, **_kwargs):
+            raise AssertionError("POSIX resolution must not probe for git bash")
+
+        monkeypatch.setattr(executor_mod.shutil, "which", _fail)
+        assert executor_mod._resolve_bash() == "/bin/bash"
+
+    def test_windows_prefers_git_bash_over_wsl(self, monkeypatch: pytest.MonkeyPatch):
+        """Git Bash on disk wins even when WSL's bash.exe is first on PATH."""
+        git_bash = r"C:\Program Files\Git\bin\bash.exe"
+        monkeypatch.setattr(executor_mod.os, "name", "nt")
+        monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+        monkeypatch.setattr(
+            executor_mod.os.path, "isfile", lambda p: p == git_bash
+        )
+        # PATH lookup would find the WSL shim first -- must be ignored.
+        monkeypatch.setattr(
+            executor_mod.shutil,
+            "which",
+            lambda name: r"C:\Windows\System32\bash.exe" if name == "bash" else None,
+        )
+
+        assert executor_mod._resolve_bash() == git_bash
+
+    def test_windows_finds_per_user_install(self, monkeypatch: pytest.MonkeyPatch):
+        """Per-user (winget) Git install under LOCALAPPDATA is found."""
+        git_bash = r"C:\Users\dev\AppData\Local\Programs\Git\bin\bash.exe"
+        monkeypatch.setattr(executor_mod.os, "name", "nt")
+        monkeypatch.delenv("ProgramFiles", raising=False)
+        monkeypatch.delenv("ProgramW6432", raising=False)
+        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\dev\AppData\Local")
+        monkeypatch.setattr(
+            executor_mod.os.path, "isfile", lambda p: p == git_bash
+        )
+        monkeypatch.setattr(executor_mod.shutil, "which", lambda _name: None)
+
+        assert executor_mod._resolve_bash() == git_bash
+
+    def test_windows_derives_bash_from_git_on_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Non-standard install location is derived from git.exe on PATH."""
+        git_exe = r"D:\tools\Git\cmd\git.exe"
+        git_bash = r"D:\tools\Git\bin\bash.exe"
+        monkeypatch.setattr(executor_mod.os, "name", "nt")
+        for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            executor_mod.os.path, "isfile", lambda p: p == git_bash
+        )
+        monkeypatch.setattr(
+            executor_mod.shutil,
+            "which",
+            lambda name: git_exe if name == "git" else None,
+        )
+        # dirname twice on a Windows path -- emulate ntpath on POSIX hosts.
+        monkeypatch.setattr(
+            executor_mod.os.path,
+            "dirname",
+            lambda p: p.rsplit("\\", 1)[0] if "\\" in p else "",
+        )
+
+        assert executor_mod._resolve_bash() == git_bash
+
+    def test_windows_rejects_wsl_only_with_actionable_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """WSL-only is rejected loudly: it cannot reach the Amplifier interpreter."""
+        monkeypatch.setattr(executor_mod.os, "name", "nt")
+        for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(executor_mod.os.path, "isfile", lambda _p: False)
+        monkeypatch.setattr(
+            executor_mod.shutil,
+            "which",
+            lambda name: r"C:\Windows\System32\bash.exe" if name == "bash" else None,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            executor_mod._resolve_bash()
+
+        message = str(exc_info.value)
+        assert "WSL" in message, "error must name WSL as the cause"
+        assert "git-scm.com" in message, "error must give an actionable fix"
+
+    def test_windows_no_bash_at_all_errors(self, monkeypatch: pytest.MonkeyPatch):
+        """No bash anywhere produces a clear install instruction."""
+        monkeypatch.setattr(executor_mod.os, "name", "nt")
+        for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(executor_mod.os.path, "isfile", lambda _p: False)
+        monkeypatch.setattr(executor_mod.shutil, "which", lambda _name: None)
+
+        with pytest.raises(ValueError, match="git-scm.com"):
+            executor_mod._resolve_bash()
+
+    def test_wsl_shim_detection(self):
+        """System32/Sysnative bash.exe is the WSL shim; Git Bash is not."""
+        assert executor_mod._is_wsl_bash(r"C:\Windows\System32\bash.exe")
+        assert executor_mod._is_wsl_bash(r"C:\Windows\Sysnative\bash.exe")
+        assert executor_mod._is_wsl_bash("C:/Windows/System32/bash.exe")
+        assert not executor_mod._is_wsl_bash(r"C:\Program Files\Git\bin\bash.exe")
+
+
+class TestAmplifierPythonNormalization:
+    """Tests for making AMPLIFIER_PYTHON safe for the resolved bash."""
+
+    def test_posix_passes_executable_through_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """POSIX must be byte-identical to sys.executable."""
+        monkeypatch.setattr(executor_mod.os, "name", "posix")
+        assert executor_mod._resolve_amplifier_python() == sys.executable
+
+    def test_windows_converts_backslashes_to_forward_slashes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Backslashes are an escape char in bash; Git Bash accepts forward slashes."""
+        monkeypatch.setattr(executor_mod.os, "name", "nt")
+        monkeypatch.setattr(
+            executor_mod.sys, "executable", r"C:\Users\dev\.venv\Scripts\python.exe"
+        )
+
+        result = executor_mod._resolve_amplifier_python()
+
+        assert result == "C:/Users/dev/.venv/Scripts/python.exe"
+        assert "\\" not in result, "no backslashes may survive into a bash command"
