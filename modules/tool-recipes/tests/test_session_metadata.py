@@ -318,3 +318,312 @@ class TestParallelGroupId:
         for c in calls:
             assert "session_metadata" in c.kwargs
             assert "parallel_group_id" not in c.kwargs["session_metadata"]
+
+
+class TestCostAttributionMetadata:
+    """Tests for recipe_path and model_role in session_metadata (cost telemetry v2)."""
+
+    @pytest.mark.asyncio
+    async def test_recipe_path_included_when_known(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """session_metadata carries the recipe file path when execute_recipe got one."""
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="pathful-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="analyze", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+        recipe_file = temp_dir / "pathful-recipe.yaml"
+
+        await executor.execute_recipe(recipe, {}, temp_dir, recipe_path=recipe_file)
+
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert metadata["recipe_path"] == str(recipe_file.resolve())
+
+    @pytest.mark.asyncio
+    async def test_recipe_path_is_canonicalized(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """Relative recipe paths are made absolute so telemetry groups stably."""
+        from pathlib import Path
+
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="relative-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="analyze", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+
+        await executor.execute_recipe(
+            recipe, {}, temp_dir, recipe_path=Path("recipes/check.yaml")
+        )
+
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert metadata["recipe_path"] == str(Path("recipes/check.yaml").resolve())
+
+    @pytest.mark.asyncio
+    async def test_recipe_path_none_when_unknown(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """Without a recipe_path, session_metadata still has the key, set to None."""
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="pathless-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="analyze", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+
+        await executor.execute_recipe(recipe, {}, temp_dir)
+
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert metadata["recipe_path"] is None
+
+    @pytest.mark.asyncio
+    async def test_model_role_recorded_when_step_role_resolves(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """A step-level model_role that resolves to preferences lands in session_metadata."""
+        spawn_mock = AsyncMock(return_value="result")
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(return_value=[MagicMock()])
+        mock_coordinator.get_capability.side_effect = lambda name: {
+            "session.spawn": spawn_mock,
+            "model_role_resolver": resolver,
+        }.get(name)
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="role-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[
+                Step(
+                    id="fast-step",
+                    agent="worker",
+                    prompt="Go",
+                    output="r",
+                    model_role="fast",
+                ),
+            ],
+            context={},
+        )
+
+        await executor.execute_recipe(recipe, {}, temp_dir)
+
+        resolver.resolve.assert_awaited_once_with("fast")
+        metadata = spawn_mock.call_args.kwargs["session_metadata"]
+        assert metadata["model_role"] == "fast"
+
+    @pytest.mark.asyncio
+    async def test_model_role_absent_when_no_role(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """Steps with no model_role produce session_metadata without the key."""
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="no-role-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="plain", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+
+        await executor.execute_recipe(recipe, {}, temp_dir)
+
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert "model_role" not in metadata
+
+    @pytest.mark.asyncio
+    async def test_model_role_recorded_when_agent_role_resolves(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """Agent-level model_role (fallback 2) is recorded in session_metadata."""
+        spawn_mock = AsyncMock(return_value="result")
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(return_value=[MagicMock()])
+        mock_coordinator.config = {
+            "agents": {"worker": {"model_role": "reasoning"}}
+        }
+        mock_coordinator.get_capability.side_effect = lambda name: {
+            "session.spawn": spawn_mock,
+            "model_role_resolver": resolver,
+        }.get(name)
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="agent-role-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="step", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+
+        await executor.execute_recipe(recipe, {}, temp_dir)
+
+        resolver.resolve.assert_awaited_once_with("reasoning")
+        metadata = spawn_mock.call_args.kwargs["session_metadata"]
+        assert metadata["model_role"] == "reasoning"
+
+    @pytest.mark.asyncio
+    async def test_model_role_attributed_for_routed_agent_preferences(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """Post-routing shape: agent has model_role AND provider_preferences.
+
+        hooks-routing resolves an agent's model_role into provider_preferences
+        at session:start and leaves the role in the config, so the executor
+        takes the agent-default-preferences branch. The role must still be
+        attributed.
+        """
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+        mock_coordinator.config = {
+            "agents": {
+                "worker": {
+                    "model_role": "reasoning",
+                    "provider_preferences": [
+                        {"provider": "anthropic", "model": "claude-opus-4-7"}
+                    ],
+                }
+            }
+        }
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="routed-agent-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="step", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+
+        await executor.execute_recipe(recipe, {}, temp_dir)
+
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert metadata["model_role"] == "reasoning"
+
+    @pytest.mark.asyncio
+    async def test_model_role_list_becomes_flat_label(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """A fallback-list model_role is flattened to a comma-joined string."""
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+        mock_coordinator.config = {
+            "agents": {
+                "worker": {
+                    "model_role": ["general", "fast"],
+                    "provider_preferences": [
+                        {"provider": "anthropic", "model": "claude-sonnet-5"}
+                    ],
+                }
+            }
+        }
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="list-role-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="step", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+
+        await executor.execute_recipe(recipe, {}, temp_dir)
+
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert metadata["model_role"] == "general,fast"
+
+    @pytest.mark.asyncio
+    async def test_declared_role_recorded_for_hand_pinned_preferences(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """Hand-pinned preferences + a declared role record the declared role.
+
+        Post-routing, role-derived and hand-pinned preferences are
+        indistinguishable in the agent config, so telemetry records the
+        DECLARED role for both shapes (see the executor comment): for
+        hand-pinned preferences it is a label, not proof the role selected
+        the provider. This test documents that deliberate choice.
+        """
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+        mock_coordinator.config = {
+            "agents": {
+                "worker": {
+                    "model_role": "fast",
+                    "provider_preferences": [
+                        {"provider": "openai", "model": "gpt-5"}
+                    ],
+                }
+            }
+        }
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="pinned-prefs-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="step", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+
+        await executor.execute_recipe(recipe, {}, temp_dir)
+
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert metadata["model_role"] == "fast"
+
+    @pytest.mark.asyncio
+    async def test_recipe_path_canonicalized_in_staged_execution(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """The staged-recipe context site canonicalizes recipe_path too."""
+        from pathlib import Path
+
+        from amplifier_module_tool_recipes.models import Stage
+
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="staged-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[],
+            stages=[
+                Stage(
+                    name="stage-one",
+                    steps=[
+                        Step(id="analyze", agent="worker", prompt="Go", output="r")
+                    ],
+                )
+            ],
+            context={},
+        )
+
+        await executor.execute_recipe(
+            recipe, {}, temp_dir, recipe_path=Path("recipes/staged.yaml")
+        )
+
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert metadata["recipe_path"] == str(Path("recipes/staged.yaml").resolve())

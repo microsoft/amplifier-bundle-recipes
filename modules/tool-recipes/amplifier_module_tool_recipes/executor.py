@@ -43,6 +43,24 @@ _WINDOWS_PROGRAM_ROOT_VARS = (
 )
 
 
+def _model_role_label(role: Any) -> str | None:
+    """Normalize a model_role config value to a flat string for telemetry.
+
+    Agent-level model_role accepts an ordered fallback list as well as a
+    plain string (the model_role_resolver contract is str | list[str]).
+    Session metadata must stay a flat scalar — downstream cost reports use
+    it as a grouping key — so lists become a comma-joined label.
+    """
+    if not role:
+        return None
+    if isinstance(role, str):
+        return role
+    if isinstance(role, (list, tuple)):
+        parts = [str(r) for r in role if r]
+        return ",".join(parts) if parts else None
+    return str(role)
+
+
 def _is_wsl_bash(path: str) -> bool:
     """True if ``path`` is the WSL launcher rather than a real Windows bash.
 
@@ -722,6 +740,11 @@ class RecipeExecutor:
                 "name": recipe.name,
                 "version": recipe.version,
                 "description": recipe.description,
+                "path": (
+                    str(Path(recipe_path).expanduser().resolve())
+                    if recipe_path
+                    else None
+                ),
             }
             context["session"] = {
                 "id": session_id,
@@ -827,6 +850,11 @@ class RecipeExecutor:
             "name": recipe.name,
             "version": recipe.version,
             "description": recipe.description,
+            "path": (
+                str(Path(recipe_path).expanduser().resolve())
+                if recipe_path
+                else None
+            ),
         }
         context["session"] = {
             "id": session_id,
@@ -1872,6 +1900,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
         # Build provider preferences from step configuration
         provider_preferences = None
+        # The model_role that actually drove provider selection (step-level or
+        # agent-level), recorded in session_metadata for cost attribution.
+        used_model_role: str | None = None
 
         # Resolve model_role via the model_role_resolver capability (takes priority
         # over legacy fields, but provider_preferences on the step is more
@@ -1896,6 +1927,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 resolved = await resolver.resolve(step.model_role)
                 if resolved:
                     provider_preferences = list(resolved)
+                    used_model_role = _model_role_label(step.model_role)
 
         if step.provider_preferences:
             # New: Use explicit provider_preferences list with fallback order
@@ -1945,6 +1977,15 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 provider_preferences = [
                     ProviderPreference.from_dict(p) for p in agent_default_prefs
                 ]
+                # Record the DECLARED agent role, if any. Routing hooks
+                # (e.g. hooks-routing) resolve an agent's model_role into
+                # provider_preferences at session:start and leave the role in
+                # the config, so a role-routed agent is indistinguishable here
+                # from one with hand-pinned preferences plus a role. Telemetry
+                # therefore records the declared role for both shapes — for
+                # hand-pinned preferences it is a label, not proof the role
+                # selected the provider.
+                used_model_role = _model_role_label(agent_cfg.get("model_role"))
 
         # Fallback 2: if agent has model_role but neither step-level config nor
         # agent-level provider_preferences resolved, ask the model_role_resolver
@@ -1969,6 +2010,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     resolved = await resolver.resolve(agent_model_role)
                     if resolved:
                         provider_preferences = list(resolved)
+                        used_model_role = _model_role_label(agent_model_role)
 
         # Build session metadata for child session tracking (navigation graph support)
         recipe_info = context.get("recipe", {})
@@ -1976,9 +2018,12 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         session_metadata: dict[str, Any] = {
             "agent_name": step.agent,
             "recipe_name": recipe_info.get("name", ""),
+            "recipe_path": recipe_info.get("path"),
             "recipe_step": step.id,
             "recipe_step_index": step_info.get("index"),
         }
+        if used_model_role:
+            session_metadata["model_role"] = used_model_role
         # Include parallel_group_id if this spawn is part of a parallel batch
         parallel_group_id = context.get("_parallel_group_id")
         if parallel_group_id:
