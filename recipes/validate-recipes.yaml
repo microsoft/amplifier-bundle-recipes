@@ -1,9 +1,34 @@
 # validate-recipes.yaml
-# Recipe Validator v1.0.1
+# Recipe Validator v1.0.2
 # Validates recipe YAML files in a bundle repository for structural correctness,
 # best practices, and semantic consistency.
 #
 # CHANGELOG:
+# v1.0.2 - Fix two live-confirmed defects (root-caused against engine source)
+#        - BUG 1 (CRITICAL FIX): engine validation was dead-on-arrival for ALL
+#          consumers in `full` mode. Structural-validation called
+#          Recipe.from_yaml(path) where `path` is a str (recipe-discovery emits
+#          str(yaml_path)); Recipe.from_yaml immediately does path.exists(),
+#          raising AttributeError ("'str' object has no attribute 'exists'"),
+#          which the surrounding except masked into a byte-identical
+#          ENGINE_VALIDATION_FAILED for EVERY recipe. Fixed by coercing:
+#          Recipe.from_yaml(Path(path)).
+#          NOTE FOR CONSUMERS: downstream reports may now surface REAL engine
+#          errors/warnings that were previously masked by the uniform failure.
+#          These are pre-existing findings now made visible — NOT a regression
+#          introduced by this fix.
+#        - BUG 3 (false positives): UNKNOWN_AGENT_REFERENCE fired for every
+#          agent a repo referenced from a bundle it INCLUDES (e.g.
+#          foundation:explorer). The check only accepted own-repo agents/stems,
+#          fnmatch patterns in known_agents, or the repo's own bundle.name
+#          prefix — included-bundle namespaces had no path to "known". Fixed by
+#          parsing the root bundle.md frontmatter `includes:` (already parsed for
+#          bundle.name) to derive included namespace names (bare name, git-URL
+#          amplifier-bundle-X / amplifier-X forms, @bundle: refs) and accepting
+#          agent refs whose namespace is in that set. Also fixed a replace-vs-
+#          merge defect: user-supplied known_agents now UNIONs with derived
+#          evidence instead of replacing it. Warning-severity only — strictly
+#          reduces false positives.
 # v1.0.1 - Reduce false positives across three validator checks
 #        - NO_ERROR_HANDLING: only flag steps whose output feeds continue-steps
 #          or whose ID matches summary/final patterns; demote bulk count to INFO
@@ -51,7 +76,7 @@ description: |
   - Deterministic quality classification with explicit PASS thresholds
   - Quick-approval path for clean repos (no unnecessary LLM analysis)
   - Configurable recipes directory and known agent patterns
-version: "1.0.1"
+version: "1.0.2"
 author: "Amplifier Recipes Collection"
 tags: ["recipes", "validation", "quality", "audit", "structure", "best-practices"]
 
@@ -433,7 +458,12 @@ steps:
                   from amplifier_module_tool_recipes.models import Recipe
                   from amplifier_module_tool_recipes.validator import validate_recipe
                   try:
-                      recipe_obj = Recipe.from_yaml(path)
+                      # BUG 1 fix: `path` is a str (recipe-discovery emits
+                      # str(yaml_path)); Recipe.from_yaml immediately calls
+                      # path.exists(), so a bare str raised AttributeError that
+                      # the except below masked into a byte-identical
+                      # ENGINE_VALIDATION_FAILED for EVERY recipe. Coerce to Path.
+                      recipe_obj = Recipe.from_yaml(Path(path))
                       result = validate_recipe(recipe_obj)
                       for err in result.errors:
                           findings.append({
@@ -1257,6 +1287,46 @@ steps:
       # ── Discover local agents from repo ────────────────────────────────────
       local_namespace = None
       local_agents = set()
+      # BUG 3 fix: namespaces of bundles this repo INCLUDES (e.g. foundation:*).
+      # An agent referenced from an included bundle (foundation:explorer) was
+      # previously unknowable — known_agents defaults empty and the check only
+      # accepted own-repo agents/stems, fnmatch patterns, or own bundle.name.
+      included_namespaces = set()
+
+
+      def _namespace_from_include(ref):
+          """Derive a bundle namespace from an `includes:` entry value.
+
+          Accepts bare names ('foundation'), git URLs
+          (git+https://.../amplifier-bundle-foo@ref, .../amplifier-foo@ref),
+          and @bundle: refs ('@foundation:...' / '@foundation'). Returns the
+          bare namespace name, or None if it cannot be derived.
+          """
+          if not isinstance(ref, str):
+              return None
+          ref = ref.strip()
+          if not ref:
+              return None
+          # @bundle: ref form -> '@foundation:...' or '@foundation'
+          if ref.startswith("@"):
+              return ref[1:].split(":", 1)[0].split("/", 1)[0].strip() or None
+          # git URL / path form -> last path segment, drop any @ref suffix
+          if "://" in ref or ref.startswith("git+") or "/" in ref:
+              tail = ref.split("/")[-1]
+              tail = tail.split("@", 1)[0]  # strip @main / @v1 ref
+              if tail.endswith(".git"):
+                  tail = tail[:-4]
+              name = tail
+          else:
+              name = ref
+          # Strip the conventional repo prefixes (longest first).
+          for prefix in ("amplifier-bundle-", "amplifier-"):
+              if name.startswith(prefix):
+                  name = name[len(prefix):]
+                  break
+          name = name.strip()
+          return name or None
+
 
       bundle_md = repo_path / "bundle.md"
       if bundle_md.exists():
@@ -1272,6 +1342,23 @@ steps:
                           bundle_info = frontmatter.get("bundle", {})
                           if isinstance(bundle_info, dict):
                               local_namespace = bundle_info.get("name")
+                          # Derive included-bundle namespaces from `includes:`.
+                          includes = frontmatter.get("includes", []) or []
+                          if isinstance(includes, list):
+                              for entry in includes:
+                                  ref = None
+                                  if isinstance(entry, dict):
+                                      # e.g. {bundle: git+https://.../amplifier-foundation@main}
+                                      ref = (
+                                          entry.get("bundle")
+                                          or entry.get("name")
+                                          or entry.get("source")
+                                      )
+                                  elif isinstance(entry, str):
+                                      ref = entry
+                                  ns = _namespace_from_include(ref)
+                                  if ns:
+                                      included_namespaces.add(ns)
           except Exception:
               pass
 
@@ -1285,7 +1372,17 @@ steps:
 
 
       def agent_is_known(agent_ref):
-          """Check if an agent reference is known (local or matches a pattern)."""
+          """Check if an agent reference is known.
+
+          BUG 3 fix: this is a UNION of independent acceptance sources, never a
+          replace — user-supplied known_agents AND derived evidence (local
+          agents, own bundle.name, and INCLUDED-bundle namespaces) all apply:
+            1. an exact local agent (own repo);
+            2. a user-supplied fnmatch pattern in known_agents;
+            3. the repo's own bundle.name namespace prefix;
+            4. NEW — a namespace belonging to a bundle this repo INCLUDES
+               (e.g. foundation:explorer when includes: pulls in foundation).
+          """
           if agent_ref in local_agents:
               return True
           for pattern in known_agent_patterns:
@@ -1293,6 +1390,11 @@ steps:
                   return True
           if local_namespace and agent_ref.startswith(f"{local_namespace}:"):
               return True
+          # NEW: accept agents whose namespace is an included-bundle namespace.
+          if ":" in agent_ref:
+              ns = agent_ref.split(":", 1)[0]
+              if ns in included_namespaces:
+                  return True
           return False
 
 
@@ -1563,6 +1665,7 @@ steps:
           "local_namespace": local_namespace,
           "local_agents_count": len(local_agents),
           "known_agent_patterns": known_agent_patterns,
+          "included_namespaces": sorted(included_namespaces),
           "results": results,
           "cross_recipe_findings": cross_recipe_findings,
           "summary": {
