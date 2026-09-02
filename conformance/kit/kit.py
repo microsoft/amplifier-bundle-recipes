@@ -181,6 +181,31 @@ class ExplodingBackend:
         )
 
 
+class FailingBackend:
+    """Backend that IS reached, and fails there -- the way a real spawn fails.
+
+    Deliberately raises a plain ``RuntimeError``, not one of the library's own
+    typed errors: an executor that only recognises its own exception families
+    lets a host/provider failure escape the step loop, which is how a run came
+    to report ``completed`` for a step that errored (recipes-30w).
+
+    ``fail_on`` is the zero-based index of the call that raises; ``-1`` never
+    fails, so the same double drives the honest-success control.
+    """
+
+    def __init__(self, fail_on: int = 0, message: str = "No providers available") -> None:
+        self.fail_on = fail_on
+        self.message = message
+        self.calls = 0
+
+    async def spawn(self, request: Any) -> str:
+        index = self.calls
+        self.calls += 1
+        if index == self.fail_on:
+            raise RuntimeError(self.message)
+        return f"ok:{request.canonical}"
+
+
 class RecordingResolver:
     """Wraps a resolver and counts calls.
 
@@ -1257,6 +1282,87 @@ async def bad_legacy_rejected() -> str:
     )
 
 
+@fixture(
+    id="bad-errored-step-is-never-a-completed-step",
+    polarity="BAD",
+    title="A step that errored fails the run and is never reported completed",
+    clauses=("lib.v1 Core 8",),
+    rows=("RCP-108",),
+    notes=(
+        "The other half of Core 8. The preflight fixtures assert 'refused before anything ran'; "
+        "this one asserts the POST-preflight direction -- a step that really started and then "
+        "errored. The failure is an untyped RuntimeError, the shape a real spawn raises "
+        "(recipes-30w: a run reported status 'completed' with the errored step listed in "
+        "completed_steps and the error visible only inside a summary)."
+    ),
+)
+async def bad_errored_step() -> str:
+    from amplifier_recipe_runner.api import RunRequest
+    from amplifier_recipe_runner.api import RunStatus
+    from amplifier_recipe_runner.execution import run as run_recipe
+
+    async def run_with(backend: FailingBackend, sink: CollectingSink) -> Any:
+        return await run_recipe(
+            RunRequest(
+                recipe=RECIPES / "errored-step.yaml",
+                services=services(workspace(), sink=sink),
+            ),
+            resolver=local_resolver(),
+            spawn_backend=backend,
+        )
+
+    # Control FIRST: the recipe is genuinely runnable, so a FAILED result below
+    # is the errored step and not a broken fixture. Without this, an
+    # implementation that failed every run would "pass" this fixture.
+    control_sink = CollectingSink()
+    control = await run_with(FailingBackend(fail_on=-1), control_sink)
+    expect_eq(control.status, RunStatus.SUCCEEDED, "control run status (the recipe must be runnable)")
+    expect_eq(control.completed_steps, ("review", "summarize"), "control completed steps")
+    expect(control.error is None, f"control run carried an error: {control.error!r}")
+
+    # The second step errors: the first really finished, the second did not.
+    sink = CollectingSink()
+    result = await run_with(FailingBackend(fail_on=1), sink)
+
+    expect(
+        result.status is not RunStatus.SUCCEEDED,
+        "a run whose step errored reported SUCCEEDED -- a fabricated success",
+    )
+    expect_eq(result.status, RunStatus.FAILED, "run status after a step errored")
+    expect(
+        isinstance(result.error, RuntimeError),
+        f"the step's error is not surfaced at the top level of the result (got {result.error!r})",
+    )
+    expect_in(
+        "No providers available",
+        str(result.error),
+        "the run does not carry the step's real error text at the top level",
+    )
+    expect_eq(
+        result.completed_steps,
+        ("review",),
+        "completed steps must hold only the step that really finished",
+    )
+    expect(
+        "summarize" not in result.completed_steps,
+        "the errored step was reported as completed",
+    )
+    expect_in("step:failed", sink.kinds, "the run announced no step:failed event")
+
+    # And when the FIRST step errors, nothing completed at all.
+    first_sink = CollectingSink()
+    first = await run_with(FailingBackend(fail_on=0), first_sink)
+    expect_eq(first.status, RunStatus.FAILED, "run status when the first step errored")
+    expect_eq(first.completed_steps, (), "completed steps when the first step errored")
+
+    return (
+        f"an untyped {type(result.error).__name__}('{result.error}') in step 'summarize' gave "
+        f"status={result.status.value} with completed_steps={list(result.completed_steps)} "
+        "(errored step excluded); first-step failure completed 0 steps; the faithful control "
+        "still succeeded with 2 completed steps"
+    )
+
+
 # ==========================================================================
 # ABSENCE PROBES -- enumerated surface, not a happy path
 # ==========================================================================
@@ -1795,7 +1901,15 @@ LEDGER_COVERAGE: dict[str, dict[str, Any]] = {
     },
     "RCP-108": {
         "coverage": "full",
-        "covered": "All four named preflight classes are asserted by type, not by exit code: UndeclaredAgentError, AgentCollisionError, TrustRefusedError, ProvenanceMismatchError. 'Never a fabricated success' is asserted as FAILED status with 0 completed steps and 0 spawns on a refused run.",
+        "covered": (
+            "All four named preflight classes are asserted by type, not by exit code: "
+            "UndeclaredAgentError, AgentCollisionError, TrustRefusedError, ProvenanceMismatchError. "
+            "'Never a fabricated success' is asserted in BOTH directions: before preflight, as FAILED "
+            "status with 0 completed steps and 0 spawns on a refused run; and after it, as an "
+            "untyped step failure giving FAILED status with the error at the top level of the result "
+            "and the errored step absent from completed_steps -- against a faithful control run of "
+            "the same recipe that still succeeds."
+        ),
         "not_covered": None,
     },
 }

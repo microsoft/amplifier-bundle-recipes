@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import uuid
 import warnings
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -51,6 +52,7 @@ from typing import Any
 
 import yaml
 
+from .closed_world import V2_LEGACY_ENGINE_EXECUTION_MODE
 from .session import ApprovalStatus
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,7 @@ __all__ = [
     "RUNNER_DISTRIBUTION",
     "RUNNER_IMPORT_NAME",
     "V2_EXECUTION_MODE",
+    "V2_LEGACY_ENGINE_EXECUTION_MODE",
     "MODEL_ROLE_RESOLVER_CAPABILITY",
     "PROVIDER_ROLES_FALLBACK",
     "PROVIDER_ROLES_RESOLVER",
@@ -95,6 +98,7 @@ __all__ = [
     "provider_roles_label",
     "resume_v2_recipe",
     "run_v2_recipe",
+    "run_v2_recipe_in_session",
     "validate_v2_recipe",
     "warn_legacy_recipe",
 ]
@@ -1141,6 +1145,161 @@ async def run_v2_recipe(
     check_model_roles(recipe_path, services.provider_access)
     request = build_run_request(recipe_path, context_vars, services, coordinator)
     return await (run or runner.run)(request)
+
+
+async def run_v2_recipe_in_session(
+    coordinator: Any,
+    session_manager: Any,
+    recipe_path: Path,
+    context_vars: Mapping[str, Any] | None,
+    project_path: Path,
+    *,
+    session_id: str | None = None,
+    plan: Callable[..., Awaitable[Any]] | None = None,
+    engine: Callable[..., Awaitable[Any]] | None = None,
+) -> Any:
+    """Execute a schema-v2 recipe **in this session**, closed-world.
+
+    The split this function embodies:
+
+    * **Resolution** is the library's, unchanged. ``plan()`` parses the
+      manifest, applies trust policy, resolves the declared closure, detects
+      collisions and refuses an undeclared agent -- all before anything runs
+      (lib Core 1, Core 2, Core 8).
+    * **Step machinery** is the legacy engine's: ``bash``, ``parse_json``,
+      ``foreach``, ``while``, conditions, staged approvals, sub-recipes. The
+      library's own sequential executor runs agent steps only, so routing real
+      recipes through it made them fail at their first ``bash`` step
+      (recipes-lc7). The contracts constrain which *agents* a recipe may
+      resolve, not which step types an engine understands.
+
+    The bridge between the two is :class:`~.closed_world.ClosedWorldCoordinator`:
+    the engine runs against a view of this session whose ``agents`` map **is**
+    the plan's catalog and whose ``session.spawn`` refuses any name outside it.
+    Providers, tools, hooks and approvals still come from the caller's session
+    through its own spawn machinery -- which is how a spawned child has always
+    obtained providers, and why an in-session v2 agent step does real model
+    work rather than reporting "No providers available" (recipes-30w).
+
+    Args:
+        plan/engine: injection seams for tests. ``engine`` receives
+            ``(scoped_coordinator, recipe_path, context, project_path)``.
+
+    Returns:
+        The library's ``RunResult``, so every caller translates one shape. A
+        preflight refusal, a paused approval gate and a failed step are each
+        reported as themselves; nothing reports SUCCEEDED that did not succeed.
+    """
+    runner = load_runner()
+    from .closed_world import ClosedWorldCoordinator  # noqa: PLC0415 -- lazy
+    from .closed_world import build_catalog  # noqa: PLC0415
+
+    services = await build_host_services(
+        coordinator, session_manager, project_path, session_id=session_id
+    )
+    check_model_roles(recipe_path, services.provider_access)
+    request = build_run_request(recipe_path, context_vars, services, coordinator)
+    run_id = request.run_id or f"run-{uuid.uuid4().hex[:12]}"
+
+    try:
+        resolved = await (plan or runner.plan)(request)
+    except Exception as exc:  # noqa: BLE001 -- preflight refusals are results
+        return runner.RunResult(run_id=run_id, status=runner.RunStatus.FAILED, error=exc)
+
+    catalog = build_catalog(resolved)
+    scoped = ClosedWorldCoordinator(coordinator, catalog)
+    logger.info(
+        "Executing %s on the legacy step engine with the plan's closed-world "
+        "catalog (%d agent(s): %s) [execution_mode=%s]",
+        recipe_path,
+        len(catalog),
+        ", ".join(catalog.names) or "none",
+        V2_LEGACY_ENGINE_EXECUTION_MODE,
+    )
+
+    execute = engine or _legacy_engine_run
+    try:
+        final_context = await execute(
+            scoped, recipe_path, dict(context_vars or {}), project_path, session_manager
+        )
+    except Exception as exc:  # noqa: BLE001 -- one place turns any failure into a result
+        stage = getattr(exc, "stage_name", None)
+        if stage is not None and type(exc).__name__ == "ApprovalGatePausedError":
+            return runner.RunResult(
+                run_id=run_id,
+                status=runner.RunStatus.PAUSED,
+                plan=resolved,
+                completed_steps=_engine_completed_steps(
+                    session_manager, getattr(exc, "session_id", None), project_path
+                ),
+                pending_approval=stage,
+            )
+        logger.error("v2 recipe %s failed on the legacy engine: %s", recipe_path, exc)
+        return runner.RunResult(
+            run_id=run_id,
+            status=runner.RunStatus.FAILED,
+            plan=resolved,
+            error=exc,
+        )
+
+    engine_session = (final_context or {}).get("session") or {}
+    return runner.RunResult(
+        run_id=run_id,
+        status=runner.RunStatus.SUCCEEDED,
+        plan=resolved,
+        outputs=dict(final_context or {}),
+        completed_steps=_engine_completed_steps(
+            session_manager, engine_session.get("id"), project_path
+        ),
+    )
+
+
+async def _legacy_engine_run(
+    scoped_coordinator: Any,
+    recipe_path: Path,
+    context_vars: Mapping[str, Any],
+    project_path: Path,
+    session_manager: Any,
+) -> Mapping[str, Any]:
+    """Run the recipe on the legacy step engine, against the scoped coordinator.
+
+    Imported lazily so this module keeps importing without the engine's own
+    dependencies, exactly as the library import is lazy.
+    """
+    from .executor import RecipeExecutor  # noqa: PLC0415
+    from .models import Recipe  # noqa: PLC0415
+
+    recipe = Recipe.from_yaml(recipe_path)
+    executor = RecipeExecutor(scoped_coordinator, session_manager)
+    return await executor.execute_recipe(
+        recipe, dict(context_vars), project_path, recipe_path=recipe_path
+    )
+
+
+def _engine_completed_steps(
+    session_manager: Any, engine_session_id: str | None, project_path: Path
+) -> tuple[str, ...]:
+    """What the step engine *recorded* finishing -- never what we assume it did.
+
+    The engine checkpoints completed steps into its own session state. Reading
+    that back is the only honest source: inferring "all of them" from a
+    successful return would claim steps that a condition skipped.
+    """
+    if not engine_session_id:
+        return ()
+    try:
+        state = session_manager.load_state(engine_session_id, project_path)
+    except Exception as exc:  # noqa: BLE001 - unreadable state is reported, not guessed
+        logger.warning(
+            "Could not read completed steps from engine session %s: %s",
+            engine_session_id,
+            exc,
+        )
+        return ()
+    completed = (state or {}).get("completed_steps")
+    if isinstance(completed, Sequence) and not isinstance(completed, (str, bytes)):
+        return tuple(str(step) for step in completed)
+    return ()
 
 
 async def resume_v2_recipe(

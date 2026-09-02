@@ -1036,7 +1036,16 @@ async def _execute_steps(
                 context=request.context,
                 step_id=step_id,
             )
-        except (PreflightError, ExecutionError) as exc:
+        except Exception as exc:  # noqa: BLE001 -- see below: every failure is a failure
+            # ANY exception, not just the typed ones. A step whose execution
+            # errored must never appear in `completed_steps`, and the run must
+            # never report SUCCEEDED with the error visible only in a summary
+            # (lib Core 8 -- a fabricated success). Narrowing this to
+            # PreflightError/ExecutionError meant a backend or host error --
+            # exactly what a real spawn raises -- escaped the loop entirely and
+            # left the caller to decide what had completed. It is surfaced here
+            # instead, at the top level of the result, with `completed` holding
+            # only the steps that really finished.
             _emit(services.event_sink, "step:failed", session.run_id, {"step_id": step_id})
             return RunResult(
                 run_id=session.run_id,

@@ -257,7 +257,7 @@ class TestRouting:
             seen["context"] = ctx
             return MagicMock()
 
-        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe", fake_run_v2)
+        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe_in_session", fake_run_v2)
         monkeypatch.setattr(
             RecipesTool, "_v2_tool_result", lambda self, *a, **k: MagicMock(success=True)
         )
@@ -399,14 +399,14 @@ class TestLegacyLabelling:
         async def fake_run_v2(*a: Any, **k: Any) -> Any:
             return MagicMock()
 
-        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe", fake_run_v2)
+        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe_in_session", fake_run_v2)
         monkeypatch.setattr(
             RecipesTool, "_v2_tool_result", lambda self, *a, **k: MagicMock(success=True)
         )
 
         result = await tool._execute_recipe({"recipe_path": str(recipe)})
 
-        assert ra.execution_mode_of(result) == ra.V2_EXECUTION_MODE
+        assert ra.execution_mode_of(result) == ra.V2_LEGACY_ENGINE_EXECUTION_MODE
 
     def test_deprecation_message_names_the_confinement_rule(self, temp_dir: Path):
         message = ra.legacy_deprecation_message(temp_dir / "x.yaml")
@@ -1208,7 +1208,7 @@ class TestV2Resume:
                 pending_approval="planning",
             )
 
-        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe", fake_run_v2)
+        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe_in_session", fake_run_v2)
 
         await tool._execute_recipe({"recipe_path": str(recipe)})
 
@@ -1235,13 +1235,97 @@ class TestV2Resume:
         async def boom(*args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("exploded mid-run")
 
-        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe", boom)
+        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe_in_session", boom)
 
         await tool._execute_recipe({"recipe_path": str(recipe)})
 
         record = saved[V2_RUN_STATE_KEY]
         assert record["status"] == "errored"
         assert record["completed_steps"] is None
+
+    @requires_runner
+    @pytest.mark.asyncio
+    async def test_a_v2_run_persists_provenance_comparable_with_plan_json(
+        self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Cross-surface identity (lib.v1 Core 7), asserted as a real comparison.
+
+        The persisted record must be the SAME mapping `recipe-runner plan
+        --json` emits for the same plan -- not a similar one. A near-copy would
+        drift, and a drifted field is indistinguishable from a genuine identity
+        mismatch when the two surfaces are compared.
+        """
+        from amplifier_module_tool_recipes import V2_PROVENANCE_STATE_KEY
+        from amplifier_recipe_runner.api import AgentProvenance
+        from amplifier_recipe_runner.api import EffectivePolicy
+        from amplifier_recipe_runner.api import ExecutionPlan
+        from amplifier_recipe_runner.api import LockMode
+        from amplifier_recipe_runner.cli import _plan_mapping
+
+        import dataclasses
+
+        runner = ra.load_runner()
+        supplier = "git+https://example.invalid/amplifier-bundle-foundation@main"
+        # PR #86's attribution fields exist only on a runner new enough to have
+        # them. Named explicitly rather than assumed, so this test reports "the
+        # importable runner predates PR #86" instead of failing as if the
+        # adapter dropped the fields.
+        provenance_fields = {f.name for f in dataclasses.fields(AgentProvenance)}
+        attribution = (
+            {"defined_in": supplier, "via_includes": ("core",)}
+            if {"defined_in", "via_includes"} <= provenance_fields
+            else {}
+        )
+        plan = ExecutionPlan(
+            recipe_digest="sha256:test",
+            schema_version=2,
+            dependencies=(),
+            agents={
+                "foundation:zen-architect": AgentProvenance(
+                    agent="foundation:zen-architect",
+                    supplied_by=supplier,
+                    dependency_digest="sha256:dep",
+                    **attribution,
+                )
+            },
+            step_ids=("review",),
+            policy=EffectivePolicy(lock_mode=LockMode.LOCKED),
+        )
+
+        saved: dict[str, Any] = {}
+        session_manager = MagicMock()
+        session_manager.create_session.return_value = "sess-1"
+        session_manager.load_state.return_value = {}
+        session_manager.save_state.side_effect = lambda sid, path, state: saved.update(state)
+        tool = make_tool(session_manager=session_manager)
+        recipe = write_recipe(temp_dir, "v2.yaml", V2_RECIPE)
+
+        async def fake_run_v2(*args: Any, **kwargs: Any) -> Any:
+            return runner.RunResult(
+                run_id="run-7",
+                status=runner.RunStatus.SUCCEEDED,
+                plan=plan,
+                completed_steps=("review",),
+            )
+
+        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe_in_session", fake_run_v2)
+
+        await tool._execute_recipe({"recipe_path": str(recipe)})
+
+        persisted = saved[V2_PROVENANCE_STATE_KEY]
+        # `created_at` is a timestamp: recorded, never compared.
+        expected = _plan_mapping(plan, run_id="run-7")
+        assert {k: v for k, v in persisted.items() if k != "created_at"} == {
+            k: v for k, v in expected.items() if k != "created_at"
+        }
+        agent = persisted["agents"]["foundation:zen-architect"]
+        assert agent["supplied_by"] == supplier
+        assert persisted["recipe_digest"] == "sha256:test"
+        assert persisted["run_id"] == "run-7"
+        if attribution:
+            # The PR #86 fields ride along rather than being dropped on the way.
+            assert agent["defined_in"] == supplier
+            assert list(agent["via_includes"]) == ["core"]
 
     @pytest.mark.asyncio
     async def test_resuming_a_legacy_session_is_untouched(self, temp_dir: Path):
