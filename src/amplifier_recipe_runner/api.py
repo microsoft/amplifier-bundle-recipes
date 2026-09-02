@@ -263,6 +263,25 @@ class AgentProvenance:
     :attr:`dependency_digest` (a content digest) instead.
     """
 
+    defined_in: str | None = None
+    """The source tree that actually holds this agent's definition, when that
+    is NOT :attr:`supplied_by`'s own tree.
+
+    A declared dependency may *reach* an agent through its own ``includes``
+    without defining it. :attr:`supplied_by` still names the declared
+    dependency -- that is the source the recipe asked for, and the one a
+    resume re-resolves -- but stamping only that would claim the agent lives
+    in a tree it does not, which makes the Core 7 map non-discriminating.
+    ``None`` means the agent is defined inside :attr:`supplied_by`'s own tree.
+    """
+
+    via_includes: bool = False
+    """True when :attr:`supplied_by` supplies this agent *transitively*.
+
+    Always paired with :attr:`defined_in`; never set for an agent the declared
+    dependency defines itself.
+    """
+
 
 @dataclass(frozen=True, slots=True)
 class EffectivePolicy:

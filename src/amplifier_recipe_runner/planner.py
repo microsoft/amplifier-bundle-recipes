@@ -16,7 +16,13 @@ nothing else:
 * **Provenance per agent (manifest Core 7).** Every agent in the plan records
   its supplying dependency's declared source, the resolved local path, and --
   for git sources -- the resolved immutable revision. Local sources record a
-  content digest instead, because they have no revision to record.
+  content digest instead, because they have no revision to record. The
+  supplying dependency is the one whose *resolved tree actually holds the
+  agent's definition file* (:func:`_attribute`), not merely the one that
+  reached it: an agent a declared bundle pulls in through its own ``includes``
+  keeps that declared dependency as ``supplied_by`` and additionally records
+  ``defined_in`` / ``via_includes``, so the map discriminates instead of
+  stamping one URI over the whole closure.
 * **No namespace inference (manifest Core 11).** The resolver is asked for
   exactly the declared sources, in declaration order, and never for a source
   guessed from an agent name's namespace.
@@ -299,7 +305,7 @@ async def plan(
         resolved.append(_record_dependency(dependency, bundle))
 
     step_ids, references = _walk_recipe(body)
-    provenance = _build_provenance(catalog, references, manifest.agents)
+    provenance = _build_provenance(catalog, references, manifest.agents, tuple(resolved))
 
     return ExecutionPlan(
         recipe_digest=_recipe_digest(recipe_text, body, manifest),
@@ -382,15 +388,22 @@ def _build_provenance(
     catalog: AgentCatalog,
     references: tuple[tuple[str, str | None], ...],
     aliases: Mapping[str, str],
+    resolved: tuple[ResolvedDependency, ...] = (),
 ) -> dict[str, AgentProvenance]:
     """Provenance for the whole closure, plus an entry per referenced alias.
 
     Keyed by canonical name for every agent the closure supplies (Core 3: only
     those), and additionally by alias for each alias a step actually used, so a
     host can look up either form.
+
+    ``resolved`` is every declared dependency as recorded in the plan; it is
+    what :func:`_attribute` matches each agent's definition file against, so an
+    agent is stamped with the dependency that really holds it rather than with
+    whichever one happened to reach it first.
     """
     provenance: dict[str, AgentProvenance] = {
-        canonical: _provenance_for(entry, alias=None) for canonical, entry in catalog.entries()
+        canonical: _provenance_for(entry, alias=None, resolved=resolved)
+        for canonical, entry in catalog.entries()
     }
 
     for reference, step_id in references:
@@ -409,20 +422,138 @@ def _build_provenance(
                 ),
             )
         if reference != entry.agent.name:
-            provenance[reference] = _provenance_for(entry, alias=reference)
+            provenance[reference] = _provenance_for(entry, alias=reference, resolved=resolved)
 
     return provenance
 
 
-def _provenance_for(entry: _CatalogEntry, *, alias: str | None) -> AgentProvenance:
+@dataclass(frozen=True, slots=True)
+class _Attribution:
+    """Which declared dependency an agent is honestly stamped with."""
+
+    supplied_by: str
+    dependency_digest: str | None
+    resolved_revision: str | None
+    defined_in: str | None = None
+    via_includes: bool = False
+
+
+def _attribute(entry: _CatalogEntry, resolved: tuple[ResolvedDependency, ...]) -> _Attribution:
+    """Attribute one agent to the dependency whose tree actually defines it.
+
+    The dependency that *reached* an agent is not always the one that
+    *supplies* it: a declared bundle composes its own ``includes``, so its
+    agent map can carry agents defined in entirely different source trees.
+    Stamping every such agent with the reaching dependency's URI, revision and
+    digest makes the Core 7 map non-discriminating -- it reads as a claim about
+    where the definition lives, and for an included agent that claim is false.
+
+    So the agent's definition file decides:
+
+    * inside a declared dependency's resolved tree -> that dependency, with
+      *its* revision/digest. The longest matching tree wins, so a dependency
+      nested inside another is not masked by its parent; a tie prefers the
+      dependency that reached the agent, which keeps a single-tree closure
+      stamped exactly as before.
+    * inside no declared tree -> the agent came in through the reaching
+      dependency's includes. ``supplied_by`` stays that declared dependency
+      (it is what the recipe asked for, and what a resume re-resolves), and
+      the real tree is recorded as ``defined_in`` with ``via_includes``.
+
+    An agent with no definition file to match (a behavior partial, a resolver
+    that reports none) is attributed to the reaching dependency and claims
+    nothing further -- absence of evidence is never recorded as evidence.
+    """
     dependency = entry.dependency
-    return AgentProvenance(
-        agent=entry.agent.name,
+    reached = _Attribution(
         supplied_by=dependency.source,
         dependency_digest=dependency.content_digest,
-        alias=alias,
-        local_path=entry.agent.local_path or dependency.local_path,
         resolved_revision=dependency.resolved_revision,
+    )
+
+    definition = entry.agent.local_path
+    if definition is None:
+        return reached
+
+    owner = _declared_owner(definition, resolved, prefer=dependency.source)
+    if owner is None:
+        return _Attribution(
+            supplied_by=reached.supplied_by,
+            dependency_digest=reached.dependency_digest,
+            resolved_revision=reached.resolved_revision,
+            defined_in=definition,
+            via_includes=True,
+        )
+    if owner.uri == dependency.source:
+        return reached
+    return _Attribution(
+        supplied_by=owner.uri,
+        dependency_digest=owner.content_digest,
+        resolved_revision=owner.resolved_revision,
+    )
+
+
+def _declared_owner(
+    definition: str,
+    resolved: tuple[ResolvedDependency, ...],
+    *,
+    prefer: str,
+) -> ResolvedDependency | None:
+    """The declared dependency whose resolved tree contains ``definition``.
+
+    Most specific tree first. Ties (the same tree declared twice, e.g. once
+    whole and once as a behavior partial) prefer ``prefer`` -- the dependency
+    that reached the agent -- and otherwise take declaration order.
+    """
+    candidates = [
+        (len(str(_as_path(dep.local_path))), dep)
+        for dep in resolved
+        if _tree_contains(dep.local_path, definition)
+    ]
+    if not candidates:
+        return None
+    longest = max(length for length, _ in candidates)
+    finalists = [dep for length, dep in candidates if length == longest]
+    for dep in finalists:
+        if dep.uri == prefer:
+            return dep
+    return finalists[0]
+
+
+def _as_path(value: str | None) -> Path | None:
+    if not value:
+        return None
+    try:
+        return Path(value).resolve()
+    except (OSError, ValueError):  # pragma: no cover - exotic path values
+        return None
+
+
+def _tree_contains(tree: str | None, definition: str | None) -> bool:
+    """True when ``definition`` lies inside ``tree`` (or is it)."""
+    root = _as_path(tree)
+    target = _as_path(definition)
+    if root is None or target is None:
+        return False
+    return target == root or target.is_relative_to(root)
+
+
+def _provenance_for(
+    entry: _CatalogEntry,
+    *,
+    alias: str | None,
+    resolved: tuple[ResolvedDependency, ...] = (),
+) -> AgentProvenance:
+    attribution = _attribute(entry, resolved)
+    return AgentProvenance(
+        agent=entry.agent.name,
+        supplied_by=attribution.supplied_by,
+        dependency_digest=attribution.dependency_digest,
+        alias=alias,
+        local_path=entry.agent.local_path or entry.dependency.local_path,
+        resolved_revision=attribution.resolved_revision,
+        defined_in=attribution.defined_in,
+        via_includes=attribution.via_includes,
     )
 
 

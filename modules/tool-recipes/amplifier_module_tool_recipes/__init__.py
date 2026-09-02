@@ -45,6 +45,7 @@ from .runner_adapter import label_execution_mode
 from .runner_adapter import load_runner
 from .runner_adapter import recipe_display_name
 from .runner_adapter import resume_v2_recipe
+from .runner_adapter import provider_roles_label
 from .runner_adapter import run_v2_recipe
 from .runner_adapter import validate_v2_recipe
 from .runner_adapter import warn_legacy_recipe
@@ -669,6 +670,10 @@ Example:
             "run_id": result.run_id,
             "session_id": session_id,
             "completed_steps": list(result.completed_steps),
+            # Which source served this run's model roles. Named on every v2
+            # run so the session-default fallback is visible rather than
+            # inferred from behaviour.
+            "provider_roles": provider_roles_label(self.coordinator),
         }
         if plan is not None:
             # Core 7 provenance: which dependency supplied each agent.

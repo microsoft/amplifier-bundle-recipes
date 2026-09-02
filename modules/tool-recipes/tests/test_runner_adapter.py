@@ -557,10 +557,14 @@ class TestProviderAccessPort:
         assert access.roles() == ()
 
     @pytest.mark.asyncio
-    async def test_no_resolver_capability_means_no_roles_offered(self):
+    async def test_no_resolver_capability_falls_back_to_the_session_default(self):
+        """A host that routes nothing still runs its own agents, so the adapter
+        serves one labeled default role rather than none at all -- see
+        ``test_lean_bundle_provider_fallback.py`` for the full behavior."""
         access = await ra.CoordinatorProviderAccess.create(FakeCoordinator(resolver=None))
 
-        assert access.roles() == ()
+        assert access.roles() == (ra.SESSION_DEFAULT_ROLE,)
+        assert access.role_source == ra.PROVIDER_ROLES_FALLBACK
 
     @pytest.mark.asyncio
     async def test_provider_access_holds_no_reference_to_the_caller(self):
