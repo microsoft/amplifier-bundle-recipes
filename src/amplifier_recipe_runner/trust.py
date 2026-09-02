@@ -256,8 +256,13 @@ def intersect_capabilities(
     """Effective capabilities = host ∩ runner ∩ manifest-declared (Core 9).
 
     Args:
-        manifest: Capabilities the recipe declares it needs. Nothing outside
-            this set is ever granted -- an intersection cannot add.
+        manifest: Capabilities the recipe declares it needs -- in practice
+            :attr:`~amplifier_recipe_runner.manifest.Manifest.capabilities`,
+            parsed from the recipe's top-level ``capabilities`` list and empty
+            when it declares none. Nothing outside this set is ever granted --
+            an intersection cannot add, so a recipe asking for nothing gets
+            nothing. The manifest term has no "unconstrained" form for exactly
+            that reason; only ``host`` and ``runner`` do.
         host: Host policy. ``None`` means the host imposes no constraint;
             an empty iterable means the host permits nothing.
         runner: Runner policy (typically a

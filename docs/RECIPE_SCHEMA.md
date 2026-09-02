@@ -2667,8 +2667,12 @@ Full results are always saved in the recipe session files. Use `recipes list` to
 > **What is still DRAFT.** The contract itself is status DRAFT, and the
 > behaviors described below that live *outside* manifest parsing —
 > preflight ordering and its typed failures (Core 6), resume and provenance
-> records (Core 7), and the capability intersection (Core 9) — are documented
-> from the contract and are **not** verified here against an end-to-end run.
+> records (Core 7), and capability *enforcement* during execution (Core 9) — are
+> documented from the contract and are **not** verified here against an
+> end-to-end run. The Core 9 *intersection* itself is an exception: the
+> top-level `capabilities` key and the three-way intersection it feeds are
+> parser- and planner-verified (`recipes-54n`) — see
+> [Capabilities](#capabilities).
 > The lock spellings (`locked` / `update-lock` / `unlocked`, `lock_version: 1`)
 > match the shipped runner's `api.LockMode` and `lockfile.LOCK_VERSION` by
 > inspection; their runtime semantics are likewise unverified here.
@@ -2711,6 +2715,9 @@ dependencies:                   # Required for v2 (manifest.v1 Core 1)
     kind: bundle | behavior     # (manifest.v1 Core 2)
     required_agents:            # Optional (manifest.v1 Core 2)
       - "namespace:agent-name"
+
+capabilities:                   # Optional (manifest.v1 Core 9)
+  - capability-name             # Absent means the recipe declares NONE
 
 agents:                         # Optional alias map (manifest.v1 Core 3)
   alias-name: "namespace:agent-name"
@@ -2908,6 +2915,57 @@ effective = host policy ∩ runner policy ∩ manifest-declared needs
 ```
 
 A manifest cannot widen what the host or runner policy allows.
+
+#### `capabilities` (optional)
+
+**Type:** list of strings
+**Optional** — a recipe that omits it declares **no** capability needs.
+
+The top-level `capabilities` list is the recipe's own term of that
+intersection — the "manifest-declared needs" the contract names. It is the only
+term a recipe author controls; the other two come from the host and from the
+runner's trust policy.
+
+```yaml
+schema_version: 2
+
+dependencies: []
+
+capabilities:                     # manifest term of the Core 9 intersection
+  - net
+  - fs.read
+```
+
+**Absent and `capabilities: []` mean the same thing: declares none.** Because an
+intersection can never add, a recipe that asks for nothing is granted nothing —
+no matter how permissive the host and runner policies are. There is deliberately
+**no manifest spelling for "unconstrained"**; only the host and runner terms can
+be unconstrained. A manifest that could opt out of the intersection would not be
+a term of one.
+
+| Declaration | Host term | Runner term | Effective |
+|-------------|-----------|-------------|-----------|
+| `[net, fs, exec]` | `[fs, exec]` | `[net, fs]` | `[fs]` |
+| `[net, exec]` | `[fs]` | `[net, exec]` | `[]` (a manifest cannot widen) |
+| absent, or `[]` | unconstrained | unconstrained | `[]` |
+| `[net, fs]` | unconstrained | unconstrained | `[fs, net]` |
+
+Parse rules, all ERRORs rather than quiet no-ops (`manifest.v1` Core 1, Core 9):
+
+- `capabilities` is a **manifest key** — declaring it without `schema_version: 2`
+  is an error naming it, not a silently ignored block.
+- It must be a **list**; entries must be **non-empty strings**.
+- A **duplicate entry is an error** naming both positions. A list the author
+  wrote twice is never silently collapsed.
+- It is **not** a per-dependency key. A `dependencies` entry accepts only
+  `source`, `kind` and `required_agents`.
+
+**Verified.** The key spelling and the rules above match the shipped parser
+`amplifier_recipe_runner.manifest` (this section's example is parsed through
+`parse_manifest`), and the three-way intersection reaching
+`ExecutionPlan.policy.capabilities` is exercised by the runner library's planner
+suite (work item `recipes-54n`). What remains unverified here is end-to-end
+*enforcement* of a granted capability during execution.
 
 ### `agent_config` under v2
 
