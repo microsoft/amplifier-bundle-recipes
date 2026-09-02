@@ -53,7 +53,23 @@ Execute a recipe from YAML file.
 
 ### recipe_resume
 
-Resume an interrupted recipe session.
+Resume an interrupted recipe session, on the engine that ran it.
+
+The recipe recorded in the session decides. A session holding a legacy recipe
+resumes on the legacy caller-bound path. A session holding a `schema_version`
+recipe resumes through the runner library, and what the run recorded decides
+which of four answers you get:
+
+| Recorded run | Outcome |
+|---|---|
+| completed every step | `status: nothing_to_resume` (success -- there is nothing left) |
+| completed no step | resuming *is* running: one library call under the recorded `run_id` |
+| completed some steps | refused (`V2ResumeUnavailableError`) until the library exports a `resume` entry point -- the completed steps cannot be skipped without it |
+| recorded nothing usable | refused (`V2RunNotRecorded` / `V2CompletedStepsUnknown`) rather than assuming no step ran |
+
+A v2 session is never resumed on the legacy path: that would resolve its
+agents from the calling session instead of its declared dependencies
+(`recipe-dependency-manifest.v1` Core 3).
 
 **Parameters:**
 - `session_id` (string, required): Session ID to resume
@@ -100,14 +116,22 @@ List active recipe sessions for current project.
 
 Validate recipe YAML without executing.
 
+A legacy recipe is checked by this module's own validator. A `schema_version`
+recipe is checked by the runner library instead -- manifest parse plus
+dependency plan preflight, executing nothing and carrying no host services
+(and therefore no caller agent map). The legacy validator is never consulted
+for a v2 recipe: it ignores the `dependencies` block entirely, so it would
+report "valid" while knowing nothing about what the recipe resolves to.
+
 **Parameters:**
 - `recipe_path` (string, required): Path to recipe file
 
 **Returns:**
-- `status`: "success" or "error"
-- `message`: Validation result
-- `errors`: List of validation errors (if any)
-- `warnings`: List of warnings (if any)
+- `status`: "valid" on success
+- `schema_version`: declared version (v2 recipes only)
+- `errors` / `warnings`: findings. For a v2 recipe each finding carries the
+  library's typed `code` (e.g. `UndeclaredAgentError`, `AgentCollisionError`,
+  `DependencyResolutionError`), `message`, `location` and `remedy`.
 
 ## Configuration
 
@@ -121,6 +145,20 @@ tools:
       session_dir: ~/.amplifier/projects  # Base directory for sessions
       auto_cleanup_days: 7                # Auto-delete sessions after N days
 ```
+
+Those two keys are the whole config surface. **Any other key is refused at
+mount** with an error naming it, rather than accepted and ignored -- the same
+rule `recipe-dependency-manifest.v1` Core 12 applies to `agent_config`, since a
+setting that looks honoured and changes nothing is indistinguishable, from the
+outside, from one that works.
+
+`legacy_mode` in particular is not a host setting, and is refused with that
+reason. Whether a recipe runs caller-bound is decided by its own manifest: a
+recipe declaring `schema_version` runs in the runner library, one declaring
+none runs caller-bound. A host able to force legacy mode on could rebind a
+schema-v2 recipe's agents to the calling session while the run still reported
+success. To run a recipe caller-bound, remove its `schema_version` and accept
+the deprecation warning.
 
 ## Working Directory Resolution
 
