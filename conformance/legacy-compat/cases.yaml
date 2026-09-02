@@ -1,0 +1,176 @@
+# Legacy-compat harness cases.
+#
+# Each case pins ONE legacy recipe, ONE caller agent map, and ONE scripted set
+# of agent responses. Together they make a run of today's tool-recipes engine
+# reproducible, so its outcome and agent provenance can be frozen as a golden
+# baseline and re-asserted later.
+#
+# Fields:
+#   name              baseline file stem (baselines/<name>.json)
+#   recipe            path relative to the repo root
+#   covers            which required characteristics this case exercises
+#   context           context vars passed to the `recipes` tool's execute op
+#   caller_agents     the caller's agent map -- agents the recipe references
+#                     MUST be present here (legacy recipes resolve from the
+#                     caller). The value is the caller's per-agent config; it is
+#                     recorded in provenance so a rebinding is visible as drift.
+#   agent_responses   scripted stand-in output per step id; "_default" applies
+#                     to any step not listed. `{step}` / `{agent}` interpolate.
+#   volatile_outputs  context keys whose value cannot be made reproducible by
+#                     mechanical normalization; recorded as "<VOLATILE>".
+#   approvals         "none" | "approve_all" (drive gates via the tool's own
+#                     approve + resume operations)
+#   fixture           optional dir under fixtures/ copied into the workspace
+
+cases:
+  - name: bash-step-example
+    recipe: examples/bash-step-example.yaml
+    covers:
+      - bash steps
+      - bash exit-code capture (output_exit_code)
+      - conditional step gated on a bash exit code
+      - on_error:continue
+      - cwd override
+      - env var substitution
+    context:
+      project_name: "LegacyCompat"
+      greeting: "Hello from bash step"
+    caller_agents: {}
+    agent_responses: {}
+    # `list-tmp` runs `ls -la | head -5` against the real /tmp; its content is
+    # machine state, not engine behavior.
+    volatile_outputs:
+      - tmp_listing
+    approvals: none
+    notes: >-
+      Pure bash recipe: no agent spawns at all. Proves the engine's bash path
+      (substitution, env, cwd, exit codes, conditions) is unchanged.
+
+  - name: test-parse-json
+    recipe: examples/test-parse-json.yaml
+    covers:
+      - parse_json opt-in (aggressive extraction from prose)
+      - parse_json default (prose preserved verbatim)
+      - multiple agent steps
+      - agent provenance with no provider/model on the step
+    context:
+      test_data: "example"
+    caller_agents:
+      "foundation:zen-architect": {}
+    agent_responses:
+      prose-step: |
+        ## Analysis
+
+        The value **example** is a short lowercase string. Nothing surprising here.
+      json-step: |
+        Here is the structured extraction you asked for.
+
+        ```json
+        {"input": "example", "length": 7, "type": "string"}
+        ```
+      _default: "STUB AGENT OUTPUT (step={step}, agent={agent})"
+    approvals: none
+    notes: >-
+      Pins both halves of _process_step_result: parse_json:true must extract the
+      dict out of surrounding prose, the default must leave markdown untouched.
+
+  - name: repo-activity-analysis
+    recipe: examples/repo-activity-analysis.yaml
+    covers:
+      - bash steps AND parse_json in one recipe
+      - parse_json on bash step output (7 steps)
+      - parse_json on agent step output (4 steps)
+      - dotted-path substitution into bash commands ({{repo_info.owner}})
+      - conditional branching on a parsed bash output ({{date_check.needs_llm}})
+      - on_error:continue
+      - two distinct caller agents
+    fixture: repo-activity
+    path_prepend: shims
+    context:
+      repo_url: "https://github.com/fixture-owner/fixture-repo"
+      date_range: "since the fixture window"
+      working_dir: "./ai_working"
+      include_deep_dive: true
+      _precomputed:
+        date_since_iso: "2026-08-29T00:00:00Z"
+        date_since_date: "2026-08-29"
+        date_description: "since the fixture window"
+        repo_owner: "fixture-owner"
+        repo_name: "fixture-repo"
+    caller_agents:
+      "foundation:zen-architect":
+        description: "Caller-provided architect agent"
+      "foundation:explorer":
+        description: "Caller-provided explorer agent"
+    agent_responses:
+      analyze-commits: |
+        ```json
+        {"total_analyzed": 2, "by_impact": {"trivial": 0, "minor": 1, "moderate": 1, "significant": 0, "breaking": 0}, "summaries": [{"sha": "1111111", "impact": "moderate", "summary": "Adds the legacy-compat harness"}, {"sha": "2222222", "impact": "minor", "summary": "Normalizes baseline timestamps"}], "needs_deep_dive": ["1111111"], "themes": ["conformance tooling"], "skipped": false}
+        ```
+      deep-dive-unclear-commits: |
+        ```json
+        {"deep_dives": [{"sha": "1111111", "finding": "New conformance directory, no runtime code touched", "impact": "moderate"}], "skipped": false}
+        ```
+      analyze-prs: |
+        ```json
+        {"total_prs": 2, "merged": 1, "open": 1, "by_category": {"feature": 1, "docs": 1}, "notable_prs": [{"number": 41, "title": "Add legacy-compat baseline harness", "category": "feature"}], "themes": ["conformance tooling"], "skipped": false}
+        ```
+      synthesize-repo-findings: |
+        ```json
+        {"repo": "fixture-repo", "owner": "fixture-owner", "url": "https://github.com/fixture-owner/fixture-repo", "analysis_date": "2026-09-01T00:00:00Z", "date_range": "since the fixture window", "activity_summary": {"has_activity": true, "commits": 2, "prs_total": 2, "prs_merged": 1, "prs_open": 1}, "impact_assessment": {"overall": "moderate", "by_level": {"trivial": 0, "minor": 1, "moderate": 1, "significant": 0, "breaking": 0}}, "key_changes": [{"description": "Legacy-compat harness added", "impact": "moderate", "type": "commit", "references": ["1111111"]}], "themes": ["conformance tooling"], "risks": ["none identified"], "notable_items": ["no breaking changes"]}
+        ```
+      _default: "STUB AGENT OUTPUT (step={step}, agent={agent})"
+    approvals: none
+    notes: >-
+      The only shipped example that combines bash steps with parse_json. Made
+      hermetic by a fixture `bin/gh` shim on PATH (see fixtures/repo-activity)
+      plus _precomputed context, which takes the needs_llm=false branch. Network
+      and a live repo can never be a byte-identical baseline; the recipe's own
+      bash, jq, dotted-path substitution and JSON extraction all run for real.
+
+  - name: code-review-comprehensive
+    recipe: examples/code-review-recipe.yaml
+    covers:
+      - multiple agent steps (6)
+      - conditional routing on a step output
+      - legacy step-level provider + model fields
+      - model glob provenance (claude-sonnet-* / claude-opus-*)
+    context:
+      file_path: "src/example.py"
+    caller_agents:
+      "foundation:zen-architect":
+        description: "Caller-provided architect agent"
+    agent_responses:
+      assess-severity: "high"
+      _default: "STUB AGENT OUTPUT (step={step}, agent={agent})"
+    approvals: none
+    notes: >-
+      Scripted severity "high" takes the branch that runs suggest-improvements
+      and validate-suggestions and skips quick-approval, so the baseline pins
+      both the taken and the skipped paths.
+
+  - name: dependency-upgrade-staged
+    recipe: examples/dependency-upgrade-staged-recipe.yaml
+    covers:
+      - staged recipe
+      - approval gates (4), driven THROUGH the gates
+      - recipes tool approve + resume operations
+      - multiple agent steps across stages
+      - two distinct caller agents
+    context:
+      project_path: "."
+      package_manager: "uv"
+    caller_agents:
+      "foundation:zen-architect":
+        description: "Caller-provided architect agent"
+      "foundation:integration-specialist":
+        description: "Caller-provided integration agent"
+    agent_responses:
+      _default: "STUB AGENT OUTPUT (step={step}, agent={agent})"
+    approvals: approve_all
+    approval_message: "approved by legacy-compat harness"
+    notes: >-
+      Baselined THROUGH every gate (not up-to-gate): each pause is cleared with
+      the tool's `approve` operation followed by `resume`, exactly as a caller
+      would. The paused ToolResults are recorded too, so a change to the pause
+      payload is drift.
