@@ -245,6 +245,23 @@ async def plan_recipe(recipe: str, *, resolver: Any = None, **kwargs: Any) -> An
 # --------------------------------------------------------------------------
 
 
+def imported_runner_path() -> str | None:
+    """The directory holding the runner package THIS process actually imported.
+
+    ``runner_source_path`` reports only what ``_bootstrap`` had to add, which
+    is ``None`` when the library was already importable -- including when it
+    was importable because the *invocation* put it on the path
+    (``PYTHONPATH=src ... kit.py``). This reports the copy in hand either way.
+    """
+    module = sys.modules.get("amplifier_recipe_runner")
+    if module is None:  # pragma: no cover - every caller has already planned
+        import importlib
+
+        module = importlib.import_module("amplifier_recipe_runner")
+    file = getattr(module, "__file__", None)
+    return str(Path(file).resolve().parent.parent) if file else None
+
+
 def subprocess_env() -> dict[str, str]:
     """Environment for a second host, pinned to the SAME runner source.
 
@@ -253,12 +270,35 @@ def subprocess_env() -> dict[str, str]:
     import a *different* copy -- turning "two hosts disagree" into a statement
     about two versions rather than about conformance. Forwarding the path it
     chose makes both hosts provably the same implementation.
+
+    Two ways that guarantee leaked, both closed here:
+
+    * An inherited PYTHONPATH entry can be RELATIVE (``PYTHONPATH=src``, the
+      documented way to run this kit from the repo root). The child runs with
+      its own ``cwd``, so the same entry names a different directory there --
+      usually one that does not exist, sending the child to whatever copy is
+      installed. Every inherited entry is therefore resolved against the cwd
+      the parent itself used.
+    * ``runner_source_path()`` is ``None`` when the library was already
+      importable, so nothing was pinned at all. The copy this process really
+      imported (:func:`imported_runner_path`) is pinned first instead.
+
+    Neither widens what the child may import: the entries are the parent's own,
+    made to mean in the child what they meant in the parent.
     """
     env = dict(os.environ)
-    added = runner_source_path()
-    if added:
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = f"{added}{os.pathsep}{existing}" if existing else added
+    entries: list[str] = []
+    for candidate in (imported_runner_path(), runner_source_path()):
+        if candidate and candidate not in entries:
+            entries.append(candidate)
+    for inherited in env.get("PYTHONPATH", "").split(os.pathsep):
+        if not inherited:
+            continue
+        resolved = str(Path(inherited).resolve())
+        if resolved not in entries:
+            entries.append(resolved)
+    if entries:
+        env["PYTHONPATH"] = os.pathsep.join(entries)
     return env
 
 

@@ -355,6 +355,8 @@ def _agent_to_mapping(prov: AgentProvenance) -> dict[str, Any]:
         "alias": prov.alias,
         "local_path": prov.local_path,
         "resolved_revision": prov.resolved_revision,
+        "defined_in": prov.defined_in,
+        "via_includes": prov.via_includes,
     }
 
 
@@ -368,6 +370,8 @@ def _agent_from_mapping(data: Any) -> AgentProvenance:
         alias=_opt_str(data.get("alias")),
         local_path=_opt_str(data.get("local_path")),
         resolved_revision=_opt_str(data.get("resolved_revision")),
+        defined_in=_opt_str(data.get("defined_in")),
+        via_includes=bool(data.get("via_includes", False)),
     )
 
 

@@ -1,8 +1,8 @@
 diff --git a/src/amplifier_recipe_runner/planner.py b/src/amplifier_recipe_runner/planner.py
-index 00c1769..e6db74a 100644
+index 95ecaf0..f4697a3 100644
 --- a/src/amplifier_recipe_runner/planner.py
 +++ b/src/amplifier_recipe_runner/planner.py
-@@ -271,6 +271,19 @@ async def plan(
+@@ -305,6 +305,19 @@ async def plan(
          resolved.append(_record_dependency(dependency, bundle))
  
      step_ids, references = _walk_recipe(body)
@@ -19,6 +19,6 @@ index 00c1769..e6db74a 100644
 +        for _agent in _bundle.agents.values():
 +            catalog.add(_agent, _bundle)
 +
-     provenance = _build_provenance(catalog, references, manifest.agents)
+     provenance = _build_provenance(catalog, references, manifest.agents, tuple(resolved))
  
      return ExecutionPlan(
