@@ -12,8 +12,15 @@ recipe's own manifest (``recipe-dependency-manifest.v1`` Core 1):
   ``execution_mode="legacy-caller-bound"`` and accompanied by a deprecation
   warning (Core 10).
 
-See ``runner_adapter.py`` for the port mapping and why the label rides beside
-the result payload rather than inside it.
+The split is per *operation*, not just per run: ``execute``, ``validate`` and
+``resume`` each route on the manifest. A v2 recipe is validated by the
+library's plan preflight and resumed through the library, never by the legacy
+validator or the legacy executor -- both of which would answer while knowing
+nothing about the ``dependencies`` block that decides what the recipe actually
+resolves to.
+
+See ``runner_adapter.py`` for the port mapping, the ``resume`` seam, and why
+the label rides beside the result payload rather than inside it.
 """
 
 import json
@@ -30,12 +37,16 @@ from .models import Recipe
 from .runner_adapter import LEGACY_EXECUTION_MODE
 from .runner_adapter import V2_EXECUTION_MODE
 from .runner_adapter import RecipeRunnerUnavailableError
+from .runner_adapter import V2ResumeUnavailableError
+from .runner_adapter import check_adapter_config
 from .runner_adapter import declared_schema_version
 from .runner_adapter import is_v2_recipe
 from .runner_adapter import label_execution_mode
 from .runner_adapter import load_runner
 from .runner_adapter import recipe_display_name
+from .runner_adapter import resume_v2_recipe
 from .runner_adapter import run_v2_recipe
+from .runner_adapter import validate_v2_recipe
 from .runner_adapter import warn_legacy_recipe
 from .session import ApprovalStatus
 from .session import SessionManager
@@ -202,6 +213,27 @@ def _get_last_step_output_key(recipe: Recipe) -> str | None:
     return None
 
 
+def _validation_issue_dict(issue: Any) -> dict[str, Any]:
+    """A library ``ValidationIssue`` as a JSON-serializable finding.
+
+    The typed error stays legible: ``code`` is the real exception class name
+    (``UndeclaredAgentError``, ``AgentCollisionError``, ...), not a flattened
+    string, and ``remedy`` survives to the caller.
+    """
+    return {
+        "code": issue.code,
+        "message": issue.message,
+        "location": issue.location,
+        "remedy": issue.remedy,
+    }
+
+
+#: Session-state key holding what a schema-v2 run recorded, so `resume` can
+#: tell "nothing ran" from "some steps ran" from "it finished" without
+#: guessing. Written by `_record_v2_run`; read by `_resume_v2_recipe`.
+V2_RUN_STATE_KEY = "v2_run"
+
+
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
     """
     Mount tool-recipes module.
@@ -209,8 +241,16 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     Args:
         coordinator: Amplifier coordinator
         config: Optional tool configuration
+
+    Raises:
+        AdapterConfigError: the config carries a key this module does not read
+            (notably ``legacy_mode``). Refused rather than retained inert, in
+            the spirit of ``recipe-dependency-manifest.v1`` Core 12: a setting
+            that looks honoured and changes nothing is indistinguishable, from
+            the outside, from one that works.
     """
     config = config or {}
+    check_adapter_config(config)
 
     # Initialize session manager
     base_dir = Path(config.get("session_dir", "~/.amplifier/projects")).expanduser()
@@ -288,7 +328,8 @@ Operations:
 - execute: Run a recipe from YAML file
 - resume: Resume interrupted session
 - list: List active sessions
-- validate: Validate recipe structure
+- validate: Validate recipe structure (schema-v2 recipes are checked by the
+  runner library: manifest parse + dependency plan preflight, nothing executed)
 - approvals: List pending approvals across sessions
 - approve: Approve a stage to continue execution
 - deny: Deny a stage to stop execution
@@ -518,6 +559,18 @@ Example:
             )
         except Exception as exc:
             logger.error("v2 recipe execution failed: %s", exc, exc_info=True)
+            # completed_steps is left unknown, not assumed empty: the run raised
+            # before reporting what it finished, and a later `resume` must be
+            # able to tell "nothing ran" from "we do not know".
+            self._record_v2_run(
+                session_id,
+                project_path,
+                recipe_path,
+                run_id=None,
+                status="errored",
+                completed_steps=None,
+                step_ids=None,
+            )
             return label_execution_mode(
                 ToolResult(
                     success=False,
@@ -529,10 +582,70 @@ Example:
                 V2_EXECUTION_MODE,
             )
 
+        plan = result.plan
+        self._record_v2_run(
+            session_id,
+            project_path,
+            recipe_path,
+            run_id=result.run_id,
+            status=getattr(result.status, "name", str(result.status)).lower(),
+            completed_steps=list(result.completed_steps),
+            step_ids=list(plan.step_ids) if plan is not None else None,
+        )
+
         return label_execution_mode(
             self._v2_tool_result(result, runner, recipe_path, recipe_name, session_id),
             V2_EXECUTION_MODE,
         )
+
+    def _record_v2_run(
+        self,
+        session_id: str | None,
+        project_path: Path,
+        recipe_path: Path,
+        *,
+        run_id: str | None,
+        status: str,
+        completed_steps: list[str] | None,
+        step_ids: list[str] | None,
+    ) -> None:
+        """Record what a v2 run reported, into the bound Amplifier session.
+
+        The library returns ``completed_steps`` and never persists them
+        itself. Without this, a later ``resume`` would have to guess whether
+        any step had already run -- and guessing "none" would re-run completed
+        steps behind the caller's back. Recorded under
+        :data:`V2_RUN_STATE_KEY` so it cannot collide with the legacy
+        executor's own ``completed_steps`` bookkeeping.
+
+        Never raises: a bookkeeping failure must not fail a run that already
+        happened. It is logged loudly instead, and its absence is what makes
+        ``resume`` refuse rather than assume (see ``_resume_v2_recipe``).
+        """
+        if session_id is None:
+            return
+        record = {
+            "execution_mode": V2_EXECUTION_MODE,
+            "recipe_path": str(recipe_path),
+            "schema_version": declared_schema_version(recipe_path),
+            "run_id": run_id,
+            "status": status,
+            "completed_steps": completed_steps,
+            "step_ids": step_ids,
+        }
+        try:
+            state = self.session_manager.load_state(session_id, project_path)
+            state[V2_RUN_STATE_KEY] = record
+            state["recipe_path"] = str(recipe_path)
+            self.session_manager.save_state(session_id, project_path, state)
+        except Exception as exc:
+            logger.error(
+                "Could not record the v2 run outcome for session %s (%s); a later "
+                "`resume` of it will refuse rather than guess which steps completed.",
+                session_id,
+                exc,
+                exc_info=True,
+            )
 
     def _v2_tool_result(
         self,
@@ -679,7 +792,15 @@ Example:
             )
 
     async def _resume_recipe(self, input: dict[str, Any]) -> ToolResult:
-        """Resume interrupted recipe session."""
+        """Resume an interrupted recipe session, on the engine that ran it.
+
+        The recipe recorded in the session decides, exactly as it does for
+        ``execute``: a session holding a ``schema_version`` recipe resumes
+        through the runner library (``_resume_v2_recipe``), one holding a
+        legacy recipe resumes on the legacy caller-bound path. A v2 session is
+        never resumed on the legacy path -- that would re-bind its agents to
+        this caller (``recipe-dependency-manifest.v1`` Core 3).
+        """
         session_id = input.get("session_id")
         if not session_id:
             return ToolResult(
@@ -718,27 +839,8 @@ Example:
             )
 
         if is_v2_recipe(recipe_file):
-            # Resuming a v2 run is the runner library's `resume` (it replays
-            # recorded provenance -- manifest.v1 Core 8). That entry point is
-            # not wired through this adapter yet, and resuming a v2 recipe on
-            # the legacy path would silently re-bind its agents to this caller.
-            return label_execution_mode(
-                ToolResult(
-                    success=False,
-                    error={
-                        "message": (
-                            f"Session {session_id} holds a schema_version "
-                            f"{declared_schema_version(recipe_file)!r} recipe. Resuming it "
-                            "belongs to the recipe-runner library's `resume`, which this "
-                            "adapter does not expose yet. It was NOT resumed on the legacy "
-                            "path: that would resolve its agents from this session instead "
-                            "of its declared dependencies. Re-run the recipe with the "
-                            "`execute` operation."
-                        ),
-                        "type": "V2ResumeUnsupported",
-                    },
-                ),
-                V2_EXECUTION_MODE,
+            return await self._resume_v2_recipe(
+                session_id, project_path, recipe_file, original_recipe_path, state
             )
 
         warn_legacy_recipe(original_recipe_path or recipe_file)
@@ -808,6 +910,177 @@ Example:
                 LEGACY_EXECUTION_MODE,
             )
 
+    async def _resume_v2_recipe(
+        self,
+        session_id: str,
+        project_path: Path,
+        recipe_file: Path,
+        original_recipe_path: Path | None,
+        state: dict[str, Any],
+    ) -> ToolResult:
+        """Resume a schema-v2 run, through the runner library and only it.
+
+        Resuming a v2 recipe on the legacy path would re-bind its agents to
+        *this* session instead of its declared dependencies
+        (``recipe-dependency-manifest.v1`` Core 3), so that never happens here:
+        every outcome below is either a library call or a refusal.
+
+        What the recorded run reported decides which:
+
+        * it finished -- nothing to resume, and saying so is the right answer,
+          not a failure;
+        * nothing completed -- resuming *is* running from the start, which is
+          one library call against the recorded ``run_id``;
+        * some steps completed -- skipping them needs the library's ``resume``
+          entry point (:func:`runner_adapter.library_resume`); without it the
+          resume is refused, naming the missing seam;
+        * the run recorded nothing usable -- refused, because assuming "no
+          step ran" would re-run steps that did.
+        """
+        try:
+            load_runner()
+        except RecipeRunnerUnavailableError as exc:
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={"message": str(exc), "type": type(exc).__name__},
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        schema_version = declared_schema_version(recipe_file)
+        record = state.get(V2_RUN_STATE_KEY)
+        if not isinstance(record, dict):
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": (
+                            f"Session {session_id} holds a schema_version "
+                            f"{schema_version!r} recipe but recorded no run outcome, so "
+                            "which of its steps completed is unknown. It was NOT resumed: "
+                            "assuming none had run would re-execute steps that did. Re-run "
+                            "the recipe with the `execute` operation to start a fresh run."
+                        ),
+                        "type": "V2RunNotRecorded",
+                    },
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        run_id = record.get("run_id")
+        completed_steps = record.get("completed_steps")
+        step_ids = record.get("step_ids") or []
+
+        if record.get("status") == "succeeded":
+            return label_execution_mode(
+                ToolResult(
+                    success=True,
+                    output={
+                        "status": "nothing_to_resume",
+                        "recipe": recipe_display_name(recipe_file),
+                        "execution_mode": V2_EXECUTION_MODE,
+                        "schema_version": schema_version,
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "completed_steps": completed_steps or [],
+                        "message": (
+                            "This run already completed every recorded step; there is "
+                            "nothing to resume."
+                        ),
+                    },
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        if completed_steps is None:
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": (
+                            f"Run {run_id or '(unrecorded)'} in session {session_id} "
+                            f"ended with status {record.get('status')!r} without recording "
+                            "which steps completed, so it cannot be resumed without "
+                            "risking re-running steps that already ran. Re-run the recipe "
+                            "with the `execute` operation to start a fresh run."
+                        ),
+                        "type": "V2CompletedStepsUnknown",
+                    },
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        # Prefer the recipe the run actually recorded: a library `resume` checks
+        # recorded provenance against a fresh plan of it, and handing over the
+        # session's frozen copy instead would make that check unable to ever
+        # detect an edited recipe (Core 8).
+        recorded_path = record.get("recipe_path")
+        resume_path = Path(recorded_path) if recorded_path else original_recipe_path
+        if resume_path is None or not resume_path.exists():
+            resume_path = recipe_file
+
+        try:
+            result = await resume_v2_recipe(
+                self.coordinator,
+                self.session_manager,
+                resume_path,
+                {},
+                project_path,
+                session_id=session_id,
+                run_id=run_id,
+                completed_steps=tuple(completed_steps),
+            )
+        except V2ResumeUnavailableError as exc:
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": exc.message,
+                        "type": type(exc).__name__,
+                        "remedy": exc.remedy,
+                        "completed_steps": list(completed_steps),
+                        "step_ids": list(step_ids),
+                    },
+                ),
+                V2_EXECUTION_MODE,
+            )
+        except Exception as exc:
+            logger.error("v2 recipe resume failed: %s", exc, exc_info=True)
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": f"Failed to resume recipe: {exc}",
+                        "type": type(exc).__name__,
+                    },
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        plan = result.plan
+        self._record_v2_run(
+            session_id,
+            project_path,
+            resume_path,
+            run_id=result.run_id,
+            status=getattr(result.status, "name", str(result.status)).lower(),
+            completed_steps=list(result.completed_steps),
+            step_ids=list(plan.step_ids) if plan is not None else step_ids or None,
+        )
+
+        runner = load_runner()
+        return label_execution_mode(
+            self._v2_tool_result(
+                result,
+                runner,
+                resume_path,
+                recipe_display_name(recipe_file),
+                session_id,
+            ),
+            V2_EXECUTION_MODE,
+        )
+
     async def _list_sessions(self, input: dict[str, Any]) -> ToolResult:
         """List active recipe sessions."""
         project_path = self._get_working_dir()
@@ -848,29 +1121,7 @@ Example:
             )
 
         if is_v2_recipe(recipe_path):
-            # The library owns manifest parsing and validation (lib.v1 Core 1);
-            # this adapter must not grow a second opinion. Its `validate` entry
-            # point is not exposed here yet, and answering with the *legacy*
-            # validator would report a v2 recipe "valid" while ignoring the
-            # manifest that decides what it actually resolves to.
-            return label_execution_mode(
-                ToolResult(
-                    success=False,
-                    error={
-                        "message": (
-                            f"Recipe declares schema_version "
-                            f"{declared_schema_version(recipe_path)!r}. Validating it "
-                            "belongs to the recipe-runner library, which this adapter "
-                            "does not expose a `validate` entry point for yet. It was "
-                            "NOT checked with the legacy validator, which ignores the "
-                            "`dependencies` manifest entirely. Use the `execute` "
-                            "operation, or the standalone recipe-runner CLI."
-                        ),
-                        "type": "V2ValidateUnsupported",
-                    },
-                ),
-                V2_EXECUTION_MODE,
-            )
+            return await self._validate_v2_recipe(recipe_path)
 
         try:
             # Load recipe
@@ -903,6 +1154,71 @@ Example:
                 success=False,
                 error={"message": f"Failed to validate recipe: {str(e)}"},
             )
+
+    async def _validate_v2_recipe(self, recipe_path: Path) -> ToolResult:
+        """Validate a schema-v2 recipe through the runner library.
+
+        The library owns manifest parsing and dependency resolution
+        (``recipe-runner-lib.v1`` Core 1), so validation asks it rather than
+        growing a second opinion here: manifest parse plus plan preflight,
+        executing nothing and carrying no host services -- and therefore no
+        caller agent map. The legacy validator is never consulted for a v2
+        recipe; it ignores the `dependencies` manifest entirely and would call
+        such a recipe "valid" while knowing nothing about what it resolves to.
+
+        The result keeps the legacy validate operation's shape -- ``status``
+        and ``warnings`` on success, ``errors``/``warnings`` in ``error`` on
+        failure -- so a caller does not have to branch on schema version to
+        read it. Each finding additionally carries the library's typed
+        ``code`` and ``remedy``.
+        """
+        try:
+            report = await validate_v2_recipe(recipe_path)
+        except RecipeRunnerUnavailableError as exc:
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={"message": str(exc), "type": type(exc).__name__},
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        schema_version = (
+            report.schema_version
+            if report.schema_version is not None
+            else declared_schema_version(recipe_path)
+        )
+        warnings = [_validation_issue_dict(issue) for issue in report.warnings]
+
+        if report.ok:
+            return label_execution_mode(
+                ToolResult(
+                    success=True,
+                    output={
+                        "status": "valid",
+                        "recipe": recipe_display_name(recipe_path),
+                        "execution_mode": V2_EXECUTION_MODE,
+                        "schema_version": schema_version,
+                        "warnings": warnings,
+                    },
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        errors = [_validation_issue_dict(issue) for issue in report.errors]
+        return label_execution_mode(
+            ToolResult(
+                success=False,
+                error={
+                    "message": "Recipe validation failed",
+                    "type": errors[0]["code"] if errors else "ValidationFailed",
+                    "schema_version": schema_version,
+                    "errors": errors,
+                    "warnings": warnings,
+                },
+            ),
+            V2_EXECUTION_MODE,
+        )
 
     async def _list_approvals(self, input: dict[str, Any]) -> ToolResult:
         """List pending approvals across all sessions."""

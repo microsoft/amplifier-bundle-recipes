@@ -55,28 +55,38 @@ from .session import ApprovalStatus
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ACCEPTED_CONFIG_KEYS",
     "LEGACY_DEPRECATION_REMEDY",
     "LEGACY_EXECUTION_MODE",
+    "REJECTED_CONFIG_KEYS",
     "RUNNER_DISTRIBUTION",
     "RUNNER_IMPORT_NAME",
     "V2_EXECUTION_MODE",
+    "AdapterConfigError",
     "CallerAgentLeakError",
     "CoordinatorEventSink",
     "CoordinatorProviderAccess",
     "RecipeRunnerUnavailableError",
     "SessionApprovalCallback",
     "SessionCancellationToken",
+    "V2ResumeUnavailableError",
     "build_host_services",
     "build_run_request",
+    "build_validate_request",
+    "check_adapter_config",
     "declared_schema_version",
     "execution_mode_of",
     "find_caller_agent_leak",
     "is_v2_recipe",
+    "issue_for",
     "label_execution_mode",
     "legacy_deprecation_message",
+    "library_resume",
     "load_runner",
     "manifest_header",
+    "resume_v2_recipe",
     "run_v2_recipe",
+    "validate_v2_recipe",
     "warn_legacy_recipe",
 ]
 
@@ -104,6 +114,34 @@ LEGACY_DEPRECATION_REMEDY = (
 #: Import name and distribution name of the one execution home (lib.v1 Core 1).
 RUNNER_IMPORT_NAME = "amplifier_recipe_runner"
 RUNNER_DISTRIBUTION = "amplifier-recipe-runner"
+
+
+# ---------------------------------------------------------------------------
+# Adapter configuration (manifest.v1 Core 12's spirit: never silently inert)
+# ---------------------------------------------------------------------------
+
+#: Every config key ``mount()`` actually reads. Anything else is refused.
+ACCEPTED_CONFIG_KEYS = frozenset({"session_dir", "auto_cleanup_days"})
+
+#: Keys that are refused with a *specific* reason rather than the generic
+#: "not read" message, because the obvious reading of them is wrong rather
+#: than merely unsupported.
+REJECTED_CONFIG_KEYS: Mapping[str, str] = {
+    "legacy_mode": (
+        "Legacy mode is not a host setting -- it is decided by the recipe's own "
+        "manifest (recipe-dependency-manifest.v1 Core 1): a recipe declaring "
+        "`schema_version` runs in the runner library, one declaring none runs "
+        f"caller-bound as {LEGACY_EXECUTION_MODE!r}. A host able to force "
+        "legacy mode on could rebind a schema-v2 recipe's agents to the calling "
+        "session while the run still reported success -- the exact silent "
+        "failure schema v2 exists to end (Core 3). "
+        "`amplifier_recipe_runner.RunRequest.legacy_mode` is therefore always "
+        "False from this adapter, and legacy recipes never reach the library at "
+        "all: they run on the frozen caller-bound path (Core 10). "
+        "Remove this key; to run a recipe caller-bound, remove its "
+        "`schema_version` and accept the deprecation warning."
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +197,45 @@ class RecipeCancelledError(RuntimeError):
     """Raised by :class:`SessionCancellationToken` when the host cancelled."""
 
 
+class V2ResumeUnavailableError(RuntimeError):
+    """A mid-run v2 resume was asked for and the library exports no ``resume``.
+
+    ``recipe-runner-lib.v1`` Core 2 names four entry points; this library
+    version exports ``plan`` and ``run`` only (:func:`library_resume` returns
+    ``None``). Continuing a *partly completed* run means skipping the steps it
+    already finished, and only the library can do that -- doing it here would
+    re-run completed steps, or make this adapter a second execution home
+    (Core 1). So the resume is refused rather than approximated.
+
+    The same refusal shape the standalone CLI uses for the same gap
+    (``cli.py``'s ``EXIT_UNSUPPORTED`` branch); both disappear when the
+    library's ``resume`` lands.
+    """
+
+    def __init__(self, message: str, *, remedy: str) -> None:
+        self.message = message
+        self.remedy = remedy
+        super().__init__(f"{message} Remedy: {remedy}")
+
+
+class AdapterConfigError(ValueError):
+    """The ``recipes`` tool was configured with a key it does not read.
+
+    Mirrors ``recipe-dependency-manifest.v1`` Core 12's rule for
+    ``agent_config`` -- a setting is implemented or rejected, never silently
+    retained inert. A config key that looks honoured but changes nothing is
+    indistinguishable, from the outside, from one that works.
+    """
+
+    def __init__(self, key: str, detail: str) -> None:
+        self.key = key
+        self.detail = detail
+        super().__init__(
+            f"The recipes tool does not read config key {key!r}. {detail} "
+            f"Keys this module reads: {', '.join(sorted(ACCEPTED_CONFIG_KEYS))}."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Lazy import of the one execution home (lib.v1 Core 1)
 # ---------------------------------------------------------------------------
@@ -185,6 +262,45 @@ def runner_available() -> bool:
     except RecipeRunnerUnavailableError:
         return False
     return True
+
+
+def library_resume() -> Callable[..., Awaitable[Any]] | None:
+    """The library's ``resume`` entry point, or ``None`` if it exports none.
+
+    **The seam.** ``recipe-runner-lib.v1`` Core 2 names four entry points --
+    ``validate``, ``plan``, ``run``, ``resume``. The shipped library exports
+    ``plan`` and ``run``; ``resume`` is declared on the
+    :class:`~amplifier_recipe_runner.api.RecipeRunner` protocol with no
+    concrete implementation (tracked as recipes-4qf, superseding recipes-10s).
+
+    This is a lookup rather than a hard import so the moment that entry point
+    lands, :func:`resume_v2_recipe` routes to it with no change here -- and
+    until it does, the absence is reported as itself instead of being
+    approximated on a path that would re-run completed steps.
+    """
+    try:
+        runner = load_runner()
+    except RecipeRunnerUnavailableError:
+        return None
+    entry = getattr(runner, "resume", None)
+    return entry if callable(entry) else None
+
+
+def check_adapter_config(config: Mapping[str, Any] | None) -> None:
+    """Refuse a ``recipes`` tool config key this module does not read.
+
+    Raises:
+        AdapterConfigError: on the first unread key, named. Silence would make
+            a mis-spelled or unsupported setting indistinguishable from an
+            honoured one -- the failure mode ``recipe-dependency-manifest.v1``
+            Core 12 forbids for ``agent_config`` and Core 1 forbids for unknown
+            manifest keys. This module applies the same rule to itself.
+    """
+    for key in config or {}:
+        if key in ACCEPTED_CONFIG_KEYS:
+            continue
+        detail = REJECTED_CONFIG_KEYS.get(key, "It is ignored, so it would silently do nothing.")
+        raise AdapterConfigError(key, detail)
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +773,82 @@ async def build_host_services(
     return services
 
 
+def build_validate_request(recipe_path: Path) -> Any:
+    """A services-free ``RunRequest`` for ``validate`` / ``plan``.
+
+    ``services`` is ``None`` deliberately. Both entry points are side-effect
+    free and documented to work with no host wiring at all (``RunRequest``);
+    handing them the five ports would give a *validation* reach into the
+    calling session it has no reason to have. With no services the library
+    workspaces the plan at the recipe's own directory.
+
+    ``legacy_mode`` stays ``False`` for the same reason it does in
+    :func:`build_run_request`, and no host config can change it -- see
+    :data:`REJECTED_CONFIG_KEYS`.
+    """
+    runner = load_runner()
+    return runner.RunRequest(
+        recipe=Path(recipe_path),
+        context={},
+        services=None,
+        legacy_mode=False,
+    )
+
+
+def issue_for(exc: BaseException) -> Any:
+    """A library error as the library's own ``ValidationIssue``.
+
+    Mirrors the standalone CLI's ``_issue_for`` (``cli.py``) field for field,
+    so the same recipe validated through the tool and through the CLI reports
+    the same code, message, location and remedy. The typed error stays typed:
+    ``code`` is the exception class name, never a flattened string.
+    """
+    runner = load_runner()
+    return runner.ValidationIssue(
+        code=type(exc).__name__,
+        message=str(getattr(exc, "message", None) or exc),
+        location=str(getattr(exc, "location", None) or getattr(exc, "source", None) or "") or None,
+        remedy=getattr(exc, "remedy", None),
+    )
+
+
+async def validate_v2_recipe(
+    recipe_path: Path,
+    *,
+    plan: Callable[..., Awaitable[Any]] | None = None,
+) -> Any:
+    """Validate a schema-v2 recipe: manifest parse + plan preflight, no run.
+
+    ``recipe-runner-lib.v1`` Core 1 puts manifest parsing and dependency
+    resolution in the library, so this asks the library rather than growing a
+    second opinion: :func:`amplifier_recipe_runner.plan` parses the manifest,
+    resolves the declared closure, and raises the typed preflight errors. It
+    executes nothing and never sees a caller agent map -- the request carries
+    no services at all.
+
+    Args:
+        plan: injection seam for tests; defaults to the library's own ``plan``.
+
+    Returns:
+        The library's ``ValidationReport``. Every failure -- a manifest parse
+        error, a typed preflight refusal, or an environmental failure such as
+        an unreachable dependency source -- comes back as a finding whose
+        ``code`` is the real exception type, never as a fabricated ``ok``.
+    """
+    runner = load_runner()
+    request = build_validate_request(recipe_path)
+    try:
+        resolved = await (plan or runner.plan)(request)
+    except Exception as exc:  # noqa: BLE001 -- one place turns any failure into a finding
+        return runner.ValidationReport(
+            ok=False,
+            schema_version=None,
+            legacy=isinstance(exc, runner.LegacyRecipeError),
+            errors=(issue_for(exc),),
+        )
+    return runner.ValidationReport(ok=True, schema_version=resolved.schema_version, legacy=False)
+
+
 def build_run_request(
     recipe_path: Path,
     context_vars: Mapping[str, Any] | None,
@@ -668,7 +860,10 @@ def build_run_request(
     """Build the library's ``RunRequest``, and prove nothing leaked.
 
     ``legacy_mode`` stays ``False``: this adapter routes here only for recipes
-    that declare ``schema_version``, and a v2 recipe is never caller-bound.
+    that declare ``schema_version``, and a v2 recipe is never caller-bound. No
+    host config can flip it -- ``legacy_mode`` as a tool config key is refused
+    at mount (:data:`REJECTED_CONFIG_KEYS`), because a host able to set it
+    could rebind a v2 recipe's agents to the caller and still report success.
     """
     runner = load_runner()
     request = runner.RunRequest(
@@ -706,4 +901,70 @@ async def run_v2_recipe(
         coordinator, session_manager, project_path, session_id=session_id
     )
     request = build_run_request(recipe_path, context_vars, services, coordinator)
+    return await (run or runner.run)(request)
+
+
+async def resume_v2_recipe(
+    coordinator: Any,
+    session_manager: Any,
+    recipe_path: Path,
+    context_vars: Mapping[str, Any] | None,
+    project_path: Path,
+    *,
+    session_id: str | None = None,
+    run_id: str | None = None,
+    completed_steps: Sequence[str] = (),
+    resume: Callable[..., Awaitable[Any]] | None = None,
+    run: Callable[..., Awaitable[Any]] | None = None,
+) -> Any:
+    """Continue a schema-v2 run, through the library and only the library.
+
+    Two routes, in this order:
+
+    1. The library's ``resume`` entry point, when it exports one
+       (:func:`library_resume`). It replays recorded provenance and skips
+       completed steps -- ``recipe-dependency-manifest.v1`` Core 8.
+    2. Nothing completed, so resuming *is* running from the start: one
+       ``run`` call, against the recorded ``run_id``. This is the standalone
+       CLI's own reading of the same case (``cli.py``'s ``resume_command``),
+       and it re-runs nothing that already ran.
+
+    Anything else -- a partly completed run with no library ``resume`` -- is
+    refused with :class:`V2ResumeUnavailableError`. It is never resumed on the
+    legacy caller-bound path: that would resolve the recipe's agents from this
+    session instead of its declared dependencies (Core 3).
+
+    Args:
+        completed_steps: steps the recorded run reported finishing.
+        resume/run: injection seams for tests.
+    """
+    runner = load_runner()
+    services = await build_host_services(
+        coordinator, session_manager, project_path, session_id=session_id
+    )
+    request = build_run_request(
+        recipe_path, context_vars, services, coordinator, run_id=run_id
+    )
+
+    entry = resume or library_resume()
+    if entry is not None:
+        return await entry(request)
+
+    if completed_steps:
+        raise V2ResumeUnavailableError(
+            f"Run {run_id or '(unrecorded)'} stopped after "
+            f"{len(completed_steps)} completed step(s) "
+            f"({', '.join(completed_steps)}), and continuing mid-run needs the "
+            f"{RUNNER_DISTRIBUTION} library's `resume` entry point, which this "
+            "version does not export -- so the completed steps cannot be "
+            "skipped.",
+            remedy=(
+                "Re-run the recipe with the `execute` operation to redo every step "
+                "(the recorded run is left untouched), or upgrade to a runner "
+                "version whose library exposes `resume`. It was NOT resumed on the "
+                "legacy caller-bound path: that would resolve its agents from this "
+                "session instead of its declared dependencies."
+            ),
+        )
+
     return await (run or runner.run)(request)
