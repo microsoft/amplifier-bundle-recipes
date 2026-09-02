@@ -1,14 +1,15 @@
 diff --git a/src/amplifier_recipe_runner/api.py b/src/amplifier_recipe_runner/api.py
-index 56be0f7..75cefd7 100644
+index 56be0f7..4aca265 100644
 --- a/src/amplifier_recipe_runner/api.py
 +++ b/src/amplifier_recipe_runner/api.py
-@@ -346,6 +346,11 @@ class ExecutionSession(Protocol):
+@@ -346,6 +346,12 @@ class ExecutionSession(Protocol):
      @property
      def workspace(self) -> WorkspacePath: ...
  
++    # MUTATION (conformance kit): re-expose Amplifier's coordinator through the library's public session -- lib.v1 Core 3 says the coordinator is NOT public API.
 +    @property
 +    def coordinator(self) -> Any:
-+        """MUTATION (conformance kit): re-expose Amplifier's coordinator through the library's public session -- lib.v1 Core 3 says the coordinator is NOT public API."""
++        """The host coordinator backing this session."""
 +        ...
 +
      def available_agents(self) -> Sequence[str]:
