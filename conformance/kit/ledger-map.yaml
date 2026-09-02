@@ -4,7 +4,7 @@
 # The kit does NOT edit the ledger; the reconciler consumes this map and
 # decides dispositions. `coverage: partial` always names what is NOT covered.
 #
-# fixtures: 11 (5 GOOD, 6 BAD)
+# fixtures: 15 (9 GOOD, 6 BAD)
 kit:
   entrypoint: conformance/kit/kit.py
   run: python3 conformance/kit/kit.py --run
@@ -39,9 +39,10 @@ fixtures:
   - RCP-101
   - RCP-107
   - RCP-007
-  notes: Host B is a separate OS process. It prefers the real `recipe-runner` CLI when importable and
-    falls back to conformance/kit/host_adapter.py, reporting which surface it used. The Amplifier tool
-    adapter is not yet a runner host, so it is not compared -- see kit README residual R1.
+  notes: Host B is a separate OS process. It prefers the real `recipe-runner` CLI, invoked through its
+    DOCUMENTED dual entry point `python -m amplifier_recipe_runner plan --json`, and falls back to conformance/kit/host_adapter.py
+    where the CLI is not installed -- reporting which surface it used either way. The Amplifier tool adapter
+    is not yet a runner host, so it is not compared -- see kit README residual R1.
 - id: good-behavior-partial-composes-only-declared-contribution
   polarity: GOOD
   title: A behavior partial contributes only what it declares
@@ -133,6 +134,51 @@ fixtures:
   - RCP-001
   - RCP-010
   notes: Legacy handling belongs to the labeled Amplifier adapter; the standalone surface must reject.
+- id: probe-host-surface-is-exactly-the-five-ports
+  polarity: GOOD
+  title: 'Enumerated: the runner''s host-facing surface is the five ports and nothing else'
+  clauses:
+  - manifest.v1 Core 4
+  - lib.v1 Core 4
+  satisfies:
+  - RCP-004
+  - RCP-104
+  notes: 'ABSENCE PROBE. Enumerates HostServices, RunRequest, and every host entry point against an authored
+    expectation, then MEASURES -- in a fresh interpreter -- that importing the library pulls in no Amplifier
+    module. Discrimination: mutations/sixth-host-port.patch.'
+- id: probe-no-dependency-inferred-from-an-agent-namespace
+  polarity: GOOD
+  title: 'Enumerated: the resolver is asked for exactly the declared sources, never a namespace-derived
+    one'
+  clauses:
+  - manifest.v1 Core 11
+  satisfies:
+  - RCP-011
+  notes: 'ABSENCE PROBE. The undeclared reference''s namespace IS resolvable as a bundle source (asserted
+    as a control), so a namespace-inferring runner would SUCCEED here -- which is what makes the absence
+    meaningful. Discrimination: mutations/namespace-inferred-dependency.patch. This probe is orthogonal
+    to the row''s OPEN-PINNED interpretive ruling.'
+- id: probe-no-coordinator-in-the-public-api
+  polarity: GOOD
+  title: 'Enumerated: no Amplifier coordinator or session type appears in __all__ or any public signature'
+  clauses:
+  - lib.v1 Core 3
+  satisfies:
+  - RCP-103
+  notes: 'ABSENCE PROBE. Walks every name in the package''s `__all__`, its authored members, field annotations,
+    and signatures. Discrimination: mutations/coordinator-on-public-session.patch.'
+- id: probe-ports-are-the-five-contract-names-and-carry-no-agent-map
+  polarity: GOOD
+  title: 'Enumerated: HOST_PORTS is the five contract names and no port signature exposes an agent map'
+  clauses:
+  - lib.v1 Core 4
+  - manifest.v1 Core 4
+  satisfies:
+  - RCP-104
+  - RCP-004
+  notes: 'ABSENCE PROBE. Pins HOST_PORTS to the contract''s own five names in contract order, then scans
+    every port protocol and payload for an agent map. Discrimination: mutations/port-carries-agent-map.patch
+    -- which keeps exactly five ports and widens one, so only this probe catches it.'
 rows:
   RCP-001:
     coverage: partial
@@ -159,13 +205,17 @@ rows:
       an undeclared reference raises UndeclaredAgentError; a host-supplied colliding agent map is discarded.
       Both halves are discrimination-proved (mutations/caller-map-fallback.patch, mutations/host-agent-precedence.patch).'
   RCP-004:
-    coverage: partial
+    coverage: full
     fixtures:
     - good-declared-dependency-runs-from-lean-caller
-    covered: The execution session is built from the plan catalog alone; every host argument that could
-      widen it (agent_configs, parent_session, inheritance kwargs) is discarded and recorded.
-    not_covered: An enumerated absence probe over the runner's whole host surface -- proving NO host import
-      exists beyond the five ports -- is not implemented.
+    - probe-host-surface-is-exactly-the-five-ports
+    - probe-ports-are-the-five-contract-names-and-carry-no-agent-map
+    covered: 'Behaviourally: the execution session is built from the plan catalog alone; every host argument
+      that could widen it (agent_configs, parent_session, inheritance kwargs) is discarded and recorded.
+      By ENUMERATION: HostServices is exactly HOST_PORTS one field for one, RunRequest''s host-facing
+      fields are pinned by name, all seven host entry points are pinned parameter-for-parameter, `run`''s
+      three injectables are proved library-owned and free of foreign types, and a fresh interpreter importing
+      the library is MEASURED to pull in zero Amplifier modules. Discrimination-proved (mutations/sixth-host-port.patch).'
   RCP-005:
     coverage: full
     fixtures:
@@ -217,10 +267,15 @@ rows:
       is accepted and ignored), so neither the deprecation warning nor the byte-identical-behaviour half
       is checkable here. The byte-identical baseline is recipes-o6f''s deliverable (conformance/legacy-compat/).'
   RCP-011:
-    coverage: none
-    fixtures: []
-    not_covered: No absence probe for namespace inference. The row's disposition is OPEN-PINNED pending
-      an interpretive ruling, so the kit deliberately does not force one.
+    coverage: full
+    fixtures:
+    - probe-no-dependency-inferred-from-an-agent-namespace
+    covered: 'Absence probe: the sources handed to the resolver are compared against the sources the fixture
+      recipe declares, across a refused plan and two clean ones -- a namespace-derived source would appear
+      there. Non-vacuous by control: the undeclared reference''s namespace IS a resolvable bundle that
+      really supplies the referenced agent, so inference would have SUCCEEDED. Discrimination-proved (mutations/namespace-inferred-dependency.patch).'
+    not_covered: The probe establishes only that no dependency is inferred from a namespace; it takes
+      no position on this row's OPEN-PINNED interpretive ruling, which is the reconciler's call.
   RCP-012:
     coverage: none
     fixtures: []
@@ -246,19 +301,28 @@ rows:
     not_covered: '`validate` and `resume` are absent from the shipped surface (residual R2), so two of
       the four required entry points have no fixture.'
   RCP-103:
-    coverage: none
-    fixtures: []
-    not_covered: No absence probe over the exported surface for `coordinator` / Amplifier-internal session
-      objects. The kit uses the neutral session throughout, which is evidence but not an assertion.
+    coverage: full
+    fixtures:
+    - probe-no-coordinator-in-the-public-api
+    covered: 'Absence probe over the whole public API: every name in `__all__` is asserted library-owned,
+      and 127 authored members, field annotations, parameters and return types are scanned for `coordinator`
+      and Amplifier-session vocabulary AND for any type resolving outside the library and the standard
+      library -- which catches a host type arriving under an innocuous name. The scanner is proved live
+      against a tainted stand-in. Discrimination-proved (mutations/coordinator-on-public-session.patch).'
   RCP-104:
-    coverage: partial
+    coverage: full
     fixtures:
     - bad-colliding-caller-agent-cannot-alter-the-result
     - good-declared-dependency-runs-from-lean-caller
-    covered: 'No port carries agents in practice: the spawn adapter discards and records agent_configs,
-      parent_session, and inheritance kwargs, and still resolves from the plan.'
-    not_covered: An enumerated probe that HOST_PORTS is exactly the five contract names, and that no port
-      signature exposes an agent map, is not implemented.
+    - probe-host-surface-is-exactly-the-five-ports
+    - probe-ports-are-the-five-contract-names-and-carry-no-agent-map
+    covered: 'Behaviourally: no port carries agents in practice -- the spawn adapter discards and records
+      agent_configs, parent_session, and inheritance kwargs, and still resolves from the plan. By ENUMERATION:
+      HOST_PORTS is asserted equal to the contract''s own five names in contract order, HostServices carries
+      one field per port and no other, ports.__all__ is pinned, and every port protocol and payload is
+      scanned for agent-map vocabulary and for foreign types. Discrimination-proved twice over (mutations/sixth-host-port.patch
+      adds a sixth port; mutations/port-carries-agent-map.patch keeps five and widens one, and ONLY this
+      probe catches it).'
   RCP-105:
     coverage: partial
     fixtures:

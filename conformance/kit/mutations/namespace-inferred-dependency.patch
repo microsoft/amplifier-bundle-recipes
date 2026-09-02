@@ -1,0 +1,24 @@
+diff --git a/src/amplifier_recipe_runner/planner.py b/src/amplifier_recipe_runner/planner.py
+index 00c1769..e6db74a 100644
+--- a/src/amplifier_recipe_runner/planner.py
++++ b/src/amplifier_recipe_runner/planner.py
+@@ -271,6 +271,19 @@ async def plan(
+         resolved.append(_record_dependency(dependency, bundle))
+ 
+     step_ids, references = _walk_recipe(body)
++
++    # MUTATION (conformance kit): infer an undeclared dependency from the agent name's namespace (the `foundation:*` guess manifest.v1 Core 11 forbids) and resolve it.
++    from .manifest import Dependency as _Dependency
++
++    for _reference, _ in references:
++        _canonical = manifest.agents.get(_reference, _reference)
++        if ":" not in _canonical or catalog.resolve_reference(_canonical) is not None:
++            continue
++        _inferred = _Dependency(source=f"bundles/{_canonical.split(':', 1)[0]}", kind="bundle")
++        _bundle = await resolver.resolve(_inferred, workspace=workspace_path)
++        for _agent in _bundle.agents.values():
++            catalog.add(_agent, _bundle)
++
+     provenance = _build_provenance(catalog, references, manifest.agents)
+ 
+     return ExecutionPlan(
