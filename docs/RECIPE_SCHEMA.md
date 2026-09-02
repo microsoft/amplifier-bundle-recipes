@@ -2646,15 +2646,32 @@ Full results are always saved in the recipe session files. Use `recipes list` to
 
 ## Schema v2 — Dependency Manifests (DRAFT)
 
-> **DRAFT — not yet implemented. Field names are provisional.**
+> **DRAFT — the contract is DRAFT. Manifest key spellings are parser-verified.**
 >
-> This section is authored from the ratified seam contract
+> This section is authored from the seam contract
 > [`contracts/recipe-dependency-manifest.v1.md`](../contracts/recipe-dependency-manifest.v1.md)
-> (status DRAFT, 2026-09-01), *ahead of the parser*. Every behavior below is
-> contract-backed and cited to its clause. The **key spellings shown are not
-> yet verified against a parser implementation** and will be reconciled with it
-> before this DRAFT marker is removed — tracked by work item `recipes-yh0`.
-> Treat the semantics as settled and the spellings as subject to change.
+> (status DRAFT, 2026-09-01). Every behavior below is contract-backed and cited
+> to its clause.
+>
+> **Manifest key spellings are verified.** The earlier caveat — that the key
+> names here had never been checked against a parser — is resolved.
+> `schema_version`, `dependencies`, `dependencies[].source`,
+> `dependencies[].kind` and `dependencies[].required_agents` match the shipped
+> parser `amplifier_recipe_runner.manifest` (landed under work item
+> `recipes-yh0`, now resolved) and are additionally exercised by the 18 migrated
+> recipe/template/example files in this repository (`recipes-5we`). The
+> top-level `agents` alias map matches the same parser's `_parse_agent_aliases`,
+> verified by parsing this section's alias example and its worked example
+> through `parse_manifest` (`recipes-vci`).
+>
+> **What is still DRAFT.** The contract itself is status DRAFT, and the
+> behaviors described below that live *outside* manifest parsing —
+> preflight ordering and its typed failures (Core 6), resume and provenance
+> records (Core 7), and the capability intersection (Core 9) — are documented
+> from the contract and are **not** verified here against an end-to-end run.
+> The lock spellings (`locked` / `update-lock` / `unlocked`, `lock_version: 1`)
+> match the shipped runner's `api.LockMode` and `lockfile.LOCK_VERSION` by
+> inspection; their runtime semantics are likewise unverified here.
 >
 > Everything earlier in this document describes **schema v1**, which remains the
 > only executable format today. A recipe that does not declare
@@ -2694,6 +2711,9 @@ dependencies:                   # Required for v2 (manifest.v1 Core 1)
     kind: bundle | behavior     # (manifest.v1 Core 2)
     required_agents:            # Optional (manifest.v1 Core 2)
       - "namespace:agent-name"
+
+agents:                         # Optional alias map (manifest.v1 Core 3)
+  alias-name: "namespace:agent-name"
 
 steps: list[Step]               # As in v1, but `agent:` resolves closed-world
 ```
@@ -2759,22 +2779,36 @@ Two consequences worth internalizing:
   from agent-name namespaces (`manifest.v1` Core 11). You must declare the
   dependency explicitly.
 
-**Alias declaration — provisional shape.** The contract establishes that an
-alias may stand in for a canonical agent name (`manifest.v1` Core 3) but does
-not fix *where* aliases are declared. The form shown throughout this section —
-a per-dependency `aliases` map from alias to canonical name — is one
-provisional spelling; a top-level alias map is an equally contract-compatible
-alternative. This is exactly the kind of detail `recipes-yh0` will settle
-against the parser.
+**Alias declaration — the top-level `agents` map.** Aliases are declared once,
+at the recipe's top level, in an `agents` mapping from **bare alias** to
+**canonical `namespace:name`** (`manifest.v1` Core 3). This is the spelling the
+shipped parser implements.
+
+| Side | Rule |
+|------|------|
+| key (the alias) | Non-empty string that **must not contain `:`** — an alias is a bare name. |
+| value (the canonical name) | Non-empty string with **exactly one `:`**, both halves non-empty: `namespace:name`. |
+
+Two placement rules follow from Core 1, and both are parse ERRORs rather than
+quiet no-ops:
+
+- `agents` is a **manifest key**. Declaring it without `schema_version: 2` is an
+  error naming it, not a silently ignored block.
+- `agents` is **not** a per-dependency key. A `dependencies` entry accepts only
+  `source`, `kind` and `required_agents`; any other key there — including
+  `aliases` — is an error naming the offending key.
 
 ```yaml
+schema_version: 2
+
 dependencies:
   - source: "git+https://github.com/microsoft/amplifier-bundle-foundation@main"
     kind: bundle
     required_agents:
       - "foundation:zen-architect"
-    aliases:                       # PROVISIONAL SPELLING — semantics per Core 3
-      architect: "foundation:zen-architect"
+
+agents:                            # top-level alias map (Core 3)
+  architect: "foundation:zen-architect"
 
 steps:
   - id: "review"
@@ -2879,8 +2913,11 @@ A manifest cannot widen what the host or runner policy allows.
 
 In v1, `agent_config` is parsed but ignored. Under this schema it must be
 **either implemented or rejected at parse — never silently retained inert**
-(`manifest.v1` Core 12). Which of those two v2 chooses is an implementation
-decision not yet made; do not rely on v1's silent-no-op behavior persisting.
+(`manifest.v1` Core 12). The shipped parser takes the second option: a step
+declaring `agent_config` under `schema_version: 2` is a parse ERROR naming the
+step and the clause. Staged steps and nested `foreach` / `while` step bodies are
+walked as well, so it cannot hide in a sub-step. Declare the agent's dependency
+in `dependencies` instead — v1's silent-no-op behavior does not carry over.
 
 ### Legacy recipes (no `schema_version`)
 
@@ -2917,8 +2954,9 @@ dependencies:
     kind: bundle
     required_agents:
       - "foundation:zen-architect"
-    aliases:                          # PROVISIONAL SPELLING (see above)
-      architect: "foundation:zen-architect"
+
+agents:                               # top-level alias map (Core 3)
+  architect: "foundation:zen-architect"
 
 context:
   design_doc: "docs/DESIGN.md"
