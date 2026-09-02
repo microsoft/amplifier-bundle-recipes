@@ -4,7 +4,7 @@
 # The kit does NOT edit the ledger; the reconciler consumes this map and
 # decides dispositions. `coverage: partial` always names what is NOT covered.
 #
-# fixtures: 15 (9 GOOD, 6 BAD)
+# fixtures: 16 (9 GOOD, 7 BAD)
 kit:
   entrypoint: conformance/kit/kit.py
   run: python3 conformance/kit/kit.py --run
@@ -134,6 +134,17 @@ fixtures:
   - RCP-001
   - RCP-010
   notes: Legacy handling belongs to the labeled Amplifier adapter; the standalone surface must reject.
+- id: bad-errored-step-is-never-a-completed-step
+  polarity: BAD
+  title: A step that errored fails the run and is never reported completed
+  clauses:
+  - lib.v1 Core 8
+  satisfies:
+  - RCP-108
+  notes: 'The other half of Core 8. The preflight fixtures assert ''refused before anything ran''; this
+    one asserts the POST-preflight direction -- a step that really started and then errored. The failure
+    is an untyped RuntimeError, the shape a real spawn raises (recipes-30w: a run reported status ''completed''
+    with the errored step listed in completed_steps and the error visible only inside a summary).'
 - id: probe-host-surface-is-exactly-the-five-ports
   polarity: GOOD
   title: 'Enumerated: the runner''s host-facing surface is the five ports and nothing else'
@@ -352,10 +363,14 @@ rows:
     coverage: full
     fixtures:
     - bad-colliding-declared-dependencies-fail-preflight
+    - bad-errored-step-is-never-a-completed-step
     - bad-undeclared-agent-fails-preflight-before-side-effects
     covered: 'All four named preflight classes are asserted by type, not by exit code: UndeclaredAgentError,
       AgentCollisionError, TrustRefusedError, ProvenanceMismatchError. ''Never a fabricated success''
-      is asserted as FAILED status with 0 completed steps and 0 spawns on a refused run.'
+      is asserted in BOTH directions: before preflight, as FAILED status with 0 completed steps and 0
+      spawns on a refused run; and after it, as an untyped step failure giving FAILED status with the
+      error at the top level of the result and the errored step absent from completed_steps -- against
+      a faithful control run of the same recipe that still succeeds.'
   RCP-000:
     coverage: none
     fixtures: []

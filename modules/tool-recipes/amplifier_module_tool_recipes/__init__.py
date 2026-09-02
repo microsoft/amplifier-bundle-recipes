@@ -45,8 +45,11 @@ from .runner_adapter import label_execution_mode
 from .runner_adapter import load_runner
 from .runner_adapter import recipe_display_name
 from .runner_adapter import resume_v2_recipe
+from .closed_world import agent_provenance_record
 from .runner_adapter import provider_roles_label
 from .runner_adapter import run_v2_recipe
+from .runner_adapter import run_v2_recipe_in_session
+from .runner_adapter import V2_LEGACY_ENGINE_EXECUTION_MODE
 from .runner_adapter import validate_v2_recipe
 from .runner_adapter import warn_legacy_recipe
 from .session import ApprovalStatus
@@ -234,6 +237,30 @@ def _validation_issue_dict(issue: Any) -> dict[str, Any]:
 #: guessing. Written by `_record_v2_run`; read by `_resume_v2_recipe`.
 V2_RUN_STATE_KEY = "v2_run"
 
+#: Session-state key holding the plan's dependency identity and per-agent
+#: provenance for a v2 run, so this surface's identity is comparable against
+#: `recipe-runner plan --json` on any other surface (lib.v1 Core 7).
+V2_PROVENANCE_STATE_KEY = "v2_provenance"
+
+
+def _expand_session_dir(raw: Any, coordinator: Any) -> Path:
+    """Resolve the configured ``session_dir``, expanding ``{project}`` and ``~``.
+
+    ``{project}`` is the project the session belongs to -- the name of the
+    host's working directory. Left unexpanded it becomes a *literal* directory
+    called ``{project}`` on disk, which silently collects every project's
+    recipe sessions in one place under a path nobody chose.
+    """
+    text = str(raw)
+    if "{project}" in text:
+        working = None
+        getter = getattr(coordinator, "get_capability", None)
+        if callable(getter):
+            working = getter("session.working_dir")
+        project = Path(working).name if working else Path.cwd().name
+        text = text.replace("{project}", project)
+    return Path(text).expanduser()
+
 
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
     """
@@ -254,7 +281,9 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     check_adapter_config(config)
 
     # Initialize session manager
-    base_dir = Path(config.get("session_dir", "~/.amplifier/projects")).expanduser()
+    base_dir = _expand_session_dir(
+        config.get("session_dir", "~/.amplifier/projects"), coordinator
+    )
     auto_cleanup_days = config.get("auto_cleanup_days", 7)
     session_manager = SessionManager(base_dir, auto_cleanup_days)
 
@@ -550,7 +579,7 @@ Example:
             )
 
         try:
-            result = await run_v2_recipe(
+            result = await run_v2_recipe_in_session(
                 self.coordinator,
                 self.session_manager,
                 recipe_path,
@@ -571,6 +600,7 @@ Example:
                 status="errored",
                 completed_steps=None,
                 step_ids=None,
+                execution_mode=V2_LEGACY_ENGINE_EXECUTION_MODE,
             )
             return label_execution_mode(
                 ToolResult(
@@ -580,7 +610,7 @@ Example:
                         "type": type(exc).__name__,
                     },
                 ),
-                V2_EXECUTION_MODE,
+                V2_LEGACY_ENGINE_EXECUTION_MODE,
             )
 
         plan = result.plan
@@ -592,11 +622,22 @@ Example:
             status=getattr(result.status, "name", str(result.status)).lower(),
             completed_steps=list(result.completed_steps),
             step_ids=list(plan.step_ids) if plan is not None else None,
+            execution_mode=V2_LEGACY_ENGINE_EXECUTION_MODE,
+            provenance=(
+                agent_provenance_record(plan, run_id=result.run_id) if plan is not None else None
+            ),
         )
 
         return label_execution_mode(
-            self._v2_tool_result(result, runner, recipe_path, recipe_name, session_id),
-            V2_EXECUTION_MODE,
+            self._v2_tool_result(
+                result,
+                runner,
+                recipe_path,
+                recipe_name,
+                session_id,
+                execution_mode=V2_LEGACY_ENGINE_EXECUTION_MODE,
+            ),
+            V2_LEGACY_ENGINE_EXECUTION_MODE,
         )
 
     def _record_v2_run(
@@ -609,6 +650,8 @@ Example:
         status: str,
         completed_steps: list[str] | None,
         step_ids: list[str] | None,
+        execution_mode: str = V2_EXECUTION_MODE,
+        provenance: dict[str, Any] | None = None,
     ) -> None:
         """Record what a v2 run reported, into the bound Amplifier session.
 
@@ -626,7 +669,7 @@ Example:
         if session_id is None:
             return
         record = {
-            "execution_mode": V2_EXECUTION_MODE,
+            "execution_mode": execution_mode,
             "recipe_path": str(recipe_path),
             "schema_version": declared_schema_version(recipe_path),
             "run_id": run_id,
@@ -637,6 +680,11 @@ Example:
         try:
             state = self.session_manager.load_state(session_id, project_path)
             state[V2_RUN_STATE_KEY] = record
+            # Cross-surface identity (lib.v1 Core 7): the plan's dependency
+            # identity and per-agent provenance, persisted verbatim so this
+            # run is comparable against `recipe-runner plan --json`.
+            if provenance is not None:
+                state[V2_PROVENANCE_STATE_KEY] = provenance
             state["recipe_path"] = str(recipe_path)
             self.session_manager.save_state(session_id, project_path, state)
         except Exception as exc:
@@ -655,6 +703,7 @@ Example:
         recipe_path: Path,
         recipe_name: str,
         session_id: str | None,
+        execution_mode: str = V2_EXECUTION_MODE,
     ) -> ToolResult:
         """Translate the library's ``RunResult`` into a tool result.
 
@@ -665,7 +714,7 @@ Example:
         plan = result.plan
         output: dict[str, Any] = {
             "recipe": recipe_name,
-            "execution_mode": V2_EXECUTION_MODE,
+            "execution_mode": execution_mode,
             "schema_version": declared_schema_version(recipe_path),
             "run_id": result.run_id,
             "session_id": session_id,

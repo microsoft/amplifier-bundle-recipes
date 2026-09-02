@@ -1,0 +1,26 @@
+# BAD fixture recipe: everything here is DECLARED and preflight passes.
+# The failure this fixture is about happens later -- at execution time, inside
+# a step -- so the recipe itself must be entirely well formed.
+# lib.v1 Core 8 ("never a fabricated success").
+schema_version: 2
+name: errored-step
+description: >
+  Two declared agent steps. The kit runs this with a backend that raises an
+  untyped error on a chosen step, and asserts the errored step is never
+  reported completed and the run never reports success.
+
+dependencies:
+  - source: bundles/supplier
+    kind: bundle
+    required_agents:
+      - supplier:reviewer
+      - supplier:summarizer
+
+steps:
+  - id: review
+    agent: supplier:reviewer
+    instruction: Review the change.
+
+  - id: summarize
+    agent: supplier:summarizer
+    instruction: Summarize the review.
