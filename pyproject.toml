@@ -1,0 +1,41 @@
+# amplifier-bundle-recipes is a *hybrid* repo, following the pattern foundation's
+# docs/BUNDLE_GUIDE.md calls "bundle plus standalone uv-installable CLI" (exemplar:
+# amplifier-bundle-dot-runner): the directory is an Amplifier bundle (bundle.md,
+# agents/, behaviors/, recipes/, modules/) AND the root is a uv-installable Python
+# package shipping the runner library plus its `recipe-runner` console script.
+#
+# The library was relocated here from its own repo (2026-09-01 owner decision: no
+# new repos). It is the one execution home for schema_version:2 recipes
+# (contracts/recipe-runner-lib.v1.md Core 1); modules/tool-recipes is a thin
+# adapter over it and depends on this package from this same repo.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "amplifier-recipe-runner"
+version = "0.1.0"
+description = "Library-first recipe runner: dependency-declared, isolated recipe execution for Amplifier recipes."
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    # The console script imports click unconditionally, so it is a runtime
+    # dependency rather than an extra: `uv tool install` must yield a working
+    # `recipe-runner` with no extras named.
+    "click>=8.1",
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+recipe-runner = "amplifier_recipe_runner.cli:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/amplifier_recipe_runner"]
+exclude = ["src/amplifier_recipe_runner/tests"]
