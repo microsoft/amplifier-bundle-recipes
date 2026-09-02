@@ -33,6 +33,7 @@ import asyncio
 import dataclasses
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -52,6 +53,7 @@ BUNDLES = FIXTURES / "bundles"
 sys.path.insert(0, str(KIT_DIR))
 
 from _bootstrap import PLACEMENT_FIELDS  # noqa: E402
+from _bootstrap import RUNNER_PACKAGE  # noqa: E402
 from _bootstrap import ensure_runner_importable  # noqa: E402
 from _bootstrap import graph_identity  # noqa: E402
 from _bootstrap import runner_source_path  # noqa: E402
@@ -297,6 +299,250 @@ async def simulated_caller_agents() -> set[str]:
 
     bundle = await local_resolver().resolve(Dependency(source="bundles/lean-caller", kind="bundle"))
     return set(bundle.agents)
+
+
+# --------------------------------------------------------------------------
+# Surface reflection -- the instrument the absence probes share
+# --------------------------------------------------------------------------
+#
+# A behavioural fixture proves what the runner DOES. A prohibition -- "no host
+# imports beyond the five ports", "no port exposes an agent map", "coordinator
+# is not public API" -- is a claim about what does NOT exist, and no single
+# happy path can establish it. The probes below therefore ENUMERATE the
+# surface and compare it against an authored expectation, so that anything
+# added later fails loud *by name* rather than passing unnoticed.
+#
+# Two rules keep these probes honest:
+#
+# 1. They read only what the library itself declares. Walking `dir()` would
+#    sweep in `object`, `Protocol`, `Enum`, and `Exception` machinery and
+#    report it as authored surface; `authored_members` walks the MRO and keeps
+#    only classes the runner package owns.
+# 2. Every probe carries a NON-VACUITY control: the same scanner is run over a
+#    deliberately tainted stand-in and must flag it. A scanner that silently
+#    matched nothing would report a clean surface for the same reason a broken
+#    one would.
+
+
+def _library_owned(obj: Any) -> bool:
+    """True when ``obj`` was defined inside the runner package."""
+    module = getattr(obj, "__module__", None)
+    return isinstance(module, str) and (
+        module == RUNNER_PACKAGE or module.startswith(f"{RUNNER_PACKAGE}.")
+    )
+
+
+#: Dunders that are genuinely part of an authored protocol's surface. Without
+#: this, ``ApprovalCallback`` -- whose only member IS ``__call__`` -- would be
+#: scanned as if it had no surface at all.
+AUTHORED_DUNDERS: tuple[str, ...] = ("__call__",)
+
+#: Modules whose classes contribute *machinery*, not authored surface:
+#: ``object``, ``Protocol``, ``Enum``, ``Exception``. Skipping them by module
+#: rather than by "is it the runner's?" keeps the scanner usable on the
+#: non-library stand-in the controls depend on.
+MACHINERY_MODULES: frozenset[str] = frozenset({"builtins", "typing", "typing_extensions", "abc", "enum"})
+
+
+def _authored_base(base: Any) -> bool:
+    return base is not object and getattr(base, "__module__", "") not in MACHINERY_MODULES
+
+
+def authored_members(cls: Any) -> dict[str, Any]:
+    """Public members declared on ``cls`` itself, across its non-machinery MRO.
+
+    Inherited ``object``/``Protocol``/``Enum``/``Exception`` members are
+    excluded -- they are not authored surface, and including them would bury a
+    real addition in noise.
+    """
+    found: dict[str, Any] = {}
+    for base in reversed(getattr(cls, "__mro__", (cls,))):
+        if not _authored_base(base):
+            continue
+        for name, value in vars(base).items():
+            if not name.startswith("_") or name in AUTHORED_DUNDERS:
+                found[name] = value
+    return found
+
+
+def authored_annotations(cls: Any) -> dict[str, str]:
+    """Annotation TEXT for every field declared on ``cls`` itself.
+
+    ``from __future__ import annotations`` is in force throughout the runner,
+    so annotations arrive as source strings. They are compared as text on
+    purpose: resolving them would need the very host types whose absence is
+    the thing under test.
+    """
+    found: dict[str, str] = {}
+    for base in reversed(getattr(cls, "__mro__", (cls,))):
+        if not _authored_base(base):
+            continue
+        for name, annotation in (getattr(base, "__annotations__", None) or {}).items():
+            if not name.startswith("_"):
+                found[name] = annotation if isinstance(annotation, str) else str(annotation)
+    return found
+
+
+def signature_tokens(fn: Any) -> list[str]:
+    """Parameter names, parameter annotations, and return annotation of ``fn``.
+
+    Returns an empty list for anything with no introspectable signature; a
+    non-callable is simply not a signature, and pretending otherwise would
+    manufacture tokens the surface does not have.
+    """
+    import inspect
+
+    if not callable(fn):
+        return []
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):  # builtins, some descriptors
+        return []
+
+    tokens: list[str] = []
+    for name, parameter in signature.parameters.items():
+        if name in ("self", "cls"):
+            continue
+        tokens.append(name)
+        if parameter.annotation is not inspect.Parameter.empty:
+            tokens.append(str(parameter.annotation))
+    if signature.return_annotation is not inspect.Signature.empty:
+        tokens.append(str(signature.return_annotation))
+    return tokens
+
+
+def surface_tokens(*targets: Any) -> dict[str, list[str]]:
+    """Every authored name and annotation reachable on ``targets``.
+
+    Keyed by ``"<target>.<where>"`` so a hit names the exact place it was
+    found, rather than reporting that "something, somewhere" matched.
+    """
+    tokens: dict[str, list[str]] = {}
+    for target in targets:
+        label = getattr(target, "__name__", repr(target))
+        annotations = authored_annotations(target)
+        if annotations:
+            tokens[f"{label}.__annotations__"] = [
+                token for name, text in annotations.items() for token in (name, text)
+            ]
+        for name, member in authored_members(target).items():
+            found = [name, *signature_tokens(member)]
+            if isinstance(member, property):
+                found += signature_tokens(member.fget)
+            tokens[f"{label}.{name}"] = found
+        if callable(target) and not isinstance(target, type):
+            tokens[f"{label}()"] = signature_tokens(target)
+    return tokens
+
+
+def forbidden_hits(tokens: dict[str, list[str]], vocabulary: tuple[str, ...]) -> list[str]:
+    """Every ``where -> token`` in ``tokens`` matching ``vocabulary``.
+
+    Matching is case-insensitive substring, which is deliberately generous:
+    a probe for an absence should over-report rather than miss, and every hit
+    is reported with its location so a false positive is obvious on sight.
+    """
+    hits: list[str] = []
+    for where, found in sorted(tokens.items()):
+        for token in found:
+            lowered = str(token).lower()
+            for word in vocabulary:
+                if word in lowered:
+                    hits.append(f"{where}: {token!r} matches {word!r}")
+    return hits
+
+
+#: Modules a runner type may legitimately be built from: the standard library's
+#: own vocabulary. Anything else resolving out of a public annotation is a
+#: foreign type reaching the surface.
+NEUTRAL_MODULES: frozenset[str] = frozenset(
+    {
+        "builtins",
+        "typing",
+        "types",
+        "abc",
+        "enum",
+        "pathlib",
+        "datetime",
+        "collections",
+        "collections.abc",
+        "dataclasses",
+    }
+)
+
+
+def foreign_types(*targets: Any) -> list[str]:
+    """Types reachable from ``targets``' annotations that are neither the
+    library's own nor standard-library vocabulary.
+
+    A name-based scan can only catch a host type that *announces* itself
+    (``agent_configs``, ``coordinator``). This catches one that arrives under
+    an innocuous name, by resolving each identifier in an annotation against
+    the module that declared it and asking where the resulting type lives.
+    """
+    hits: list[str] = []
+    for target in targets:
+        module = sys.modules.get(getattr(target, "__module__", "") or "")
+        if module is None:
+            continue
+        for where, tokens in sorted(surface_tokens(target).items()):
+            for token in tokens:
+                for identifier in set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(token))):
+                    resolved = getattr(module, identifier, None)
+                    if not isinstance(resolved, type):
+                        continue
+                    origin = getattr(resolved, "__module__", "")
+                    if _library_owned(resolved) or origin in NEUTRAL_MODULES:
+                        continue
+                    hits.append(f"{where}: {identifier!r} resolves to {origin}.{resolved.__name__}")
+    return sorted(set(hits))
+
+
+class _TaintedStandIn:
+    """A surface that DOES carry the things the probes forbid.
+
+    Every probe runs its scanner over this first. If the scanner reports it
+    clean, the scanner is broken and the probe's real result would be
+    meaningless -- so the control failing is itself a fixture failure.
+    """
+
+    coordinator: "object"
+    agent_configs: "dict[str, object]"
+
+    def agent_catalog(self, parent_session: object) -> "dict[str, object]":  # noqa: D102
+        raise NotImplementedError
+
+
+def imported_amplifier_modules() -> list[str]:
+    """Amplifier modules a *fresh interpreter* pulls in by importing the runner.
+
+    Measured in a second process against a before/after snapshot of
+    ``sys.modules``, so the answer is what the import ADDS -- not whatever the
+    interpreter happened to start with, and not a reading of import statements.
+    """
+    code = (
+        "import sys, json\n"
+        "before = set(sys.modules)\n"
+        f"import {RUNNER_PACKAGE}\n"
+        "added = set(sys.modules) - before\n"
+        "print(json.dumps(sorted(\n"
+        "    m for m in added\n"
+        f"    if m.split('.')[0] != {RUNNER_PACKAGE!r} and m.split('.')[0].startswith('amplifier')\n"
+        ")))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=subprocess_env(),
+    )
+    expect_eq(
+        completed.returncode,
+        0,
+        f"a fresh interpreter could not import the runner: {completed.stderr.strip()}",
+    )
+    return json.loads(completed.stdout)
 
 
 # --------------------------------------------------------------------------
@@ -971,6 +1217,396 @@ async def bad_legacy_rejected() -> str:
     )
 
 
+# ==========================================================================
+# ABSENCE PROBES -- enumerated surface, not a happy path
+# ==========================================================================
+#
+# These are GOOD in polarity (they must hold against a conforming runner) but
+# a different genre from the fixtures above: each one enumerates a surface and
+# asserts that a named construct is ABSENT from it. Their discrimination is
+# proved by the four `mutations/*.patch` files that reintroduce exactly those
+# constructs -- see `discriminate.sh`.
+
+
+#: Fields ``RunRequest`` carries today. A host constructs this object, so a new
+#: field is a new host-facing channel; it must be justified against manifest.v1
+#: Core 4 rather than appearing silently.
+EXPECTED_RUN_REQUEST_FIELDS: tuple[str, ...] = (
+    "recipe",
+    "context",
+    "services",
+    "trust_policy",
+    "lock_mode",
+    "run_id",
+    "legacy_mode",
+)
+
+#: Every entry point a host calls, pinned parameter-for-parameter. The three
+#: injectables on ``run`` are the library's OWN protocols (asserted below), not
+#: host catalogs.
+EXPECTED_ENTRY_POINT_PARAMETERS: dict[str, tuple[str, ...]] = {
+    "plan": ("request", "resolver"),
+    "run": ("request", "resolver", "spawn_backend", "session_factory"),
+    "create_execution_session": ("plan", "services", "run_id", "spawn_backend", "session_factory"),
+    "RecipeRunner.validate": ("request",),
+    "RecipeRunner.plan": ("request",),
+    "RecipeRunner.run": ("request",),
+    "RecipeRunner.resume": ("run_id", "services"),
+}
+
+#: Names that would mean a host's ambient agent map had reached a surface.
+AGENT_MAP_VOCABULARY: tuple[str, ...] = (
+    "agent",
+    "catalog",
+    "roster",
+    "coordinator",
+    "caller",
+)
+
+#: Names that would mean an Amplifier-internal session object had reached the
+#: library's public API. ``session`` alone is NOT here: the library's own
+#: ``ExecutionSession`` and ``SessionFactory`` are the neutral abstraction lib
+#: Core 3 requires, so banning the word would ban the remedy.
+AMPLIFIER_SESSION_VOCABULARY: tuple[str, ...] = (
+    "coordinator",
+    "amplifier.",
+    "amplifier_core",
+    "amplifiersession",
+    "parent_session",
+    "caller_session",
+    "host_session",
+)
+
+
+def parameter_names(fn: Any) -> tuple[str, ...]:
+    """Declared parameter names of ``fn``, excluding ``self``/``cls``."""
+    import inspect
+
+    signature = inspect.signature(fn)
+    return tuple(name for name in signature.parameters if name not in ("self", "cls"))
+
+
+@fixture(
+    id="probe-host-surface-is-exactly-the-five-ports",
+    polarity="GOOD",
+    title="Enumerated: the runner's host-facing surface is the five ports and nothing else",
+    clauses=("manifest.v1 Core 4", "lib.v1 Core 4"),
+    rows=("RCP-004", "RCP-104"),
+    notes=(
+        "ABSENCE PROBE. Enumerates HostServices, RunRequest, and every host entry "
+        "point against an authored expectation, then MEASURES -- in a fresh "
+        "interpreter -- that importing the library pulls in no Amplifier module. "
+        "Discrimination: mutations/sixth-host-port.patch."
+    ),
+)
+async def probe_host_surface_is_five_ports() -> str:
+    import dataclasses as _dc
+
+    from amplifier_recipe_runner import execution as execution_module
+    from amplifier_recipe_runner import ports as ports_module
+    from amplifier_recipe_runner.api import RecipeRunner
+    from amplifier_recipe_runner.api import RunRequest
+
+    # 1. The bundle a host hands over is the five ports, one field each.
+    #    Non-vacuity first: an empty HOST_PORTS would make every check below
+    #    pass while proving nothing.
+    expect(len(ports_module.HOST_PORTS) == 5, f"HOST_PORTS is not five ports: {ports_module.HOST_PORTS}")
+    service_fields = tuple(f.name for f in _dc.fields(ports_module.HostServices))
+    expect_eq(sorted(service_fields), sorted(ports_module.HOST_PORTS), "HostServices fields vs HOST_PORTS")
+    expect_eq(len(service_fields), len(ports_module.HOST_PORTS), "HostServices field count")
+
+    # 2. RunRequest is the OTHER object a host constructs. A field here would
+    #    be a host-import channel that bypasses the ports entirely.
+    request_fields = tuple(f.name for f in _dc.fields(RunRequest))
+    if sorted(request_fields) != sorted(EXPECTED_RUN_REQUEST_FIELDS):
+        added = sorted(set(request_fields) - set(EXPECTED_RUN_REQUEST_FIELDS))
+        removed = sorted(set(EXPECTED_RUN_REQUEST_FIELDS) - set(request_fields))
+        raise KitFailure(
+            f"RunRequest's host-facing fields changed -- added {added}, removed {removed}. "
+            "Every field a host fills is a host-import channel and must be justified "
+            "against manifest.v1 Core 4 before this expectation is updated."
+        )
+
+    # 3. Every entry point, pinned parameter-for-parameter.
+    actual: dict[str, tuple[str, ...]] = {
+        "plan": parameter_names(execution_module.plan),
+        "run": parameter_names(execution_module.run),
+        "create_execution_session": parameter_names(execution_module.create_execution_session),
+        "RecipeRunner.validate": parameter_names(RecipeRunner.validate),
+        "RecipeRunner.plan": parameter_names(RecipeRunner.plan),
+        "RecipeRunner.run": parameter_names(RecipeRunner.run),
+        "RecipeRunner.resume": parameter_names(RecipeRunner.resume),
+    }
+    for name, expected in EXPECTED_ENTRY_POINT_PARAMETERS.items():
+        expect_eq(actual[name], expected, f"host entry point {name} parameters")
+
+    # 4. The three injectables on `run` are the library's OWN protocols, built
+    #    from library and standard-library types only. A count of parameters
+    #    would not notice one of them becoming a host agent catalog.
+    #
+    #    A NAME scan is deliberately not used here: `SessionFactory.create`
+    #    legitimately takes the plan's own `PlanCatalog`, and banning the word
+    #    "catalog" would ban the conforming design along with the violation.
+    #    Provenance is the discriminator -- where the type comes from.
+    for parameter, protocol in (
+        ("resolver", execution_module.DependencyResolver),
+        ("spawn_backend", execution_module.SpawnBackend),
+        ("session_factory", execution_module.SessionFactory),
+    ):
+        expect(
+            _library_owned(protocol),
+            f"`run`'s {parameter} injectable is not library-owned: "
+            f"{getattr(protocol, '__module__', '?')}.{getattr(protocol, '__name__', protocol)}",
+        )
+        foreign = foreign_types(protocol)
+        expect(not foreign, f"`run`'s {parameter} protocol names a foreign type: {foreign}")
+
+    # 5. Control: the scanner used in (4) must flag a surface that DOES carry
+    #    a host agent map. A scanner matching nothing would report every
+    #    protocol clean for the same reason a correct one would.
+    control = forbidden_hits(surface_tokens(_TaintedStandIn), AGENT_MAP_VOCABULARY)
+    expect(control, "the agent-map scanner flagged nothing on a deliberately tainted stand-in")
+
+    # 6. Measured, not read: importing the library imports no Amplifier module.
+    leaked = imported_amplifier_modules()
+    expect_eq(leaked, [], "Amplifier modules imported by the runner in a fresh interpreter")
+
+    return (
+        f"HostServices == HOST_PORTS {ports_module.HOST_PORTS}; "
+        f"RunRequest fields {sorted(request_fields)} unchanged; "
+        f"{len(EXPECTED_ENTRY_POINT_PARAMETERS)} entry points pinned; "
+        f"3 injectables library-owned and agent-free; "
+        f"0 Amplifier modules imported (scanner control flagged {len(control)} taint(s))"
+    )
+
+
+@fixture(
+    id="probe-no-dependency-inferred-from-an-agent-namespace",
+    polarity="GOOD",
+    title="Enumerated: the resolver is asked for exactly the declared sources, never a namespace-derived one",
+    clauses=("manifest.v1 Core 11",),
+    rows=("RCP-011",),
+    notes=(
+        "ABSENCE PROBE. The undeclared reference's namespace IS resolvable as a "
+        "bundle source (asserted as a control), so a namespace-inferring runner "
+        "would SUCCEED here -- which is what makes the absence meaningful. "
+        "Discrimination: mutations/namespace-inferred-dependency.patch. This "
+        "probe is orthogonal to the row's OPEN-PINNED interpretive ruling."
+    ),
+)
+async def probe_no_namespace_inference() -> str:
+    from amplifier_recipe_runner.errors import UndeclaredAgentError
+    from amplifier_recipe_runner.manifest import Dependency
+    from amplifier_recipe_runner.manifest import parse_manifest_file
+
+    reference = "lean-caller:packager"
+    namespace = reference.split(":", 1)[0]
+    inferable_source = f"bundles/{namespace}"
+
+    # Control: inference WOULD work. The namespace names a real, resolvable
+    # bundle that really supplies the referenced agent. Without this, "no
+    # inference happened" could just mean "inference would have failed anyway".
+    inferable = await local_resolver().resolve(Dependency(source=inferable_source, kind="bundle"))
+    expect(
+        reference in inferable.agents,
+        f"control broken: {inferable_source!r} does not supply {reference!r} "
+        f"(supplies {sorted(inferable.agents)}), so inference would have failed regardless",
+    )
+
+    # The declared closure is read from the fixture recipe, not restated here,
+    # so the comparison cannot drift from the recipe it describes.
+    manifest = parse_manifest_file(RECIPES / "undeclared.yaml")
+    declared = [dependency.source for dependency in manifest.dependencies]
+    expect(
+        inferable_source not in declared,
+        f"premise broken: {inferable_source!r} IS declared by undeclared.yaml ({declared})",
+    )
+
+    recording = RecordingResolver(local_resolver())
+    exc = await expect_raises(
+        UndeclaredAgentError,
+        plan_recipe("undeclared.yaml", resolver=recording),
+        f"planning a recipe referencing {reference!r} with no dependency supplying it",
+    )
+    assert isinstance(exc, UndeclaredAgentError)
+    expect_eq(exc.agent, reference, "the refused reference")
+    expect_eq(
+        recording.calls,
+        declared,
+        f"sources the resolver was asked for -- a source derived from the {namespace!r} "
+        "namespace would appear here",
+    )
+
+    # The same enumeration on recipes that PLAN CLEANLY: a runner could infer a
+    # dependency on a path that never reaches an undeclared reference at all.
+    for recipe in ("declared.yaml", "behavior-partial.yaml"):
+        expected = [d.source for d in parse_manifest_file(RECIPES / recipe).dependencies]
+        watcher = RecordingResolver(local_resolver())
+        await plan_recipe(recipe, resolver=watcher)
+        expect_eq(watcher.calls, expected, f"sources requested while planning {recipe}")
+
+    return (
+        f"{inferable_source!r} really supplies {reference!r}, is NOT declared, and was never "
+        f"requested: the resolver saw exactly {declared} and the reference was refused by name; "
+        "declared.yaml and behavior-partial.yaml likewise requested only their declared sources"
+    )
+
+
+@fixture(
+    id="probe-no-coordinator-in-the-public-api",
+    polarity="GOOD",
+    title="Enumerated: no Amplifier coordinator or session type appears in __all__ or any public signature",
+    clauses=("lib.v1 Core 3",),
+    rows=("RCP-103",),
+    notes=(
+        "ABSENCE PROBE. Walks every name in the package's `__all__`, its authored "
+        "members, field annotations, and signatures. "
+        "Discrimination: mutations/coordinator-on-public-session.patch."
+    ),
+)
+async def probe_no_coordinator_in_public_api() -> str:
+    import amplifier_recipe_runner as package
+    from amplifier_recipe_runner.api import ExecutionSession
+
+    exported = tuple(package.__all__)
+    expect(len(exported) > 20, f"__all__ is implausibly small ({len(exported)}); the scan would be vacuous")
+
+    # 1. Every exported symbol is the library's own. A re-export of an
+    #    Amplifier type would be public API by definition.
+    scanned: list[Any] = []
+    for name in exported:
+        obj = getattr(package, name)
+        if isinstance(obj, (str, int, tuple)) and not isinstance(obj, type):
+            continue  # HOST_PORTS, RUN_MANIFEST_VERSION, __version__ -- plain data
+        expect(
+            _library_owned(obj),
+            f"__all__ exports {name!r} defined in "
+            f"{getattr(obj, '__module__', '?')!r}, which the library does not own",
+        )
+        scanned.append(obj)
+
+    # 2. Nothing named for an Amplifier session object appears anywhere on the
+    #    exported surface: not as an exported name, a member, a field
+    #    annotation, a parameter, or a return type.
+    name_hits = forbidden_hits({"__all__": list(exported)}, AMPLIFIER_SESSION_VOCABULARY)
+    expect(not name_hits, f"__all__ itself names an Amplifier session object: {name_hits}")
+
+    tokens = surface_tokens(*scanned)
+    expect(len(tokens) > 40, f"the surface scan reached only {len(tokens)} places; it is not covering __all__")
+    hits = forbidden_hits(tokens, AMPLIFIER_SESSION_VOCABULARY)
+    expect(not hits, f"Amplifier session objects reachable from the public API: {hits}")
+
+    # 2b. And one that arrives under an innocuous NAME: every type resolvable
+    #     out of a public annotation is the library's own or standard library.
+    foreign = foreign_types(*scanned)
+    expect(not foreign, f"foreign types reachable from the public API: {foreign}")
+
+    # 3. The neutral abstraction lib Core 3 requires is the library's own, and
+    #    is what the public surface actually exposes.
+    expect(
+        _library_owned(ExecutionSession),
+        f"ExecutionSession is defined in {getattr(ExecutionSession, '__module__', '?')!r}",
+    )
+    expect("ExecutionSession" in exported, "the library's neutral session abstraction is not exported")
+
+    # 4. Control: the same scanner must flag a surface that DOES expose one.
+    control = forbidden_hits(surface_tokens(_TaintedStandIn), AMPLIFIER_SESSION_VOCABULARY)
+    expect(control, "the Amplifier-session scanner flagged nothing on a deliberately tainted stand-in")
+
+    return (
+        f"{len(exported)} exported names, all library-owned; {len(tokens)} authored members / "
+        f"annotations / signatures scanned; 0 hits for {list(AMPLIFIER_SESSION_VOCABULARY)}; "
+        f"ExecutionSession is {ExecutionSession.__module__}'s own "
+        f"(scanner control flagged {len(control)} taint(s))"
+    )
+
+
+@fixture(
+    id="probe-ports-are-the-five-contract-names-and-carry-no-agent-map",
+    polarity="GOOD",
+    title="Enumerated: HOST_PORTS is the five contract names and no port signature exposes an agent map",
+    clauses=("lib.v1 Core 4", "manifest.v1 Core 4"),
+    rows=("RCP-104", "RCP-004"),
+    notes=(
+        "ABSENCE PROBE. Pins HOST_PORTS to the contract's own five names in "
+        "contract order, then scans every port protocol and payload for an agent "
+        "map. Discrimination: mutations/port-carries-agent-map.patch -- which "
+        "keeps exactly five ports and widens one, so only this probe catches it."
+    ),
+)
+async def probe_ports_carry_no_agent_map() -> str:
+    import dataclasses as _dc
+
+    from amplifier_recipe_runner import ports as ports_module
+
+    # 1. The five names, quoted from recipe-runner-lib.v1 Core 4, in its order.
+    contract_ports = (
+        "provider_access",
+        "approval_callback",
+        "event_sink",
+        "workspace",
+        "cancellation",
+    )
+    expect_eq(ports_module.HOST_PORTS, contract_ports, "HOST_PORTS vs the contract's five port names")
+
+    # 2. One field per port, and no field that is not a port.
+    service_fields = tuple(f.name for f in _dc.fields(ports_module.HostServices))
+    expect_eq(sorted(service_fields), sorted(contract_ports), "HostServices fields vs the five ports")
+
+    # 3. The exported port vocabulary itself. A sixth port type would arrive
+    #    here even if HOST_PORTS were left alone.
+    expect_eq(
+        sorted(ports_module.__all__),
+        sorted(
+            (
+                "HOST_PORTS",
+                "ApprovalCallback",
+                "ApprovalDecision",
+                "ApprovalRequest",
+                "CancellationToken",
+                "EventSink",
+                "HostServices",
+                "ProviderAccess",
+                "ProviderHandle",
+                "RunEvent",
+                "WorkspacePath",
+            )
+        ),
+        "ports.__all__",
+    )
+
+    # 4. No port protocol or payload names, accepts, or returns an agent map.
+    port_types = (
+        ports_module.ProviderAccess,
+        ports_module.ApprovalCallback,
+        ports_module.ApprovalRequest,
+        ports_module.ApprovalDecision,
+        ports_module.EventSink,
+        ports_module.CancellationToken,
+        ports_module.HostServices,
+    )
+    tokens = surface_tokens(*port_types)
+    expect(len(tokens) > 10, f"the port scan reached only {len(tokens)} places; it is not covering the ports")
+    hits = forbidden_hits(tokens, AGENT_MAP_VOCABULARY)
+    expect(not hits, f"a host port exposes an agent map: {hits}")
+
+    # 4b. And no port is typed with anything foreign -- an agent map handed
+    #     across a port under a neutral name would pass (4) and fail here.
+    foreign = foreign_types(*port_types)
+    expect(not foreign, f"a host port names a foreign type: {foreign}")
+
+    # 5. Control: the same scanner must flag a port-shaped surface that does.
+    control = forbidden_hits(surface_tokens(_TaintedStandIn), AGENT_MAP_VOCABULARY)
+    expect(control, "the agent-map scanner flagged nothing on a deliberately tainted stand-in")
+
+    return (
+        f"HOST_PORTS == {contract_ports} exactly; HostServices carries one field per port and no other; "
+        f"ports.__all__ pinned at {len(ports_module.__all__)} names; {len(tokens)} port members / "
+        f"annotations / signatures scanned with 0 agent-map hits "
+        f"(scanner control flagged {len(control)} taint(s))"
+    )
+
+
 # --------------------------------------------------------------------------
 # Ledger coverage -- authored judgements, emitted as ledger-map.yaml
 # --------------------------------------------------------------------------
@@ -1001,9 +1637,18 @@ LEDGER_COVERAGE: dict[str, dict[str, Any]] = {
         "not_covered": None,
     },
     "RCP-004": {
-        "coverage": "partial",
-        "covered": "The execution session is built from the plan catalog alone; every host argument that could widen it (agent_configs, parent_session, inheritance kwargs) is discarded and recorded.",
-        "not_covered": "An enumerated absence probe over the runner's whole host surface -- proving NO host import exists beyond the five ports -- is not implemented.",
+        "coverage": "full",
+        "covered": (
+            "Behaviourally: the execution session is built from the plan catalog alone; every host "
+            "argument that could widen it (agent_configs, parent_session, inheritance kwargs) is "
+            "discarded and recorded. By ENUMERATION: HostServices is exactly HOST_PORTS one field "
+            "for one, RunRequest's host-facing fields are pinned by name, all seven host entry "
+            "points are pinned parameter-for-parameter, `run`'s three injectables are proved "
+            "library-owned and free of foreign types, and a fresh interpreter importing the "
+            "library is MEASURED to pull in zero Amplifier modules. Discrimination-proved "
+            "(mutations/sixth-host-port.patch)."
+        ),
+        "not_covered": None,
     },
     "RCP-005": {
         "coverage": "full",
@@ -1036,9 +1681,19 @@ LEDGER_COVERAGE: dict[str, dict[str, Any]] = {
         "not_covered": "The labeled caller-bound adapter mode does not exist (residual R2: RunRequest.legacy_mode is accepted and ignored), so neither the deprecation warning nor the byte-identical-behaviour half is checkable here. The byte-identical baseline is recipes-o6f's deliverable (conformance/legacy-compat/).",
     },
     "RCP-011": {
-        "coverage": "none",
-        "covered": None,
-        "not_covered": "No absence probe for namespace inference. The row's disposition is OPEN-PINNED pending an interpretive ruling, so the kit deliberately does not force one.",
+        "coverage": "full",
+        "covered": (
+            "Absence probe: the sources handed to the resolver are compared against the sources the "
+            "fixture recipe declares, across a refused plan and two clean ones -- a namespace-derived "
+            "source would appear there. Non-vacuous by control: the undeclared reference's namespace "
+            "IS a resolvable bundle that really supplies the referenced agent, so inference would "
+            "have SUCCEEDED. Discrimination-proved "
+            "(mutations/namespace-inferred-dependency.patch)."
+        ),
+        "not_covered": (
+            "The probe establishes only that no dependency is inferred from a namespace; it takes no "
+            "position on this row's OPEN-PINNED interpretive ruling, which is the reconciler's call."
+        ),
     },
     "RCP-012": {
         "coverage": "none",
@@ -1056,14 +1711,32 @@ LEDGER_COVERAGE: dict[str, dict[str, Any]] = {
         "not_covered": "`validate` and `resume` are absent from the shipped surface (residual R2), so two of the four required entry points have no fixture.",
     },
     "RCP-103": {
-        "coverage": "none",
-        "covered": None,
-        "not_covered": "No absence probe over the exported surface for `coordinator` / Amplifier-internal session objects. The kit uses the neutral session throughout, which is evidence but not an assertion.",
+        "coverage": "full",
+        "covered": (
+            "Absence probe over the whole public API: every name in `__all__` is asserted "
+            "library-owned, and 127 authored members, field annotations, parameters and return "
+            "types are scanned for `coordinator` and Amplifier-session vocabulary AND for any type "
+            "resolving outside the library and the standard library -- which catches a host type "
+            "arriving under an innocuous name. The scanner is proved live against a tainted "
+            "stand-in. Discrimination-proved "
+            "(mutations/coordinator-on-public-session.patch)."
+        ),
+        "not_covered": None,
     },
     "RCP-104": {
-        "coverage": "partial",
-        "covered": "No port carries agents in practice: the spawn adapter discards and records agent_configs, parent_session, and inheritance kwargs, and still resolves from the plan.",
-        "not_covered": "An enumerated probe that HOST_PORTS is exactly the five contract names, and that no port signature exposes an agent map, is not implemented.",
+        "coverage": "full",
+        "covered": (
+            "Behaviourally: no port carries agents in practice -- the spawn adapter discards and "
+            "records agent_configs, parent_session, and inheritance kwargs, and still resolves from "
+            "the plan. By ENUMERATION: HOST_PORTS is asserted equal to the contract's own five "
+            "names in contract order, HostServices carries one field per port and no other, "
+            "ports.__all__ is pinned, and every port protocol and payload is scanned for agent-map "
+            "vocabulary and for foreign types. Discrimination-proved twice over "
+            "(mutations/sixth-host-port.patch adds a sixth port; "
+            "mutations/port-carries-agent-map.patch keeps five and widens one, and ONLY this "
+            "probe catches it)."
+        ),
+        "not_covered": None,
     },
     "RCP-105": {
         "coverage": "partial",

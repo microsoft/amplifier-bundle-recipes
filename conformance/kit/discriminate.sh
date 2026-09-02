@@ -10,10 +10,25 @@
 # Mutations live in mutations/*.patch. Each one is a real regression the
 # contracts name:
 #
-#   caller-map-fallback.patch    -- the planner resolves an undeclared agent
-#                                   from the caller session (manifest.v1 Core 3)
-#   host-agent-precedence.patch  -- the spawn adapter honours the host's
-#                                   agent_configs (manifest.v1 Core 5)
+#   caller-map-fallback.patch          -- the planner resolves an undeclared
+#                                         agent from the caller session
+#                                         (manifest.v1 Core 3)
+#   host-agent-precedence.patch        -- the spawn adapter honours the host's
+#                                         agent_configs (manifest.v1 Core 5)
+#   sixth-host-port.patch              -- a SIXTH host port hands the host's
+#                                         agent map to the recipe
+#                                         (manifest.v1 Core 4)
+#   port-carries-agent-map.patch       -- still five ports, but an EXISTING one
+#                                         is widened to grant the agent map
+#                                         (lib.v1 Core 4)
+#   namespace-inferred-dependency.patch-- a dependency is guessed from an agent
+#                                         name's namespace (manifest.v1 Core 11)
+#   coordinator-on-public-session.patch-- the coordinator is re-exposed through
+#                                         the public session (lib.v1 Core 3)
+#
+# The last four are caught only by the enumerated ABSENCE PROBES in kit.py; the
+# behavioural fixtures sleep through three of them entirely, which is precisely
+# why the probes exist.
 #
 # Exit 0 only if EVERY mutation was caught. A mutation the kit sleeps through
 # is reported as a HOLE, loudly, and fails this script.
@@ -48,6 +63,31 @@ RUNNER_REPO="$(cd "$runner_src" && git rev-parse --show-toplevel 2>/dev/null)" |
 echo "kit:          $KIT_DIR"
 echo "runner repo:  $RUNNER_REPO"
 echo
+
+# ---------------------------------------------------------------------------
+# Refuse to mutate someone ELSE'S checkout
+# ---------------------------------------------------------------------------
+# `_bootstrap` prefers an already-importable copy, so an editable install
+# pointing at a sibling checkout silently wins over this repo's own `src/`.
+# This script MUTATES whatever it finds. Doing that to another repo -- possibly
+# another agent's working tree -- is not a risk worth taking for a proof that
+# was supposed to be about THIS repo's implementation.
+THIS_REPO="$(cd "$KIT_DIR" && git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -n "$THIS_REPO" && "$RUNNER_REPO" != "$THIS_REPO" ]]; then
+  if [[ "${ALLOW_EXTERNAL_RUNNER:-0}" != "1" ]]; then
+    echo "FATAL: the runner resolves to a checkout OUTSIDE this repo:" >&2
+    echo "         runner: $RUNNER_REPO" >&2
+    echo "         this:   $THIS_REPO" >&2
+    echo "       This script mutates the runner source; it will not mutate a tree" >&2
+    echo "       that is not this repo's." >&2
+    echo "       Pin the in-repo library and re-run:" >&2
+    echo "         PYTHONPATH=\"$THIS_REPO/src\" $0 $*" >&2
+    echo "       (Set ALLOW_EXTERNAL_RUNNER=1 only if mutating that tree is intended.)" >&2
+    exit 1
+  fi
+  echo "WARNING: mutating an EXTERNAL runner checkout at $RUNNER_REPO (ALLOW_EXTERNAL_RUNNER=1)."
+  echo
+fi
 
 # ---------------------------------------------------------------------------
 # Refuse to mutate a dirty tree -- reverting would clobber real work

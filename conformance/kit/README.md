@@ -49,11 +49,19 @@ Two things follow, and both are enforced here:
    still pass. A resume fixture where *every* resume fails proves nothing; so
    the faithful resume is asserted to succeed before the drifted one is
    asserted to fail.
+3. **Prohibitions are checked by enumeration, not by a happy path.** Four
+   contract clauses forbid something rather than requiring something, and no
+   passing run can establish an absence. The **absence probes** (§2.3) instead
+   enumerate the surface and compare it to an authored expectation, so an
+   addition fails loud *by name*. Each carries a non-vacuity control: the same
+   scanner is run over a deliberately tainted stand-in and must flag it — a
+   scanner that matched nothing would report a clean surface for the same
+   reason a correct one would.
 
 ## 2. Fixture inventory
 
-Run `kit.py --list` for the authoritative list. As of authoring: **11 fixtures,
-5 GOOD, 6 BAD.**
+Run `kit.py --list` for the authoritative list. As of authoring: **15 fixtures,
+9 GOOD, 6 BAD** — 5 behavioural GOOD, 6 BAD, and 4 absence probes (§2.3).
 
 ### GOOD
 
@@ -85,36 +93,78 @@ Two fixtures are built so a broken implementation cannot slip past them:
   the blocked remote one. Zero resolver calls is what proves the refusal
   preceded every fetch, rather than following the first one.
 
+### Absence probes — enumerated surface
+
+GOOD in polarity, but a different genre: each enumerates a surface and asserts
+that a named construct is **absent** from it.
+
+| Probe | Enumerates | Rows |
+|---|---|---|
+| `probe-host-surface-is-exactly-the-five-ports` | `HostServices` ≡ `HOST_PORTS`; `RunRequest`'s host-facing fields; all 7 host entry points pinned parameter-for-parameter; `run`'s three injectables proved library-owned and free of foreign types; and a **measured** fact — a fresh interpreter importing the library pulls in zero Amplifier modules. | RCP-004, RCP-104 |
+| `probe-no-dependency-inferred-from-an-agent-namespace` | The sources actually handed to the resolver vs the sources the recipe declares, across one refused plan and two clean ones. | RCP-011 |
+| `probe-no-coordinator-in-the-public-api` | Every name in `__all__` (all asserted library-owned) plus ~127 authored members, field annotations, parameters and return types — scanned for `coordinator`/Amplifier-session vocabulary **and** for any type resolving outside the library and the standard library. | RCP-103 |
+| `probe-ports-are-the-five-contract-names-and-carry-no-agent-map` | `HOST_PORTS` against the contract's own five names in contract order; `HostServices` one field per port; `ports.__all__`; every port protocol and payload scanned for agent-map vocabulary and foreign types. | RCP-104, RCP-004 |
+
+Three of these are built so they cannot pass vacuously:
+
+- The **namespace** probe's undeclared reference is `lean-caller:packager`, and
+  `bundles/lean-caller` really is a resolvable bundle that really supplies it —
+  asserted as a control. A namespace-inferring runner would therefore
+  *succeed*. Without that control, "no inference happened" could just mean
+  "inference would have failed anyway".
+- The **coordinator** and **port** probes run their scanner over
+  `_TaintedStandIn`, a class that does carry a `coordinator`, an
+  `agent_configs`, and an `agent_catalog(parent_session)`. If the scanner
+  reports it clean, the probe fails — the instrument is broken, so its real
+  result would be meaningless.
+- The **host surface** probe measures Amplifier imports in a second process
+  against a before/after `sys.modules` snapshot, so the answer is what the
+  import *adds* — not what the interpreter started with, and not a reading of
+  import statements.
+
+One deliberate non-choice: the port scan bans agent-map *names*
+(`agent`, `catalog`, `roster`, …) but the injectable scan does **not**.
+`SessionFactory.create` legitimately takes the plan's own `PlanCatalog`, and
+banning the word would ban the conforming design along with the violation.
+There, provenance is the discriminator — where the type comes from.
+
 ## 3. The discrimination proof
 
 `discriminate.sh` reintroduces known violations into the runner, runs the kit,
 and requires at least one fixture to fail. Then it reverts.
 
 ```
-$ ./conformance/kit/discriminate.sh
+$ PYTHONPATH="$PWD/src" ./conformance/kit/discriminate.sh
 === BASELINE (unmutated implementation) ===
-11/11 fixtures passed
-
-=== MUTATION: caller-map-fallback ===
-  intent: resolve an undeclared reference from the caller session's agent map
-[FAIL] BAD  bad-undeclared-agent-fails-preflight-before-side-effects
-10/11 fixtures passed
-CAUGHT
-
-=== MUTATION: host-agent-precedence ===
-  intent: give the HOST's agent_configs precedence over the plan catalog
-[FAIL] BAD  bad-colliding-caller-agent-cannot-alter-the-result
-10/11 fixtures passed
-CAUGHT
-
+15/15 fixtures passed
+...
 RESULT: DISCRIMINATING -- every mutation was caught, and the baseline passes.
 ```
+
+| Mutation | Reintroduces | Caught by |
+|---|---|---|
+| `caller-map-fallback` | an undeclared reference resolved from the caller session (manifest Core 3) | `bad-undeclared-agent-...` |
+| `host-agent-precedence` | the host's `agent_configs` taking precedence over the plan catalog (manifest Core 5) | `bad-colliding-caller-agent-...` |
+| `sixth-host-port` | a **sixth** port handing the host's agent map to the recipe (manifest Core 4) | both port probes |
+| `port-carries-agent-map` | still exactly five ports, but an **existing** one widened to grant the agent map (lib Core 4) | `probe-ports-...` **only** |
+| `namespace-inferred-dependency` | a dependency guessed from an agent name's namespace (manifest Core 11) | `probe-no-dependency-inferred-...` |
+| `coordinator-on-public-session` | the coordinator re-exposed through the public session (lib Core 3) | `probe-no-coordinator-...` |
+
+The last four are the reason the probes exist: the behavioural fixtures sleep
+through three of them entirely. `port-carries-agent-map` is the sharpest case —
+it keeps the port *count* correct, so only a probe that reads port
+*signatures* can see it.
 
 Mutations live in `mutations/*.patch` as reviewable unified diffs against the
 runner source. The script:
 
 - **refuses to run against a dirty runner checkout** — it will not risk
   reverting someone's uncommitted work;
+- **refuses to mutate a checkout outside this repo.** `_bootstrap` prefers an
+  already-importable copy, so an editable install pointing at a sibling
+  checkout silently wins over this repo's `src/` — and this script *mutates*
+  what it finds. It now names both paths and stops, printing the `PYTHONPATH`
+  pin to re-run correctly. `ALLOW_EXTERNAL_RUNNER=1` overrides, loudly;
 - reverts on **any** exit path (`trap ... EXIT`);
 - fails loudly with `HOLE:` if a mutation goes **unnoticed**. A kit that sleeps
   through a violation is a defect in the kit, and is reported as one.
@@ -139,9 +189,14 @@ Coverage at authoring time:
 
 | | Rows |
 |---|---|
-| `full` | RCP-003, RCP-005, RCP-006, RCP-106, RCP-108 |
-| `partial` | RCP-001, RCP-002, RCP-004, RCP-007, RCP-008, RCP-010, RCP-101, RCP-102, RCP-104, RCP-105, RCP-107 |
-| `none` | RCP-000, RCP-009, RCP-011, RCP-012, RCP-103 |
+| `full` | RCP-003, RCP-004, RCP-005, RCP-006, RCP-011, RCP-103, RCP-104, RCP-106, RCP-108 |
+| `partial` | RCP-001, RCP-002, RCP-007, RCP-008, RCP-010, RCP-101, RCP-102, RCP-105, RCP-107 |
+| `none` | RCP-000, RCP-009, RCP-012 |
+
+RCP-011 is `full` for the *clause* while still naming what the probe does not
+settle: the row's OPEN-PINNED interpretive ruling is the reconciler's call, and
+the probe takes no position on it. `ledger.yaml` itself is untouched by this
+lane.
 
 ## 5. Findings — implementation gaps, not kit gaps
 
@@ -156,7 +211,8 @@ filed, **not** worked around:
 | R3 | `RunRequest.legacy_mode` is accepted and never read — `execution.plan()` raises `LegacyRecipeError` regardless. The labeled caller-bound adapter mode does not exist, so neither the deprecation warning nor the byte-identical half of manifest Core 10 is checkable. | `recipes-akb` |
 | R4 | The Amplifier tool adapter is not a runner host, so the cross-host identity fixture compares two hosts, not the three lib.v1 names. | `recipes-akb` |
 | R5 | RECIPE_SCHEMA v2 has no capability-declaration field, so the third term of the Core 9 intersection has no source. RCP-009 is `coverage: none`. | `recipes-54n` |
-| R6 | Four prohibition rows (RCP-004, RCP-011, RCP-103, RCP-104) want enumerated absence probes over the runner's exported surface; the kit covers them behaviourally only. | `recipes-cuo` |
+| R6 | ~~Four prohibition rows want enumerated absence probes~~ **RESOLVED** (`recipes-cuo`): RCP-004, RCP-011, RCP-103 and RCP-104 now have absence probes (§2.3), each discrimination-proved by its own mutation. | `recipes-cuo` |
+| R8 | An editable install of `amplifier-recipe-runner` pointing at a sibling checkout shadows this repo's `src/`, so the kit — and, before this lane, `discriminate.sh` — silently exercised (and would have *mutated*) a different repo. `discriminate.sh` now refuses; `kit.py` already labels every run `[in-repo]`/`[external]`. The `_bootstrap` search order itself is unchanged, being library-adjacent and out of this lane's scope. | not filed |
 | R7 | RCP-012 (`agent_config` retained inert) is a VIOLATION on the shipped **tool module**, a surface this kit does not drive. Recorded as `coverage: none` with that reason. | ledger row already carries `recipes-yh0` |
 
 ## 6. Layout
@@ -166,7 +222,7 @@ kit.py              the checker: fixture registry, assertions, --list/--run/--le
 _bootstrap.py       locates amplifier-recipe-runner; the shared graph-identity serializer
 host_adapter.py     a SECOND host -- a standalone process, for the cross-host fixture
 discriminate.sh     the discrimination proof
-mutations/*.patch   known regressions, as reviewable diffs
+mutations/*.patch   known regressions, as reviewable diffs (6)
 ledger-map.yaml     GENERATED -- fixture -> ledger row wiring, for the reconciler
 fixtures/bundles/   supplier (declared), impostor (colliding), lean-caller (the caller)
 fixtures/recipes/   one recipe per fixture
