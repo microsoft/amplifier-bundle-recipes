@@ -192,12 +192,21 @@ class ProviderPreferenceConfig:
     """Provider/model preference for step-level provider selection.
 
     Used in provider_preferences list to specify fallback order.
-    The system tries each provider in order until one is available.
+    The system tries each entry in order until one is available.
 
-    Specify provider and optional model pattern for each preference.
+    Two mutually exclusive entry forms:
+
+    - Class entry (provider-agnostic): ``class: reasoning`` resolves through the
+      ``model_role_resolver`` capability to the best available model for that
+      role/class.
+    - Provider entry (explicit): ``provider`` plus optional ``model`` pattern.
+
+    ``class`` is a Python reserved word, so YAML ``class:`` is stored on the
+    ``model_class`` field (same pattern as ``as`` -> ``as_var``).
 
     Example YAML:
         provider_preferences:
+          - class: reasoning
           - provider: anthropic
             model: claude-haiku-*
           - provider: openai
@@ -205,13 +214,38 @@ class ProviderPreferenceConfig:
 
     provider: str = ""  # Provider ID (e.g., "anthropic", "openai")
     model: str = ""  # Model name or glob pattern (e.g., "claude-haiku-*")
+    model_class: str = ""  # Model role/class from YAML "class" (e.g., "reasoning")
 
     def validate(self) -> list[str]:
         """Validate preference configuration."""
         errors = []
-        if not self.provider:
-            errors.append("provider_preferences entry must have 'provider' field")
+        if self.model_class:
+            if self.provider:
+                errors.append(
+                    "provider_preferences entry cannot set both 'class' and "
+                    "'provider' - use separate entries"
+                )
+            if self.model:
+                errors.append(
+                    "provider_preferences entry cannot set both 'class' and "
+                    "'model' - use separate entries"
+                )
+        elif not self.provider:
+            errors.append(
+                "provider_preferences entry must have either a 'class' or a "
+                "'provider' field"
+            )
         return errors
+
+
+# YAML key -> ProviderPreferenceConfig field name. Any other key in a
+# provider_preferences entry is a validation error naming the offending key,
+# never a raw dataclass TypeError.
+PROVIDER_PREFERENCE_KEY_MAP: dict[str, str] = {
+    "class": "model_class",
+    "provider": "provider",
+    "model": "model",
+}
 
 
 @dataclass
@@ -659,10 +693,13 @@ class Recipe:
         if "provider_preferences" in step_data_copy:
             prefs_data = step_data_copy["provider_preferences"]
             if isinstance(prefs_data, list):
+                step_id = step_data_copy.get("id", "<unknown>")
                 parsed_prefs = []
-                for p in prefs_data:
+                for i, p in enumerate(prefs_data):
                     if isinstance(p, dict):
-                        parsed_prefs.append(ProviderPreferenceConfig(**p))
+                        parsed_prefs.append(
+                            cls._parse_provider_preference(step_id, i, p)
+                        )
                     else:
                         parsed_prefs.append(p)
                 step_data_copy["provider_preferences"] = parsed_prefs
@@ -673,6 +710,35 @@ class Recipe:
             raise ValueError(f"retry must be a mapping, got {type(retry).__name__}")
 
         return Step(**step_data_copy)
+
+    @classmethod
+    def _parse_provider_preference(
+        cls, step_id: str, index: int, pref_data: dict[str, Any]
+    ) -> ProviderPreferenceConfig:
+        """Parse one provider_preferences entry, rejecting unknown keys.
+
+        Maps YAML ``class:`` onto the ``model_class`` field and raises a
+        readable ValueError naming any unrecognized key, rather than letting a
+        raw dataclass TypeError escape from ``Recipe.from_yaml``.
+        """
+        kwargs: dict[str, Any] = {}
+        unknown: list[str] = []
+        for key, value in pref_data.items():
+            field_name = PROVIDER_PREFERENCE_KEY_MAP.get(str(key))
+            if field_name is None:
+                unknown.append(str(key))
+            else:
+                kwargs[field_name] = value
+
+        if unknown:
+            valid = ", ".join(f"'{k}'" for k in PROVIDER_PREFERENCE_KEY_MAP)
+            offending = ", ".join(f"'{k}'" for k in unknown)
+            raise ValueError(
+                f"Step '{step_id}': provider_preferences[{index}]: "
+                f"unknown key(s) {offending}; valid keys are {valid}"
+            )
+
+        return ProviderPreferenceConfig(**kwargs)
 
     @classmethod
     def _parse_approval_config(
@@ -734,7 +800,10 @@ class Recipe:
             stages_data = data["stages"]
             if not isinstance(stages_data, list):
                 raise ValueError("'stages' must be a list")
-            stages = [cls._parse_stage(sd) for sd in stages_data]
+            try:
+                stages = [cls._parse_stage(sd) for sd in stages_data]
+            except ValueError as e:
+                raise ValueError(f"{path}: {e}") from e
 
         # Parse flat steps (original mode)
         steps: list[Step] = []
@@ -742,7 +811,10 @@ class Recipe:
             steps_data = data["steps"]
             if not isinstance(steps_data, list):
                 raise ValueError("'steps' must be a list")
-            steps = [cls._parse_step(sd) for sd in steps_data]
+            try:
+                steps = [cls._parse_step(sd) for sd in steps_data]
+            except ValueError as e:
+                raise ValueError(f"{path}: {e}") from e
 
         # Parse recipe-level recursion config if present
         recursion_config = None

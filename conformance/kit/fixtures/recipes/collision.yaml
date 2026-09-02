@@ -1,0 +1,16 @@
+# BAD fixture recipe: two declared dependencies each supply supplier:reviewer.
+# manifest.v1 Core 5 -- never resolved by precedence.
+schema_version: 2
+name: colliding-dependencies
+description: Declares both supplier and impostor. Must fail preflight.
+
+dependencies:
+  - source: bundles/supplier
+    kind: bundle
+  - source: bundles/impostor
+    kind: bundle
+
+steps:
+  - id: review
+    agent: supplier:reviewer
+    instruction: Review the change.

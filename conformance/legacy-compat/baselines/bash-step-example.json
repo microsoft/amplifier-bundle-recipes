@@ -1,0 +1,577 @@
+{
+  "caller_agents": [],
+  "case": "bash-step-example",
+  "covers": [
+    "bash steps",
+    "bash exit-code capture (output_exit_code)",
+    "conditional step gated on a bash exit code",
+    "on_error:continue",
+    "cwd override",
+    "env var substitution"
+  ],
+  "events": [
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+        "name": "bash-step-example",
+        "status": "running",
+        "steps": [
+          {
+            "id": "simple-echo",
+            "name": "simple-echo",
+            "status": "running"
+          },
+          {
+            "id": "env-vars",
+            "name": "env-vars",
+            "status": "pending"
+          },
+          {
+            "id": "multi-line",
+            "name": "multi-line",
+            "status": "pending"
+          },
+          {
+            "id": "check-command",
+            "name": "check-command",
+            "status": "pending"
+          },
+          {
+            "id": "report-success",
+            "name": "report-success",
+            "status": "pending"
+          },
+          {
+            "id": "list-tmp",
+            "name": "list-tmp",
+            "status": "pending"
+          },
+          {
+            "id": "summary",
+            "name": "summary",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 7
+      },
+      "event": "recipe:start"
+    },
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+        "name": "bash-step-example",
+        "status": "running",
+        "steps": [
+          {
+            "id": "simple-echo",
+            "name": "simple-echo",
+            "status": "running"
+          },
+          {
+            "id": "env-vars",
+            "name": "env-vars",
+            "status": "pending"
+          },
+          {
+            "id": "multi-line",
+            "name": "multi-line",
+            "status": "pending"
+          },
+          {
+            "id": "check-command",
+            "name": "check-command",
+            "status": "pending"
+          },
+          {
+            "id": "report-success",
+            "name": "report-success",
+            "status": "pending"
+          },
+          {
+            "id": "list-tmp",
+            "name": "list-tmp",
+            "status": "pending"
+          },
+          {
+            "id": "summary",
+            "name": "summary",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 7
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 1,
+        "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+        "name": "bash-step-example",
+        "status": "running",
+        "steps": [
+          {
+            "id": "simple-echo",
+            "name": "simple-echo",
+            "status": "completed"
+          },
+          {
+            "id": "env-vars",
+            "name": "env-vars",
+            "status": "running"
+          },
+          {
+            "id": "multi-line",
+            "name": "multi-line",
+            "status": "pending"
+          },
+          {
+            "id": "check-command",
+            "name": "check-command",
+            "status": "pending"
+          },
+          {
+            "id": "report-success",
+            "name": "report-success",
+            "status": "pending"
+          },
+          {
+            "id": "list-tmp",
+            "name": "list-tmp",
+            "status": "pending"
+          },
+          {
+            "id": "summary",
+            "name": "summary",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 7
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 2,
+        "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+        "name": "bash-step-example",
+        "status": "running",
+        "steps": [
+          {
+            "id": "simple-echo",
+            "name": "simple-echo",
+            "status": "completed"
+          },
+          {
+            "id": "env-vars",
+            "name": "env-vars",
+            "status": "completed"
+          },
+          {
+            "id": "multi-line",
+            "name": "multi-line",
+            "status": "running"
+          },
+          {
+            "id": "check-command",
+            "name": "check-command",
+            "status": "pending"
+          },
+          {
+            "id": "report-success",
+            "name": "report-success",
+            "status": "pending"
+          },
+          {
+            "id": "list-tmp",
+            "name": "list-tmp",
+            "status": "pending"
+          },
+          {
+            "id": "summary",
+            "name": "summary",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 7
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 3,
+        "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+        "name": "bash-step-example",
+        "status": "running",
+        "steps": [
+          {
+            "id": "simple-echo",
+            "name": "simple-echo",
+            "status": "completed"
+          },
+          {
+            "id": "env-vars",
+            "name": "env-vars",
+            "status": "completed"
+          },
+          {
+            "id": "multi-line",
+            "name": "multi-line",
+            "status": "completed"
+          },
+          {
+            "id": "check-command",
+            "name": "check-command",
+            "status": "running"
+          },
+          {
+            "id": "report-success",
+            "name": "report-success",
+            "status": "pending"
+          },
+          {
+            "id": "list-tmp",
+            "name": "list-tmp",
+            "status": "pending"
+          },
+          {
+            "id": "summary",
+            "name": "summary",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 7
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 4,
+        "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+        "name": "bash-step-example",
+        "status": "running",
+        "steps": [
+          {
+            "id": "simple-echo",
+            "name": "simple-echo",
+            "status": "completed"
+          },
+          {
+            "id": "env-vars",
+            "name": "env-vars",
+            "status": "completed"
+          },
+          {
+            "id": "multi-line",
+            "name": "multi-line",
+            "status": "completed"
+          },
+          {
+            "id": "check-command",
+            "name": "check-command",
+            "status": "completed"
+          },
+          {
+            "id": "report-success",
+            "name": "report-success",
+            "status": "running"
+          },
+          {
+            "id": "list-tmp",
+            "name": "list-tmp",
+            "status": "pending"
+          },
+          {
+            "id": "summary",
+            "name": "summary",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 7
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 5,
+        "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+        "name": "bash-step-example",
+        "status": "running",
+        "steps": [
+          {
+            "id": "simple-echo",
+            "name": "simple-echo",
+            "status": "completed"
+          },
+          {
+            "id": "env-vars",
+            "name": "env-vars",
+            "status": "completed"
+          },
+          {
+            "id": "multi-line",
+            "name": "multi-line",
+            "status": "completed"
+          },
+          {
+            "id": "check-command",
+            "name": "check-command",
+            "status": "completed"
+          },
+          {
+            "id": "report-success",
+            "name": "report-success",
+            "status": "completed"
+          },
+          {
+            "id": "list-tmp",
+            "name": "list-tmp",
+            "status": "running"
+          },
+          {
+            "id": "summary",
+            "name": "summary",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 7
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 6,
+        "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+        "name": "bash-step-example",
+        "status": "running",
+        "steps": [
+          {
+            "id": "simple-echo",
+            "name": "simple-echo",
+            "status": "completed"
+          },
+          {
+            "id": "env-vars",
+            "name": "env-vars",
+            "status": "completed"
+          },
+          {
+            "id": "multi-line",
+            "name": "multi-line",
+            "status": "completed"
+          },
+          {
+            "id": "check-command",
+            "name": "check-command",
+            "status": "completed"
+          },
+          {
+            "id": "report-success",
+            "name": "report-success",
+            "status": "completed"
+          },
+          {
+            "id": "list-tmp",
+            "name": "list-tmp",
+            "status": "completed"
+          },
+          {
+            "id": "summary",
+            "name": "summary",
+            "status": "running"
+          }
+        ],
+        "total_steps": 7
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 7,
+        "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+        "name": "bash-step-example",
+        "status": "completed",
+        "steps": [
+          {
+            "id": "simple-echo",
+            "name": "simple-echo",
+            "status": "completed"
+          },
+          {
+            "id": "env-vars",
+            "name": "env-vars",
+            "status": "completed"
+          },
+          {
+            "id": "multi-line",
+            "name": "multi-line",
+            "status": "completed"
+          },
+          {
+            "id": "check-command",
+            "name": "check-command",
+            "status": "completed"
+          },
+          {
+            "id": "report-success",
+            "name": "report-success",
+            "status": "completed"
+          },
+          {
+            "id": "list-tmp",
+            "name": "list-tmp",
+            "status": "completed"
+          },
+          {
+            "id": "summary",
+            "name": "summary",
+            "status": "completed"
+          }
+        ],
+        "success": true,
+        "total_steps": 7
+      },
+      "event": "recipe:complete"
+    }
+  ],
+  "final_context": {
+    "check_code": "0",
+    "echo_result": "Hello from bash step\n",
+    "env_result": "Project: LegacyCompat, User: recipe-runner\n",
+    "final_summary": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-runner\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+    "greeting": "Hello from bash step",
+    "project_name": "LegacyCompat",
+    "recipe": {
+      "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+      "name": "bash-step-example",
+      "version": "1.0.0"
+    },
+    "session": {
+      "id": "<SESSION_ID>",
+      "project": "<WORKSPACE>",
+      "started": "<TIMESTAMP>"
+    },
+    "step": {
+      "id": "summary",
+      "index": 6
+    },
+    "success_message": "Directory check passed!\n",
+    "system_info": "=== System Info ===\nDate: <DATE>\nHostname: <HOSTNAME>\nPWD: <WORKSPACE>\n",
+    "tmp_listing": "<VOLATILE>"
+  },
+  "harness_version": 1,
+  "notes": "Pure bash recipe: no agent spawns at all. Proves the engine's bash path (substitution, env, cwd, exit codes, conditions) is unchanged.",
+  "outcome": {
+    "final_error": null,
+    "final_status": "completed",
+    "final_success": true,
+    "tool_call_count": 1
+  },
+  "progress": [
+    {
+      "level": "info",
+      "message": "📋 Starting recipe: bash-step-example (7 steps)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [1/7] simple-echo (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [2/7] env-vars (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [3/7] multi-line (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [4/7] check-command (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [5/7] report-success (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [6/7] list-tmp (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [7/7] summary (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "✅ Recipe completed: bash-step-example",
+      "source": "recipe"
+    }
+  ],
+  "provenance": {
+    "agent_spawn_count": 0,
+    "agent_spawns": [],
+    "agents_by_step": {}
+  },
+  "recipe": "examples/bash-step-example.yaml",
+  "recipe_sha256": "d1d68cd6b60a0651eb3003d3133149a29db15b17eb96da4dececc1a938c93c2b",
+  "tool_calls": [
+    {
+      "error": null,
+      "input": {
+        "context": {
+          "greeting": "Hello from bash step",
+          "project_name": "LegacyCompat"
+        },
+        "operation": "execute",
+        "recipe_path": "<REPO>/examples/bash-step-example.yaml"
+      },
+      "output": {
+        "recipe": "bash-step-example",
+        "session_id": "<SESSION_ID>",
+        "status": "completed",
+        "summary": {
+          "available_outputs": [
+            "project_name",
+            "greeting",
+            "echo_result",
+            "env_result",
+            "system_info",
+            "check_code",
+            "success_message",
+            "tmp_listing",
+            "final_summary"
+          ],
+          "final_output": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-runner\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+          "final_output_key": "final_summary",
+          "full_results_location": "Full results saved in recipe session: <SESSION_ID>. Use 'recipes list' to see session details.",
+          "last_step": {
+            "id": "summary",
+            "index": 6
+          },
+          "recipe_metadata": {
+            "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
+            "name": "bash-step-example",
+            "version": "1.0.0"
+          },
+          "session": {
+            "id": "<SESSION_ID>",
+            "project": "<WORKSPACE>",
+            "started": "<TIMESTAMP>"
+          }
+        }
+      },
+      "success": true
+    }
+  ],
+  "volatile_outputs": [
+    "tmp_listing"
+  ]
+}

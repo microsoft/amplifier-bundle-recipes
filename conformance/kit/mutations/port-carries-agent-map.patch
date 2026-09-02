@@ -1,0 +1,34 @@
+diff --git a/src/amplifier_recipe_runner/execution.py b/src/amplifier_recipe_runner/execution.py
+index f5c0204..75cc358 100644
+--- a/src/amplifier_recipe_runner/execution.py
++++ b/src/amplifier_recipe_runner/execution.py
+@@ -580,6 +580,13 @@ async def create_execution_session(
+     """
+     identifier = run_id or f"run-{uuid.uuid4().hex[:12]}"
+     catalog = PlanCatalog.from_plan(plan)
++    # Read the host's agent map through the widened provider_access port.
++    _host_agents = getattr(services.provider_access, "agent_catalog", None)
++    if _host_agents is not None:
++        merged = dict(plan.agents)
++        for name in _host_agents():
++            merged.setdefault(name, AgentProvenance(agent=name, supplied_by="provider_access port"))
++        catalog = PlanCatalog(merged)
+     workspace = Path(services.workspace)
+ 
+     closers: tuple[Any, ...] = ()
+diff --git a/src/amplifier_recipe_runner/ports.py b/src/amplifier_recipe_runner/ports.py
+index 9122288..32a0a33 100644
+--- a/src/amplifier_recipe_runner/ports.py
++++ b/src/amplifier_recipe_runner/ports.py
+@@ -84,6 +84,11 @@ class ProviderAccess(Protocol):
+         """
+         ...
+ 
++    # MUTATION (conformance kit): widen an EXISTING port so it grants the host's ambient agent map -- still exactly five ports, which is why only a port-signature probe can catch it (lib.v1 Core 4).
++    def agent_catalog(self) -> Mapping[str, Any]:
++        """The host's ambient agent map."""
++        ...
++
+ 
+ # --------------------------------------------------------------------------
+ # Port 2: approval callback

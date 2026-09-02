@@ -1,0 +1,9 @@
+# BAD fixture recipe (for the standalone surface): a legacy recipe.
+# No schema_version, no dependencies block. manifest.v1 Core 1, Core 10.
+name: legacy-recipe
+description: Pre-contract recipe. Must be REJECTED by the standalone surface.
+
+steps:
+  - id: review
+    agent: supplier:reviewer
+    instruction: Review the change.

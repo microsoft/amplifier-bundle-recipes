@@ -1,0 +1,489 @@
+# Conformance ledger — amplifier-bundle-recipes
+#
+# Convention: @converge:docs/LEDGER-FORMAT.md (DRAFT starter format).
+# Top-level shape is a YAML LIST of row mappings (LEDGER-FORMAT §2). No wrapper.
+#
+# BASELINE: this ledger tracks a **DRAFT** baseline. Both pinned contracts are
+# Status: DRAFT (not FROZEN). Rows are therefore seeded against a spec that may
+# still change; a SYNC hash mismatch demands a full-ledger re-review, and a
+# FROZEN stamp on either contract demands the same.
+#
+# PRE-IMPLEMENTATION: the subject of both contracts (the `amplifier-recipe-runner`
+# library) does not exist yet in this repo. Most rows are honestly GAP. That is
+# the expected seed state, not a defect to fix in this ledger.
+#
+# Deviations from LEDGER-FORMAT.md are named in conformance/README.md §3.
+
+- id: RCP-000
+  title: SYNC — pinned contract sources (DRAFT baseline)
+  disposition: CONFORMS
+  sync:
+    - file: contracts/recipe-dependency-manifest.v1.md
+      sha256: 2e33bdb9feec76233c558718ae5a5efa7a9f4bcbff3130314b0123e4a419cd90
+      bytes: 5283
+      contract_status: DRAFT
+    - file: contracts/recipe-runner-lib.v1.md
+      sha256: 9787c1aa763cccebcd037258c6e79aaf2d847fc8f00092d55e92fef30c835e42
+      bytes: 3787
+      contract_status: DRAFT
+  seeded_at_repo_sha: 42d628f73f31931803158fbd8e4991a05ab55880
+  assertion:
+    kind: probe
+    ref: check_rcp_000_sync
+    status: planned
+  notes: >
+    Hashes were computed from the contract bytes at the repo sha above and match
+    at seed time. A mismatch triggers a MANDATORY full-ledger re-review — never a
+    silent hash bump (LEDGER-FORMAT §4). Quote verification proves the quoted text
+    still exists; only the re-review confirms each row's reading of it is still
+    correct. This row asserts no clause, so it carries no contract/quote.
+
+# ---------------------------------------------------------------------------
+# contracts/recipe-dependency-manifest.v1.md — Core 1..12
+# ---------------------------------------------------------------------------
+
+- id: RCP-001
+  title: Versioned manifest (schema_version 2 + dependencies; unknown keys are a parse ERROR)
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 1"
+    quote: |
+      **Versioned manifest.** A portable recipe declares `schema_version: 2` and a
+      `dependencies` block. A recipe without them is a *legacy recipe* (see Core
+      10). Unknown manifest keys are a parse ERROR, never silently ignored.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_001_versioned_manifest
+    status: planned
+  work: [recipes-yh0]
+  notes: >
+    Measured 2026-09-01: no occurrence of `schema_version` or a `dependencies`
+    block exists anywhere in this repo's recipe schema, models, or validator
+    (modules/tool-recipes/amplifier_module_tool_recipes/models.py). Every recipe
+    shipped here is therefore a legacy recipe under Core 10.
+
+- id: RCP-002
+  title: Dependency form — Foundation-resolvable bundle/behavior URIs, kind limited to bundle|behavior
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 2"
+    quote: |
+      **Dependency form.** `dependencies` entries are Foundation-resolvable
+      bundle/behavior source URIs (including partial behavior bundles via
+      `#subdirectory=`), each optionally listing `required_agents`. v1 permits
+      `kind: bundle` and `kind: behavior` only.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_002_dependency_form
+    status: planned
+  work: [recipes-yh0]
+  notes: >
+    No `dependencies` entry type exists to validate. Depends on RCP-001 landing
+    first (the block must exist before its entry form can be checked).
+
+- id: RCP-003
+  title: Closed-world agent resolution — never from the caller session's agent map
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 3"
+    quote: |
+      **Closed-world agent resolution.** A step's `agent:` reference — alias or
+      canonical `namespace:name` — resolves ONLY from the recipe's declared
+      dependency closure (plus runner baseline). It never resolves from the
+      caller session's agent map.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_003_closed_world_resolution
+    status: planned
+  work: [recipes-3zg, recipes-6tg]
+  notes: >
+    Measured 2026-09-01: today's executor resolves agents from the caller session
+    (executor.py:1868, `agents = self.coordinator.config.get("agents", {})`).
+    Recorded as GAP and NOT as VIOLATION on the contract's own terms: every recipe
+    in this repo is a legacy recipe (RCP-001), and Core 10 explicitly sanctions
+    caller-bound resolution for legacy recipes run through the embedded adapter.
+    The closed-world path is simply unbuilt. If a schema-v2 recipe ever resolves
+    from the caller map, this row flips to VIOLATION.
+
+- id: RCP-004
+  title: Isolation by default — session built only from declared closure + runner baseline
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 4"
+    quote: |
+      **Isolation by default.** The runner builds the execution session
+      exclusively from the declared dependency closure plus runner baseline. v1
+      has NO host imports beyond explicit runner ports: workspace path, approved
+      provider access, approval callback, event sink, cancellation.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_004_isolation_by_default
+    status: planned
+  work: [recipes-6tg]
+  notes: >
+    The "NO host imports beyond explicit runner ports" half is checkable by an
+    absence probe over the runner's host surface once the runner exists; the
+    port list is closed and enumerable, so no human judgment is required.
+
+- id: RCP-005
+  title: Collision is an error — duplicate agent names across the closure fail preflight
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 5"
+    quote: |
+      **Collision is an error.** Duplicate agent names across the dependency
+      closure are a preflight ERROR. A caller agent with a colliding name can
+      never satisfy, alter, or override a recipe dependency.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_005_collision_is_error
+    status: planned
+  work: [recipes-3zg]
+
+- id: RCP-006
+  title: Preflight before side effects — trust and declaration checks precede any fetch or activation
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 6"
+    quote: |
+      **Preflight before side effects.** Trust policy is enforced BEFORE any
+      remote fetch or module activation. Every declared dependency and every
+      referenced agent is verified before any recipe step executes. A missing
+      declaration fails naming the undeclared reference and the remedy.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_006_preflight_before_side_effects
+    status: planned
+  work: [recipes-3zu]
+  notes: >
+    Ordering ("BEFORE any remote fetch or module activation") is assertable by
+    observing that no fetch/activation side effect occurred on a refused run —
+    a real observation, not a code-reading judgment.
+
+- id: RCP-007
+  title: Provenance recorded per run — full enumerated record in run state
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 7"
+    quote: |
+      **Provenance recorded per run.** Run state records: recipe digest, each
+      declared URI/ref, resolved immutable revision/content digest, included
+      partials, agent-to-dependency provenance map, runner/foundation versions,
+      and effective trust and capability policy.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_007_provenance_recorded
+    status: planned
+  work: [recipes-3zg]
+  notes: >
+    The record's contents are an explicit closed list, so the probe asserts field
+    presence per item rather than a subjective "enough provenance" judgment.
+
+- id: RCP-008
+  title: Lock semantics — locked/update-lock/unlocked modes; never silent lock updates or re-resolution
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 8"
+    quote: |
+      **Lock semantics.** Lockfile is optional/generated. `locked` mode (default
+      for CI) requires exact lock entries; `update-lock` rewrites explicitly;
+      `unlocked` is interactive-only with a warning. Locks are never updated
+      silently on run. Resume uses recorded provenance; a provenance mismatch
+      fails visibly, never silently re-resolves.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_008_lock_semantics
+    status: planned
+  work: [recipes-2kp]
+
+- id: RCP-009
+  title: Capability intersection — host ∩ runner ∩ manifest-declared needs
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 9"
+    quote: |
+      **Capability intersection.** Effective capabilities are
+      host policy ∩ runner policy ∩ manifest-declared needs.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_009_capability_intersection
+    status: planned
+  work: [recipes-3zu]
+  notes: >
+    Set intersection is exactly assertable once the three inputs are addressable;
+    no interpretive latitude in this clause.
+
+- id: RCP-010
+  title: Legacy mode is labeled and confined — adapter-only, labeled, warned, byte-identical; CLI rejects
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 10"
+    quote: |
+      **Legacy mode is labeled and confined.** A legacy recipe runs ONLY through
+      the embedded Amplifier tool adapter, in explicitly labeled caller-bound
+      mode, with a deprecation warning. Its behavior there is byte-identical to
+      pre-contract behavior (including failure when the caller lacks a referenced
+      agent). The standalone `recipe-runner` CLI rejects legacy recipes with an
+      actionable error.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_010_legacy_labeled_and_confined
+    status: planned
+  work: [recipes-aew, recipes-8yo, recipes-o6f]
+  notes: >
+    Measured 2026-09-01: legacy recipes do run through the embedded tool adapter
+    today (that is all that exists), but there is no explicit legacy label and no
+    deprecation warning, and no standalone CLI exists to reject them. The
+    byte-identical half is assertable only against a captured pre-contract
+    baseline — that baseline is recipes-o6f's deliverable; until it exists this
+    half is unassertable for want of a reference, not for want of a check.
+
+- id: RCP-011
+  title: No namespace inference — dependencies are never inferred from agent-name namespaces
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 11"
+    quote: |
+      **No namespace inference.** The runner never infers dependencies from
+      agent-name namespaces (e.g. `foundation:*`).
+  disposition: OPEN-PINNED
+  justification: >
+    RETURNED NEED (interpretive ruling, not settleable from the contract text).
+    Core 11 is a pure prohibition: it requires no behavior, it forbids one. The
+    forbidden behavior is observably absent today — but only because the runner
+    and its dependency concept do not exist at all. Neither GAP (nothing is
+    required to be implemented) nor VIOLATION (nothing contradicts it) fits.
+    The open question is whether a prohibition-only clause CONFORMS vacuously
+    while its subject system is absent, or must stay pinned until a subject
+    exists to be prohibited. The contract text does not settle this and this lane
+    declines to guess. Pinned for an owner/protocol-authority ruling.
+  assertion:
+    kind: absence
+    ref: check_rcp_011_no_namespace_inference
+    status: planned
+  notes: >
+    An `absence` probe is the right instrument either way: it makes the row
+    executable now and flips it the moment namespace-inference logic appears,
+    which is the bidirectional-drift behavior this ledger is for. Only the
+    DISPOSITION is pinned, not the check.
+
+- id: RCP-012
+  title: agent_config is resolved, not retained — implemented or rejected at parse, never inert
+  contract:
+    file: contracts/recipe-dependency-manifest.v1.md
+    clause: "Core 12"
+    quote: |
+      **`agent_config` is resolved, not retained.** The historical
+      parsed-but-ignored `agent_config` step field must be either implemented
+      under this schema or rejected at parse — never silently retained inert.
+  disposition: VIOLATION
+  assertion:
+    kind: probe
+    ref: check_rcp_012_agent_config_not_inert
+    status: planned
+  work: [recipes-yh0]
+  notes: >
+    Measured 2026-09-01, evidence in shipped code: `agent_config` is declared on
+    the step model (models.py:232), is validated only to forbid it on bash steps
+    (models.py:383-385), and is read nowhere in executor.py for agent steps — the
+    exact "silently retained inert" state the clause names and forbids. This is
+    recorded as VIOLATION rather than GAP because the offending behavior is
+    present and shipped, and the clause settles the reading itself: it names the
+    historical parsed-but-ignored state as the thing that must not persist. Two
+    legal exits (either satisfies the clause): implement resolution under the v2
+    schema, or reject the field at parse.
+
+# ---------------------------------------------------------------------------
+# contracts/recipe-runner-lib.v1.md — Core 1..8
+# ---------------------------------------------------------------------------
+
+- id: RCP-101
+  title: One execution home — library owns parsing, planning, resolution, provenance, orchestration
+  contract:
+    file: contracts/recipe-runner-lib.v1.md
+    clause: "Core 1"
+    quote: |
+      **One execution home.** The library (working name `amplifier-recipe-runner`)
+      owns manifest parsing/validation, dependency planning and collision
+      detection, resolution, provenance recording, run state, and execution
+      orchestration. Every host surface is a thin adapter; no adapter carries
+      workflow, resolution, or agent-catalog logic of its own.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_101_one_execution_home
+    status: planned
+  work: [recipes-9kx, recipes-aew]
+  notes: >
+    The library does not exist; all workflow, resolution, and orchestration logic
+    currently lives in this repo's tool module
+    (modules/tool-recipes/amplifier_module_tool_recipes/executor.py). Recorded as
+    GAP rather than VIOLATION because the contract's prohibition binds adapters
+    once the single home exists; today's module is the only home, not a
+    duplicating adapter.
+    NOT-ASSERTABLE (sub-claim): "Every host surface is a thin adapter" — "thin"
+    is a human architectural judgment, not a machine-checkable predicate. Named
+    judgment required: an owner/architect review that each adapter carries no
+    workflow, resolution, or agent-catalog logic of its own. The rest of the
+    clause (ownership of each named responsibility by the library) is assertable
+    by locating each responsibility's implementation.
+
+- id: RCP-102
+  title: Public API surface — validate / plan / run / resume, usable without a UI or the Amplifier CLI
+  contract:
+    file: contracts/recipe-runner-lib.v1.md
+    clause: "Core 2"
+    quote: |
+      **Public API surface.** The library exposes, at minimum: `validate`
+      (manifest + plan checks, no side effects), `plan` (resolved dependency plan
+      and agent provenance, no execution), `run`, and `resume`. All are usable
+      without a UI and without the Amplifier CLI.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_102_public_api_surface
+    status: planned
+  work: [recipes-9kx]
+  notes: >
+    Fully assertable once the library exists: the four entry points are named, and
+    "no side effects" / "no execution" are observable, not judgment calls.
+
+- id: RCP-103
+  title: Neutral session abstraction — coordinator is not public API
+  contract:
+    file: contracts/recipe-runner-lib.v1.md
+    clause: "Core 3"
+    quote: |
+      **Neutral session abstraction.** The library defines its own execution-
+      session abstraction. `coordinator` (and any Amplifier-internal session
+      object) is NOT public API.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_103_neutral_session_abstraction
+    status: planned
+  work: [recipes-9kx]
+  notes: >
+    Measured 2026-09-01: today's executor takes an Amplifier `coordinator`
+    directly (executor.py:448) — but as its host constructor, not as a library
+    public API, since no library exists. GAP, with the prohibition half checkable
+    by an absence probe over the library's exported surface once it lands.
+
+- id: RCP-104
+  title: Host ports — narrow named ports only; no port grants the host's ambient agent map
+  contract:
+    file: contracts/recipe-runner-lib.v1.md
+    clause: "Core 4"
+    quote: |
+      **Host ports.** Hosts integrate exclusively through narrow, explicitly named
+      ports: provider access, approval callback, event sink, workspace path,
+      cancellation. No port grants the host's ambient agent map to the recipe.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_104_host_ports
+    status: planned
+  work: [recipes-9kx]
+  notes: >
+    The port list is closed and enumerable, and the prohibition ("no port grants
+    the host's ambient agent map") is assertable by an absence probe over the port
+    signatures. Pairs with RCP-003 — same isolation guarantee, other side of the
+    seam.
+
+- id: RCP-105
+  title: Injectable resolver/cache policy — default Foundation BundleRegistry, embedder-injectable
+  contract:
+    file: contracts/recipe-runner-lib.v1.md
+    clause: "Core 5"
+    quote: |
+      **Injectable resolver/cache policy.** The library owns a resolver interface
+      with injectable policy. The default implementation uses Foundation's
+      `BundleRegistry` under a runner namespace within the standard Amplifier
+      cache root. Cache location is NOT part of the public semantic contract;
+      embedders may inject registry/cache policy (mirrors, offline, isolation).
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_105_injectable_resolver_policy
+    status: planned
+  work: [recipes-3zg]
+  notes: >
+    NOT-ASSERTABLE (sub-claim): "Cache location is NOT part of the public semantic
+    contract" is a statement about what the contract does not promise — no
+    observable behavior can falsify it, so no probe can assert it. Named judgment
+    required: a reviewer confirming no test, fixture, or downstream row depends on
+    a specific cache path. The injectability half and the default implementation
+    are both fully assertable.
+
+- id: RCP-106
+  title: Trust policy is a required input for remote resolution — refusal before side effects
+  contract:
+    file: contracts/recipe-runner-lib.v1.md
+    clause: "Core 6"
+    quote: |
+      **Trust policy is a required input for remote resolution.** Arbitrary
+      explicit URIs are permitted only WITH a caller-provided trust policy;
+      CI-mode execution requires locked immutable refs. The library refuses
+      remote fetch/activation that the policy disallows, before side effects.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_106_trust_policy_required
+    status: planned
+  work: [recipes-3zu]
+  notes: >
+    Pairs with RCP-006 (same guarantee stated at the manifest seam). Both rows are
+    kept: each contract is separately citable and separately amendable, and a
+    single row cannot carry two clause anchors.
+
+- id: RCP-107
+  title: Run manifest schema — resolved graph exposed in a stable, documented shape
+  contract:
+    file: contracts/recipe-runner-lib.v1.md
+    clause: "Core 7"
+    quote: |
+      **Run manifest schema.** `plan`/`run` results expose the resolved graph
+      (recipe digest, canonical URIs, immutable revisions/content digests,
+      agent-to-dependency provenance, versions, effective policy) in a stable,
+      documented shape.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_107_run_manifest_schema
+    status: planned
+  work: [recipes-3zg]
+  notes: >
+    "Stable" is assertable as a schema-snapshot comparison across runs and
+    versions; "documented" is assertable as the existence of the shape's doc.
+    Field presence is a closed list, so no interpretive latitude.
+
+- id: RCP-108
+  title: Error model — preflight failures are distinct, typed, and precede step execution
+  contract:
+    file: contracts/recipe-runner-lib.v1.md
+    clause: "Core 8"
+    quote: |
+      **Error model.** Preflight failures (undeclared agent, collision, trust
+      refusal, provenance mismatch) are distinct, typed, and occur before recipe
+      steps run. A missing artifact or refused dependency is a real result, never
+      a fabricated success.
+  disposition: GAP
+  assertion:
+    kind: probe
+    ref: check_rcp_108_error_model
+    status: planned
+  work: [recipes-9kx, recipes-3zu]
+  notes: >
+    Four named failure classes, each with a distinct type — assertable one probe
+    per class. "Never a fabricated success" is assertable as the absence of a
+    success result on a refused run.

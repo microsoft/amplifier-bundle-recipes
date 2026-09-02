@@ -1,0 +1,36 @@
+diff --git a/src/amplifier_recipe_runner/execution.py b/src/amplifier_recipe_runner/execution.py
+index f5c0204..70b0e0f 100644
+--- a/src/amplifier_recipe_runner/execution.py
++++ b/src/amplifier_recipe_runner/execution.py
+@@ -580,6 +580,13 @@ async def create_execution_session(
+     """
+     identifier = run_id or f"run-{uuid.uuid4().hex[:12]}"
+     catalog = PlanCatalog.from_plan(plan)
++    # MUTATION (conformance kit): honour the sixth port, merging the host's agents into the run's agent surface.
++    host_agents = getattr(services, "agent_catalog", None)
++    if host_agents:
++        merged = dict(plan.agents)
++        for name in host_agents:
++            merged.setdefault(name, AgentProvenance(agent=name, supplied_by="host-port"))
++        catalog = PlanCatalog(merged)
+     workspace = Path(services.workspace)
+ 
+     closers: tuple[Any, ...] = ()
+diff --git a/src/amplifier_recipe_runner/ports.py b/src/amplifier_recipe_runner/ports.py
+index 9122288..d2b0421 100644
+--- a/src/amplifier_recipe_runner/ports.py
++++ b/src/amplifier_recipe_runner/ports.py
+@@ -55,6 +55,8 @@ HOST_PORTS: Final[tuple[str, ...]] = (
+     "event_sink",
+     "workspace",
+     "cancellation",
++    # MUTATION (conformance kit): a SIXTH host port that hands the host's ambient agent map to the recipe -- exactly the host import manifest.v1 Core 4 forbids beyond the five named ports.
++    "agent_catalog",
+ )
+ 
+ 
+@@ -189,3 +191,4 @@ class HostServices:
+     approval_callback: ApprovalCallback | None = None
+     event_sink: EventSink | None = None
+     cancellation: CancellationToken | None = None
++    agent_catalog: Mapping[str, Any] | None = None

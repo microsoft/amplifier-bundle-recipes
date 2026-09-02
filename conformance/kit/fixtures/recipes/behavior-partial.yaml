@@ -1,0 +1,18 @@
+# GOOD fixture recipe: a behavior partial contributes ONLY what it declares.
+# manifest.v1 Core 2 (#subdirectory=), Core 7.
+schema_version: 2
+name: behavior-partial
+description: >
+  Depends on supplier's review-only behavior partial. The partial's roster is
+  {supplier:reviewer}; supplier:summarizer must NOT enter the closure.
+
+dependencies:
+  - source: bundles/supplier#subdirectory=behaviors/review-only.yaml
+    kind: behavior
+    required_agents:
+      - supplier:reviewer
+
+steps:
+  - id: review
+    agent: supplier:reviewer
+    instruction: Review the change.

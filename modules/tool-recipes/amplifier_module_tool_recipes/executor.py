@@ -1901,6 +1901,30 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             # New: Use explicit provider_preferences list with fallback order
             provider_preferences = []
             for pref in step.provider_preferences:
+                if getattr(pref, "model_class", ""):
+                    # Class entry (YAML `class:`) - provider-agnostic. Resolve it
+                    # through the same model_role_resolver capability that backs
+                    # step.model_role, splicing the result in at this position so
+                    # later explicit provider entries remain the fallback chain.
+                    resolver = (
+                        self.coordinator.get_capability("model_role_resolver")
+                        if hasattr(self.coordinator, "get_capability")
+                        else None
+                    )
+                    if resolver is None:
+                        logger.warning(
+                            "step '%s' set provider_preferences class '%s' but no "
+                            "model_role_resolver capability is registered - "
+                            "skipping this entry",
+                            step.id,
+                            pref.model_class,
+                        )
+                        continue
+                    resolved = await resolver.resolve(pref.model_class)
+                    if resolved:
+                        provider_preferences.extend(resolved)
+                    continue
+
                 # Explicit provider/model preference
                 resolved_model = pref.model
                 if pref.model:

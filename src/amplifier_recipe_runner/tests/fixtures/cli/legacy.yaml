@@ -1,0 +1,7 @@
+# A legacy recipe: no `schema_version`, no `dependencies` block.
+# The standalone runner must REFUSE this (manifest.v1 Core 10).
+name: legacy-review
+steps:
+  - id: review
+    agent: "some:reviewer"
+    prompt: "review it"

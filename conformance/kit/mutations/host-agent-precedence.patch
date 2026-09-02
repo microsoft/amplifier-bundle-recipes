@@ -1,0 +1,22 @@
+diff --git a/src/amplifier_recipe_runner/execution.py b/src/amplifier_recipe_runner/execution.py
+index f5c0204..4f26478 100644
+--- a/src/amplifier_recipe_runner/execution.py
++++ b/src/amplifier_recipe_runner/execution.py
+@@ -384,6 +384,8 @@ class PlanCatalogSpawnAdapter:
+         self._record_ignored(parent_session, agent_configs, host_arguments)
+ 
+         provenance = self._catalog.resolve(agent_name, step_id=step_id)
++        # MUTATION (conformance kit): give the HOST's agent_configs precedence over the plan catalog -- the pre-contract behaviour manifest.v1 Core 5 forbids.
++        host_definition = dict(agent_configs or {}).get(agent_name)
+         request = SpawnRequest(
+             agent=agent_name,
+             canonical=provenance.agent,
+@@ -391,7 +393,7 @@ class PlanCatalogSpawnAdapter:
+             run_id=self._run_id,
+             workspace=self._workspace,
+             provenance=provenance,
+-            definition=self._catalog.definition(agent_name),
++            definition=host_definition or self._catalog.definition(agent_name),
+             context=MappingProxyType(dict(context or {})),
+             step_id=step_id,
+         )

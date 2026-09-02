@@ -1,0 +1,18 @@
+# GOOD fixture recipe: everything a step references is declared.
+# manifest.v1 Core 1, 2, 3, 4 -- lib.v1 Core 2, 7.
+schema_version: 2
+name: declared-dependency
+description: >
+  References supplier:reviewer, and declares the dependency that supplies it.
+  The calling session supplies no reviewer; this still resolves and runs.
+
+dependencies:
+  - source: bundles/supplier
+    kind: bundle
+    required_agents:
+      - supplier:reviewer
+
+steps:
+  - id: review
+    agent: supplier:reviewer
+    instruction: Review the change.

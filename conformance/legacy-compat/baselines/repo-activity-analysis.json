@@ -1,0 +1,1494 @@
+{
+  "caller_agents": [
+    "foundation:explorer",
+    "foundation:zen-architect"
+  ],
+  "case": "repo-activity-analysis",
+  "covers": [
+    "bash steps AND parse_json in one recipe",
+    "parse_json on bash step output (7 steps)",
+    "parse_json on agent step output (4 steps)",
+    "dotted-path substitution into bash commands ({{repo_info.owner}})",
+    "conditional branching on a parsed bash output ({{date_check.needs_llm}})",
+    "on_error:continue",
+    "two distinct caller agents"
+  ],
+  "events": [
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "running"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "pending"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "pending"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "pending"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "pending"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:start"
+    },
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "running"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "pending"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "pending"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "pending"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "pending"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 1,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "running"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "pending"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "pending"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "pending"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 2,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "running"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "pending"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "pending"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 3,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "running"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "pending"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 4,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "completed"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "running"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "pending"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "pending"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 5,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "completed"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "running"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "pending"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 6,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "completed"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "running"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "pending"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 7,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "completed"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "running"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "pending"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 8,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "completed"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "completed"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "running"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "pending"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 9,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "completed"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "completed"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "running"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "pending"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 10,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "completed"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "completed"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "completed"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "running"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 11,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "running",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "completed"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "completed"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "completed"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "completed"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "running"
+          }
+        ],
+        "total_steps": 12
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 12,
+        "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+        "name": "repo-activity-analysis",
+        "status": "completed",
+        "steps": [
+          {
+            "id": "detect-repo",
+            "name": "detect-repo",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range",
+            "name": "parse-date-range",
+            "status": "completed"
+          },
+          {
+            "id": "parse-date-range-llm",
+            "name": "parse-date-range-llm",
+            "status": "completed"
+          },
+          {
+            "id": "use-precomputed-date",
+            "name": "use-precomputed-date",
+            "status": "completed"
+          },
+          {
+            "id": "use-llm-date",
+            "name": "use-llm-date",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-commits",
+            "name": "fetch-commits",
+            "status": "completed"
+          },
+          {
+            "id": "fetch-prs",
+            "name": "fetch-prs",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-commits",
+            "name": "analyze-commits",
+            "status": "completed"
+          },
+          {
+            "id": "deep-dive-unclear-commits",
+            "name": "deep-dive-unclear-commits",
+            "status": "completed"
+          },
+          {
+            "id": "analyze-prs",
+            "name": "analyze-prs",
+            "status": "completed"
+          },
+          {
+            "id": "synthesize-repo-findings",
+            "name": "synthesize-repo-findings",
+            "status": "completed"
+          },
+          {
+            "id": "write-analysis-files",
+            "name": "write-analysis-files",
+            "status": "completed"
+          }
+        ],
+        "success": true,
+        "total_steps": 12
+      },
+      "event": "recipe:complete"
+    }
+  ],
+  "final_context": {
+    "_precomputed": {
+      "date_description": "since the fixture window",
+      "date_since_date": "<DATE>",
+      "date_since_iso": "<TIMESTAMP>",
+      "repo_name": "fixture-repo",
+      "repo_owner": "fixture-owner"
+    },
+    "_skipped_steps": [
+      "parse-date-range-llm",
+      "use-llm-date"
+    ],
+    "commit_analysis": {
+      "by_impact": {
+        "breaking": 0,
+        "minor": 1,
+        "moderate": 1,
+        "significant": 0,
+        "trivial": 0
+      },
+      "needs_deep_dive": [
+        "1111111"
+      ],
+      "skipped": false,
+      "summaries": [
+        {
+          "impact": "moderate",
+          "sha": "1111111",
+          "summary": "Adds the legacy-compat harness"
+        },
+        {
+          "impact": "minor",
+          "sha": "2222222",
+          "summary": "Normalizes baseline timestamps"
+        }
+      ],
+      "themes": [
+        "conformance tooling"
+      ],
+      "total_analyzed": 2
+    },
+    "commits_data": {
+      "commits": [
+        {
+          "author": "Fixture Author",
+          "date": "<TIMESTAMP>",
+          "message": "feat: add legacy-compat harness",
+          "sha": "1111111111111111111111111111111111111111",
+          "url": "https://github.com/fixture-owner/fixture-repo/commit/1111111"
+        },
+        {
+          "author": "Fixture Author",
+          "date": "<TIMESTAMP>",
+          "message": "fix: normalize baseline timestamps",
+          "sha": "2222222222222222222222222222222222222222",
+          "url": "https://github.com/fixture-owner/fixture-repo/commit/2222222"
+        }
+      ],
+      "count": 2,
+      "error": null
+    },
+    "date_check": {
+      "description": "since the fixture window",
+      "needs_llm": "false",
+      "original": "since the fixture window",
+      "since_date": "<DATE>",
+      "since_iso": "<TIMESTAMP>",
+      "source": "precomputed"
+    },
+    "date_range": "since the fixture window",
+    "deep_dive_results": {
+      "deep_dives": [
+        {
+          "finding": "New conformance directory, no runtime code touched",
+          "impact": "moderate",
+          "sha": "1111111"
+        }
+      ],
+      "skipped": false
+    },
+    "files_written": {
+      "json_size": 669,
+      "json_written": true,
+      "md_size": 638,
+      "md_written": true
+    },
+    "include_deep_dive": true,
+    "parsed_date": {
+      "description": "since the fixture window",
+      "original": "since the fixture window",
+      "since_date": "<DATE>",
+      "since_iso": "<TIMESTAMP>",
+      "source": "precomputed"
+    },
+    "pr_analysis": {
+      "by_category": {
+        "docs": 1,
+        "feature": 1
+      },
+      "merged": 1,
+      "notable_prs": [
+        {
+          "category": "feature",
+          "number": 41,
+          "title": "Add legacy-compat baseline harness"
+        }
+      ],
+      "open": 1,
+      "skipped": false,
+      "themes": [
+        "conformance tooling"
+      ],
+      "total_prs": 2
+    },
+    "prs_data": {
+      "closed": 0,
+      "count": 2,
+      "error": null,
+      "merged": 1,
+      "open": 1,
+      "prs": [
+        {
+          "additions": 420,
+          "author": {
+            "login": "fixture-author"
+          },
+          "changedFiles": 6,
+          "closedAt": "<TIMESTAMP>",
+          "createdAt": "<TIMESTAMP>",
+          "deletions": 3,
+          "mergedAt": "<TIMESTAMP>",
+          "number": 41,
+          "state": "MERGED",
+          "title": "Add legacy-compat baseline harness",
+          "url": "https://github.com/fixture-owner/fixture-repo/pull/41"
+        },
+        {
+          "additions": 88,
+          "author": {
+            "login": "fixture-author"
+          },
+          "changedFiles": 1,
+          "closedAt": null,
+          "createdAt": "<TIMESTAMP>",
+          "deletions": 0,
+          "mergedAt": null,
+          "number": 42,
+          "state": "OPEN",
+          "title": "Document normalization rules",
+          "url": "https://github.com/fixture-owner/fixture-repo/pull/42"
+        }
+      ]
+    },
+    "recipe": {
+      "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+      "name": "repo-activity-analysis",
+      "version": "1.4.0"
+    },
+    "repo_info": {
+      "detected_from": "precomputed",
+      "error": null,
+      "gh_available": true,
+      "owner": "fixture-owner",
+      "repo_name": "fixture-repo",
+      "repo_url": "https://github.com/fixture-owner/fixture-repo"
+    },
+    "repo_summary": {
+      "activity_summary": {
+        "commits": 2,
+        "has_activity": true,
+        "prs_merged": 1,
+        "prs_open": 1,
+        "prs_total": 2
+      },
+      "analysis_date": "<TIMESTAMP>",
+      "date_range": "since the fixture window",
+      "impact_assessment": {
+        "by_level": {
+          "breaking": 0,
+          "minor": 1,
+          "moderate": 1,
+          "significant": 0,
+          "trivial": 0
+        },
+        "overall": "moderate"
+      },
+      "key_changes": [
+        {
+          "description": "Legacy-compat harness added",
+          "impact": "moderate",
+          "references": [
+            "1111111"
+          ],
+          "type": "commit"
+        }
+      ],
+      "notable_items": [
+        "no breaking changes"
+      ],
+      "owner": "fixture-owner",
+      "repo": "fixture-repo",
+      "risks": [
+        "none identified"
+      ],
+      "themes": [
+        "conformance tooling"
+      ],
+      "url": "https://github.com/fixture-owner/fixture-repo"
+    },
+    "repo_url": "https://github.com/fixture-owner/fixture-repo",
+    "session": {
+      "id": "<SESSION_ID>",
+      "project": "<WORKSPACE>",
+      "started": "<TIMESTAMP>"
+    },
+    "step": {
+      "id": "write-analysis-files",
+      "index": 11
+    },
+    "working_dir": "./ai_working"
+  },
+  "harness_version": 1,
+  "notes": "The only shipped example that combines bash steps with parse_json. Made hermetic by a fixture `bin/gh` shim on PATH (see fixtures/repo-activity) plus _precomputed context, which takes the needs_llm=false branch. Network and a live repo can never be a byte-identical baseline; the recipe's own bash, jq, dotted-path substitution and JSON extraction all run for real.",
+  "outcome": {
+    "final_error": null,
+    "final_status": "completed",
+    "final_success": true,
+    "tool_call_count": 1
+  },
+  "progress": [
+    {
+      "level": "info",
+      "message": "📋 Starting recipe: repo-activity-analysis (12 steps)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [1/12] detect-repo (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [2/12] parse-date-range (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [3/12] parse-date-range-llm (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [4/12] use-precomputed-date (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [5/12] use-llm-date (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [6/12] fetch-commits (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [7/12] fetch-prs (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [8/12] analyze-commits (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [9/12] deep-dive-unclear-commits (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [10/12] analyze-prs (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [11/12] synthesize-repo-findings (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [12/12] write-analysis-files (bash)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "✅ Recipe completed: repo-activity-analysis",
+      "source": "recipe"
+    }
+  ],
+  "provenance": {
+    "agent_spawn_count": 4,
+    "agent_spawns": [
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided architect agent"
+        },
+        "index": 0,
+        "instruction": "MODE: ANALYZE\n\nAnalyze the commits for fixture-repo.\n\nCommits count: 2\nCommits: [{\"sha\": \"1111111111111111111111111111111111111111\", \"message\": \"feat: add legacy-compat harness\", \"author\": \"Fixture Author\", \"date\": \"<TIMESTAMP>\", \"url\": \"https://github.com/fixture-owner/fixture-repo/commit/1111111\"}, {\"sha\": \"2222222222222222222222222222222222222222\", \"message\": \"fix: normalize baseline timestamps\", \"author\": \"Fixture Author\", \"date\": \"<TIMESTAMP>\", \"url\": \"https://github.com/fixture-owner/fixture-repo/commit/2222222\"}]\n\n**If commits count is 0 or commits list is empty, return immediately:**\n```json\n{\n  \"total_analyzed\": 0,\n  \"by_impact\": {\"trivial\": 0, \"minor\": 0, \"moderate\": 0, \"significant\": 0, \"breaking\": 0},\n  \"summaries\": [],\n  \"needs_deep_dive\": [],\n  \"themes\": [],\n  \"skipped\": true,\n  \"reason\": \"No commits in date range\"\n}\n```\n\n**Otherwise, for each commit:**\n\nFor each commit (or batch if many):\n\n1. Fetch the diff using gh CLI:\n```bash\ngh api \"repos/fixture-owner/fixture-repo/commits/<SHA>\" \\\n  --jq '{files: [.files[] | {filename, status, additions, deletions}], stats: .stats}'\n```\n\n2. Analyze:\n   - What changed (files, patterns)\n   - Why (infer from commit message)\n   - Impact level: trivial | minor | moderate | significant | breaking\n   - Flag if needs_deep_dive (impact unclear from message + diff alone)\n\nFor large numbers of commits (>20):\n- Group by author or by area (docs, src, tests)\n- Summarize patterns rather than individual commits\n- Still flag any that seem significant\n\nReturn:\n{\n  \"total_analyzed\": N,\n  \"by_impact\": {\n    \"trivial\": N,\n    \"minor\": N,\n    \"moderate\": N,\n    \"significant\": N,\n    \"breaking\": N\n  },\n  \"summaries\": [\n    {\n      \"sha\": \"...\",\n      \"summary\": \"...\",\n      \"impact\": \"...\",\n      \"needs_deep_dive\": true|false,\n      \"files_changed\": [...]\n    }\n  ],\n  \"needs_deep_dive\": [list of SHAs needing deeper analysis],\n  \"themes\": [\"list of patterns/themes observed\"]\n}\n\n\n---\n\n**CRITICAL: JSON OUTPUT REQUIRED**\n\nYour response MUST end with valid JSON (object or array as required by the prompt above). The recipe system will parse your final JSON output.\n\nRequirements:\n1. Your response MUST contain a JSON code block or raw JSON\n2. The JSON must be valid (proper quotes, no trailing commas, etc.)\n3. If you include explanation, put the JSON block LAST in your response\n4. Use ```json fences or return raw JSON - both work\n\nExample valid endings:\n```json\n{\"key\": \"value\", \"count\": 5}\n```\n\nOr a JSON array:\n```json\n[{\"id\": 1, \"name\": \"first\"}, {\"id\": 2, \"name\": \"second\"}]\n```\n\nOr raw JSON at the end:\n{\"key\": \"value\", \"count\": 5}\n\nDO NOT return the JSON as a string or with escape characters. Return actual JSON structure.\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "repo-activity-analysis",
+        "recipe_step": "analyze-commits",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "repo-activity-analysis",
+          "recipe_step": "analyze-commits",
+          "recipe_step_index": 7
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:explorer",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided explorer agent"
+        },
+        "index": 1,
+        "instruction": "Deep-dive analysis for commits with unclear impact in fixture-repo.\n\n## Inputs\n\nInclude deep dive: true\nCommits needing analysis: [\"1111111\"]\n\n## Logic\n\n**If include_deep_dive is false OR the needs_deep_dive list is empty:**\nReturn immediately with:\n```json\n{\"deep_dives\": [], \"skipped\": true, \"reason\": \"No deep dive needed or disabled\"}\n```\n\n**Otherwise, for each commit SHA in needs_deep_dive:**\n\n1. If repo not cloned locally, clone it:\n```bash\ngh repo clone fixture-owner/fixture-repo ./ai_working/repos/fixture-repo -- --depth=50\n```\n\n2. Checkout the commit and explore:\n```bash\ncd ./ai_working/repos/fixture-repo\ngit show <SHA> --stat\ngit show <SHA> -- <key files>\n```\n\n3. For changed functions/classes, find:\n   - What depends on them (grep for imports/usages)\n   - Related tests (what behavior is expected)\n   - Documentation (what's the intended purpose)\n\n4. Assess actual impact:\n   - Is this a breaking change?\n   - What's the blast radius?\n   - Are there downstream consumers affected?\n\nReturn enhanced analysis:\n{\n  \"deep_dives\": [\n    {\n      \"sha\": \"...\",\n      \"original_assessment\": \"...\",\n      \"revised_impact\": \"...\",\n      \"dependencies_found\": [...],\n      \"risk_assessment\": \"...\",\n      \"notes\": \"...\"\n    }\n  ],\n  \"skipped\": false\n}\n\n\n---\n\n**CRITICAL: JSON OUTPUT REQUIRED**\n\nYour response MUST end with valid JSON (object or array as required by the prompt above). The recipe system will parse your final JSON output.\n\nRequirements:\n1. Your response MUST contain a JSON code block or raw JSON\n2. The JSON must be valid (proper quotes, no trailing commas, etc.)\n3. If you include explanation, put the JSON block LAST in your response\n4. Use ```json fences or return raw JSON - both work\n\nExample valid endings:\n```json\n{\"key\": \"value\", \"count\": 5}\n```\n\nOr a JSON array:\n```json\n[{\"id\": 1, \"name\": \"first\"}, {\"id\": 2, \"name\": \"second\"}]\n```\n\nOr raw JSON at the end:\n{\"key\": \"value\", \"count\": 5}\n\nDO NOT return the JSON as a string or with escape characters. Return actual JSON structure.\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "repo-activity-analysis",
+        "recipe_step": "deep-dive-unclear-commits",
+        "session_metadata": {
+          "agent_name": "foundation:explorer",
+          "recipe_name": "repo-activity-analysis",
+          "recipe_step": "deep-dive-unclear-commits",
+          "recipe_step_index": 8
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided architect agent"
+        },
+        "index": 2,
+        "instruction": "MODE: ANALYZE\n\nAnalyze the PRs for fixture-repo.\n\nPRs count: 2\nPRs: [{\"number\": 41, \"title\": \"Add legacy-compat baseline harness\", \"state\": \"MERGED\", \"author\": {\"login\": \"fixture-author\"}, \"createdAt\": \"<TIMESTAMP>\", \"mergedAt\": \"<TIMESTAMP>\", \"closedAt\": \"<TIMESTAMP>\", \"additions\": 420, \"deletions\": 3, \"changedFiles\": 6, \"url\": \"https://github.com/fixture-owner/fixture-repo/pull/41\"}, {\"number\": 42, \"title\": \"Document normalization rules\", \"state\": \"OPEN\", \"author\": {\"login\": \"fixture-author\"}, \"createdAt\": \"<TIMESTAMP>\", \"mergedAt\": null, \"closedAt\": null, \"additions\": 88, \"deletions\": 0, \"changedFiles\": 1, \"url\": \"https://github.com/fixture-owner/fixture-repo/pull/42\"}]\n\n**If PRs count is 0 or PRs list is empty, return immediately:**\n```json\n{\n  \"total_prs\": 0,\n  \"merged\": 0,\n  \"open\": 0,\n  \"by_category\": {},\n  \"notable_prs\": [],\n  \"themes\": [],\n  \"skipped\": true,\n  \"reason\": \"No PRs in date range\"\n}\n```\n\n**Otherwise, for each PR:**\n\nFor each PR:\n1. Categorize: feature | bugfix | docs | refactor | dependencies | other\n2. Assess scope: small (<50 lines) | medium (50-200) | large (>200)\n3. Note if merged, still open, or closed without merge\n\nIdentify:\n- Major features added\n- Significant bug fixes\n- Breaking changes\n- PRs that might need attention (stale, contentious, large)\n\nReturn:\n{\n  \"total_prs\": N,\n  \"merged\": N,\n  \"open\": N,\n  \"by_category\": { \"feature\": N, \"bugfix\": N, ... },\n  \"notable_prs\": [\n    {\n      \"number\": N,\n      \"title\": \"...\",\n      \"category\": \"...\",\n      \"scope\": \"...\",\n      \"summary\": \"...\",\n      \"notable_because\": \"...\"\n    }\n  ],\n  \"themes\": [\"patterns observed in PRs\"]\n}\n\n\n---\n\n**CRITICAL: JSON OUTPUT REQUIRED**\n\nYour response MUST end with valid JSON (object or array as required by the prompt above). The recipe system will parse your final JSON output.\n\nRequirements:\n1. Your response MUST contain a JSON code block or raw JSON\n2. The JSON must be valid (proper quotes, no trailing commas, etc.)\n3. If you include explanation, put the JSON block LAST in your response\n4. Use ```json fences or return raw JSON - both work\n\nExample valid endings:\n```json\n{\"key\": \"value\", \"count\": 5}\n```\n\nOr a JSON array:\n```json\n[{\"id\": 1, \"name\": \"first\"}, {\"id\": 2, \"name\": \"second\"}]\n```\n\nOr raw JSON at the end:\n{\"key\": \"value\", \"count\": 5}\n\nDO NOT return the JSON as a string or with escape characters. Return actual JSON structure.\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "repo-activity-analysis",
+        "recipe_step": "analyze-prs",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "repo-activity-analysis",
+          "recipe_step": "analyze-prs",
+          "recipe_step_index": 9
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided architect agent"
+        },
+        "index": 3,
+        "instruction": "MODE: ARCHITECT\n\nSynthesize all findings for fixture-repo.\n\nInputs:\n- Repo info: {\"repo_url\": \"https://github.com/fixture-owner/fixture-repo\", \"owner\": \"fixture-owner\", \"repo_name\": \"fixture-repo\", \"detected_from\": \"precomputed\", \"gh_available\": true, \"error\": null}\n- Commits: {\"total_analyzed\": 2, \"by_impact\": {\"trivial\": 0, \"minor\": 1, \"moderate\": 1, \"significant\": 0, \"breaking\": 0}, \"summaries\": [{\"sha\": \"1111111\", \"impact\": \"moderate\", \"summary\": \"Adds the legacy-compat harness\"}, {\"sha\": \"2222222\", \"impact\": \"minor\", \"summary\": \"Normalizes baseline timestamps\"}], \"needs_deep_dive\": [\"1111111\"], \"themes\": [\"conformance tooling\"], \"skipped\": false}\n- Deep dives: {\"deep_dives\": [{\"sha\": \"1111111\", \"finding\": \"New conformance directory, no runtime code touched\", \"impact\": \"moderate\"}], \"skipped\": false}\n- PRs: {\"total_prs\": 2, \"merged\": 1, \"open\": 1, \"by_category\": {\"feature\": 1, \"docs\": 1}, \"notable_prs\": [{\"number\": 41, \"title\": \"Add legacy-compat baseline harness\", \"category\": \"feature\"}], \"themes\": [\"conformance tooling\"], \"skipped\": false}\n- Date range: since the fixture window (since the fixture window)\n\nCreate a comprehensive repo summary:\n\n{\n  \"repo\": \"fixture-repo\",\n  \"owner\": \"fixture-owner\",\n  \"url\": \"https://github.com/fixture-owner/fixture-repo\",\n  \"analysis_date\": \"<current timestamp>\",\n  \"date_range\": \"since the fixture window\",\n  \n  \"activity_summary\": {\n    \"has_activity\": true|false,\n    \"commits\": N,\n    \"prs_total\": N,\n    \"prs_merged\": N,\n    \"prs_open\": N\n  },\n  \n  \"impact_assessment\": {\n    \"overall\": \"none|trivial|minor|moderate|significant|breaking\",\n    \"by_level\": { \"trivial\": N, ... }\n  },\n  \n  \"key_changes\": [\n    {\n      \"description\": \"...\",\n      \"impact\": \"...\",\n      \"type\": \"commit|pr\",\n      \"references\": [\"sha or PR#\"]\n    }\n  ],\n  \n  \"themes\": [\"patterns and themes observed\"],\n  \n  \"risks\": [\"any risks or concerns identified\"],\n  \n  \"notable_items\": [\n    \"breaking changes, security items, major features\"\n  ]\n}\n\nReturn the summary object as JSON.\nDO NOT write files - the next step handles file writing.\n\n\n---\n\n**CRITICAL: JSON OUTPUT REQUIRED**\n\nYour response MUST end with valid JSON (object or array as required by the prompt above). The recipe system will parse your final JSON output.\n\nRequirements:\n1. Your response MUST contain a JSON code block or raw JSON\n2. The JSON must be valid (proper quotes, no trailing commas, etc.)\n3. If you include explanation, put the JSON block LAST in your response\n4. Use ```json fences or return raw JSON - both work\n\nExample valid endings:\n```json\n{\"key\": \"value\", \"count\": 5}\n```\n\nOr a JSON array:\n```json\n[{\"id\": 1, \"name\": \"first\"}, {\"id\": 2, \"name\": \"second\"}]\n```\n\nOr raw JSON at the end:\n{\"key\": \"value\", \"count\": 5}\n\nDO NOT return the JSON as a string or with escape characters. Return actual JSON structure.\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "repo-activity-analysis",
+        "recipe_step": "synthesize-repo-findings",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "repo-activity-analysis",
+          "recipe_step": "synthesize-repo-findings",
+          "recipe_step_index": 10
+        },
+        "use_subprocess": false
+      }
+    ],
+    "agents_by_step": {
+      "analyze-commits": "foundation:zen-architect",
+      "analyze-prs": "foundation:zen-architect",
+      "deep-dive-unclear-commits": "foundation:explorer",
+      "synthesize-repo-findings": "foundation:zen-architect"
+    }
+  },
+  "recipe": "examples/repo-activity-analysis.yaml",
+  "recipe_sha256": "fe7ca6dba10d4bb96e1ea1c5f493aac7ecb8ccfdf89c8f8f4afeb59420c11652",
+  "tool_calls": [
+    {
+      "error": null,
+      "input": {
+        "context": {
+          "_precomputed": {
+            "date_description": "since the fixture window",
+            "date_since_date": "<DATE>",
+            "date_since_iso": "<TIMESTAMP>",
+            "repo_name": "fixture-repo",
+            "repo_owner": "fixture-owner"
+          },
+          "date_range": "since the fixture window",
+          "include_deep_dive": true,
+          "repo_url": "https://github.com/fixture-owner/fixture-repo",
+          "working_dir": "./ai_working"
+        },
+        "operation": "execute",
+        "recipe_path": "<REPO>/examples/repo-activity-analysis.yaml"
+      },
+      "output": {
+        "recipe": "repo-activity-analysis",
+        "session_id": "<SESSION_ID>",
+        "status": "completed",
+        "summary": {
+          "available_outputs": [
+            "repo_url",
+            "date_range",
+            "working_dir",
+            "include_deep_dive",
+            "commit_analysis",
+            "deep_dive_results",
+            "pr_analysis",
+            "repo_info",
+            "date_check",
+            "parsed_date",
+            "commits_data",
+            "prs_data",
+            "repo_summary",
+            "files_written"
+          ],
+          "final_output": {
+            "json_size": 669,
+            "json_written": true,
+            "md_size": 638,
+            "md_written": true
+          },
+          "final_output_key": "files_written",
+          "full_results_location": "Full results saved in recipe session: <SESSION_ID>. Use 'recipes list' to see session details.",
+          "last_step": {
+            "id": "write-analysis-files",
+            "index": 11
+          },
+          "recipe_metadata": {
+            "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
+            "name": "repo-activity-analysis",
+            "version": "1.4.0"
+          },
+          "session": {
+            "id": "<SESSION_ID>",
+            "project": "<WORKSPACE>",
+            "started": "<TIMESTAMP>"
+          },
+          "skipped_steps": [
+            "parse-date-range-llm",
+            "use-llm-date"
+          ]
+        }
+      },
+      "success": true
+    }
+  ],
+  "volatile_outputs": []
+}

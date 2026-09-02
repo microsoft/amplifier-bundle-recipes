@@ -1,3 +1,23 @@
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2#subdirectory=behaviors/sessions.yaml"
+    kind: behavior
+    required_agents:
+      - "foundation:session-analyst"
+# ---------------------------------------------------------------------------
+
 name: "session-verify"
 description: "Run cross-provider verification on a session with a specified verifier"
 version: "1.0.0"
@@ -38,22 +58,26 @@ context:
   verifier_model: ""       # Optional: override the default model for the provider
 
 # Validation: verifier_provider must be specified
-validation:
-  - field: "session_id"
-    required: true
-    error: "session_id is required. Specify the session to verify."
-  - field: "verifier_provider"
-    required: true
-    error: |
-      Error: verifier_provider is required.
-
-      To see what provider the original session used, run session-extract first:
-        session-extract with session_id=<your-session-id>
-
-      Then run verification with a different provider:
-        session-verify with session_id=<your-session-id> verifier_provider=openai
-
-      Available providers: openai, anthropic, google
+# --- Required context (was a top-level `validation:` key) -------------------
+# `schema_version: 2` fixes the set of allowed top-level keys
+# (recipe-dependency-manifest.v1 Core 1: an unknown top-level key is a parse
+# ERROR, never silently ignored), and `validation` is not one of them. The
+# engine never read this block -- no code path consumes it -- so it is
+# preserved verbatim as comments rather than deleted or silently retained.
+# validation:
+#   - field: "session_id"
+#     required: true
+#     error: "session_id is required. Specify the session to verify."
+#   - field: "verifier_provider"
+#     required: true
+#     error: |
+#       Error: verifier_provider is required.
+#       To see what provider the original session used, run session-extract first:
+#         session-extract with session_id=<your-session-id>
+#       Then run verification with a different provider:
+#         session-verify with session_id=<your-session-id> verifier_provider=openai
+#       Available providers: openai, anthropic, google
+# ---------------------------------------------------------------------------
 
 steps:
   # Step 1: Quick extraction of session context needed for verification

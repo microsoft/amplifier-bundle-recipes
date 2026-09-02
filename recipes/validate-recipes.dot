@@ -10,7 +10,7 @@ digraph validate_recipes {
     nodesep=0.6
     ranksep=0.7
     bgcolor="white"
-    source_hash="fc6c4f285cd42e2c53fc6bd2de45577e0d698126656f22d123ee60fa9b618b4e"
+    source_hash="8249d7c0cc93d3bf2db1bbca169e8d628ed32958e944083cd110343eb75429be"
 
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
@@ -18,17 +18,21 @@ digraph validate_recipes {
     start [label="Start", shape=oval, fillcolor="#e0e0e0"]
     done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
 
-    step_environment_check [label="Check Environment\n\"Are the required tools installed?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import sys from pathlib import Path  results = {     'phase': 'environm"]
-    step_recipe_discovery [label="Discover Recipes\n\"Scan folders for YAML recipe files\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json from pathlib import Path  def _process_yaml_file(yaml_path, base, resul"]
-    step_structural_validation [label="Validate Structure\n\"Are the YAML files well-formed?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re from pathlib import Path  _env_check_raw = r'''{{env_check}}'"]
-    step_best_practices_check [label="Check Best Practices\n\"Naming, timeouts, error handling?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re from pathlib import Path  _recipe_discovery_raw = r'''{{recip"]
-    step_semantic_validation [label="Validate Semantics\n\"Do references and variables resolve?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json from fnmatch import fnmatch from pathlib import Path  _recipe_discovery"]
-    step_quality_classification [label="Classify Quality\n\"Assign a grade to each recipe\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json  _structural_results_raw = r'''{{structural_results}}''' _practice_resu"]
+    step_environment_check [label="Check Environment\n\"Are the required tools installed?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import sys from pathlib import Path  results = {"]
+    step_recipe_discovery [label="Discover Recipes\n\"Scan folders for YAML recipe files\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json from pathlib import Path  def _process_yaml_file"]
+    step_structural_validation [label="Validate Structure\n\"Are the YAML files well-formed?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import re from pathlib import Path  _env_check_r"]
+    step_best_practices_check [label="Check Best Practices\n\"Naming, timeouts, error handling?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import re from pathlib import Path  _recipe_disc"]
+    step_semantic_validation [label="Validate Semantics\n\"Do references and variables resolve?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json from fnmatch import fnmatch from pathlib import "]
+    step_quality_classification [label="Classify Quality\n\"Assign a grade to each recipe\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json  _structural_results_raw = r'''{{structural_resu"]
     cond_step_quick_approval [label="All clean?", shape=diamond, fillcolor="#fff9c4"]
-    step_quick_approval [label="Quick Approval\n\"No issues found — all pass\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json  _quality_classification_raw = r'''{{quality_classification}}''' qualit"]
+    step_quick_approval [label="Quick Approval\n\"No issues found — all pass\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json  _quality_classification_raw = r'''{{quality_cla"]
     cond_step_synthesize_report [label="Issues found?", shape=diamond, fillcolor="#fff9c4"]
     step_synthesize_report [label="Compile Report\n\"Combine all findings into one summary\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
-    step_dot_freshness_check [label="Check Diagram Freshness\n\"Are the flowcharts up to date?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'EOF' import json import re from pathlib import Path  _recipe_discovery_raw = r'''{{recip"]
+    step_dot_freshness_check [label="Check Diagram Freshness\n\"Are the flowcharts up to date?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import re from pathlib import Path  _recipe_disc"]
+    step_dot_regen_structural [label="Rebuild Stale Diagrams\n\"Generate fresh flowchart skeletons\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json, yaml, sys from pathlib import Path raw = r'''{{"]
+    cond_step_dot_regen_enhance [label="Enhance labels?", shape=diamond, fillcolor="#fff9c4"]
+    step_dot_regen_enhance [label="Enhance Labels\n\"Rewrite for clarity\"\n(for each)", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_dot_regen_write [label="Write and Render\n\"Save DOT files and generate PNGs\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json, subprocess, re, sys from pathlib import Path re"]
 
     start -> step_environment_check
     step_environment_check -> step_recipe_discovery
@@ -43,9 +47,14 @@ digraph validate_recipes {
     step_quality_classification -> cond_step_synthesize_report
     cond_step_synthesize_report -> step_synthesize_report [label="quality_classification.re"]
     step_recipe_discovery -> step_dot_freshness_check
+    step_dot_freshness_check -> step_dot_regen_structural
+    step_dot_regen_structural -> cond_step_dot_regen_enhance
+    cond_step_dot_regen_enhance -> step_dot_regen_enhance [label="enhance_diagrams != 'fals"]
+    step_dot_regen_enhance -> step_dot_regen_write
     cond_step_quick_approval -> step_dot_freshness_check [label="skip", style=dashed]
     cond_step_synthesize_report -> step_dot_freshness_check [label="skip", style=dashed]
-    step_dot_freshness_check -> done
+    cond_step_dot_regen_enhance -> step_dot_regen_write [label="skip", style=dashed]
+    step_dot_regen_write -> done
 
     subgraph cluster_legend {
         label="Legend"

@@ -6,6 +6,22 @@
 # - Agent configuration overrides
 # - Progressive refinement pattern
 
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+# ---------------------------------------------------------------------------
+
 name: "my-multi-step-recipe"
 description: "Multi-stage workflow with analysis, refinement, and validation"
 version: "1.0.0"
@@ -87,12 +103,13 @@ steps:
   - id: "synthesize"
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
-    agent_config:
-      # Override agent settings for this step
-      providers:
-        - module: "provider-anthropic"
-          config:
-            temperature: 0.5  # More creative for synthesis
+    # NOTE: this step used to carry an `agent_config:` block (a per-step
+    # provider/temperature override). That field was parsed but never applied
+    # by the engine, and under `schema_version: 2` it is rejected at parse
+    # (recipe-dependency-manifest.v1 Core 12: it must be resolved, never
+    # silently retained inert). Declare the agent's supplying bundle in
+    # `dependencies:` instead; per-step provider selection uses the
+    # `provider:` / `model:` step fields.
     prompt: |
       Create comprehensive report:
 

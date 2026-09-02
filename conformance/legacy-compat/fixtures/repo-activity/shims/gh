@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Hermetic `gh` stand-in for the legacy-compat harness.
+#
+# repo-activity-analysis.yaml shells out to the real GitHub CLI. Network + a
+# live repo can never be a byte-identical baseline, so the harness prepends
+# this directory to PATH. The recipe's own bash/jq/parse_json handling runs for
+# real against fixed, declared data.
+#
+# Only the two invocations the recipe actually makes are answered; anything
+# else fails loudly rather than returning a plausible empty result.
+set -uo pipefail
+
+case "${1:-}" in
+  api)
+    # gh api "repos/OWNER/NAME/commits?since=..." --jq '<transform>'
+    # Emit the post---jq shape the recipe redirects into <repo>-commits.json.
+    cat <<'JSON'
+[
+  {
+    "sha": "1111111111111111111111111111111111111111",
+    "message": "feat: add legacy-compat harness",
+    "author": "Fixture Author",
+    "date": "2026-08-30T10:00:00Z",
+    "url": "https://github.com/fixture-owner/fixture-repo/commit/1111111"
+  },
+  {
+    "sha": "2222222222222222222222222222222222222222",
+    "message": "fix: normalize baseline timestamps",
+    "author": "Fixture Author",
+    "date": "2026-08-31T11:30:00Z",
+    "url": "https://github.com/fixture-owner/fixture-repo/commit/2222222"
+  }
+]
+JSON
+    ;;
+  pr)
+    # gh pr list --repo OWNER/NAME --state all --limit 100 --json ...
+    cat <<'JSON'
+[
+  {
+    "number": 41,
+    "title": "Add legacy-compat baseline harness",
+    "state": "MERGED",
+    "author": {"login": "fixture-author"},
+    "createdAt": "2026-08-30T09:00:00Z",
+    "mergedAt": "2026-08-30T18:00:00Z",
+    "closedAt": "2026-08-30T18:00:00Z",
+    "additions": 420,
+    "deletions": 3,
+    "changedFiles": 6,
+    "url": "https://github.com/fixture-owner/fixture-repo/pull/41"
+  },
+  {
+    "number": 42,
+    "title": "Document normalization rules",
+    "state": "OPEN",
+    "author": {"login": "fixture-author"},
+    "createdAt": "2026-08-31T12:00:00Z",
+    "mergedAt": null,
+    "closedAt": null,
+    "additions": 88,
+    "deletions": 0,
+    "changedFiles": 1,
+    "url": "https://github.com/fixture-owner/fixture-repo/pull/42"
+  }
+]
+JSON
+    ;;
+  auth)
+    # `gh auth status` -- report authenticated, quietly.
+    exit 0
+    ;;
+  *)
+    echo "legacy-compat gh shim: unsupported invocation: $*" >&2
+    exit 64
+    ;;
+esac
