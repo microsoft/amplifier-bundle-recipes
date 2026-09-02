@@ -10,7 +10,7 @@ digraph generate_recipe_docs {
     nodesep=0.6
     ranksep=0.7
     bgcolor="white"
-    source_hash="862100d7700d0ecc9789af928598fbd170f601b3e3140431247c35b09a018edf"
+    source_hash="3364799454e7a7da1ce9e96c8e13322e65080a62bcf833deb93d470d5c2d9b53"
 
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
@@ -18,10 +18,10 @@ digraph generate_recipe_docs {
     start [label="Start", shape=oval, fillcolor="#e0e0e0"]
     done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
 
-    step_discover_and_generate [label="Discover Recipes\n\"Find YAMLs and generate DOT skeletons\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'PYEOF' import json import sys from pathlib import Path  repo_path = Path('{{repo_path}}'"]
+    step_discover_and_generate [label="Discover Recipes\n\"Find YAMLs and generate DOT skeletons\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'PYEOF' import json import sys from pathlib import Path  repo_path"]
     step_enhance_labels [label="Enhance Labels\n\"Rewrite for clarity\"\n(for each)", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
-    step_write_and_render [label="Write and Render\n\"Save DOT files and generate PNGs\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'PYEOF' import json import subprocess import re from pathlib import Path  _discovery_raw "]
-    step_summary [label="Summarize Results\n\"Report what was generated\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="python3 << 'PYEOF' import json  _discovery_raw = r'''{{discovery}}''' _write_raw = r'''{{write_resul"]
+    step_write_and_render [label="Write and Render\n\"Save DOT files and generate PNGs\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'PYEOF' import json import subprocess import re from pathlib impor"]
+    step_summary [label="Summarize Results\n\"Report what was generated\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'PYEOF' import json  _discovery_raw = r'''{{discovery}}''' _write_"]
 
     start -> step_discover_and_generate
     step_discover_and_generate -> step_enhance_labels
