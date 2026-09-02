@@ -40,10 +40,13 @@ public surface) imports and is testable without it.
 Scope
 -----
 :func:`run` executes agent-bearing steps sequentially against the isolated
-session. Templating, foreach/while bodies, approval gates, and per-agent module
-overlays belong to the orchestration work, not here: a step this executor
-cannot run fails loud by name (:class:`UnsupportedStepError`) rather than being
-skipped into a fabricated success (lib Core 8).
+session. :func:`resume` is the same execution, minus the steps a recorded run
+already completed -- one code path, not a second one, so a resumed step cannot
+mean something different from the step ``run`` would have executed. Templating,
+foreach/while bodies, approval gates, and per-agent module overlays belong to
+the orchestration work, not here: a step this executor cannot run fails loud by
+name (:class:`UnsupportedStepError`) rather than being skipped into a
+fabricated success (lib Core 8).
 """
 
 from __future__ import annotations
@@ -80,6 +83,7 @@ from .resolver import DependencyResolver
 
 __all__ = [
     "CONTRACTS",
+    "AmbiguousCompletedStepError",
     "ExecutionError",
     "SPAWN_CAPABILITY",
     "FoundationSessionFactory",
@@ -91,9 +95,11 @@ __all__ = [
     "SessionFactory",
     "SpawnBackend",
     "SpawnRequest",
+    "UnknownCompletedStepError",
     "UnsupportedStepError",
     "create_execution_session",
     "plan",
+    "resume",
     "run",
 ]
 
@@ -147,6 +153,51 @@ class UnsupportedStepError(ExecutionError):
             or (
                 "Give the step an `agent:` and an `instruction:`, or run the recipe "
                 "through the orchestration surface that supports this step type."
+            ),
+        )
+
+
+class UnknownCompletedStepError(ExecutionError):
+    """``resume`` was told a step completed that this recipe does not declare.
+
+    Both silent readings are wrong: ignoring the name would resume against a
+    step list the caller does not believe in, and running everything would redo
+    work the caller said was already done. So this refuses instead, naming both
+    sides (lib Core 8).
+    """
+
+    def __init__(self, unknown: Sequence[str], declared: Sequence[str]) -> None:
+        self.unknown = tuple(unknown)
+        self.declared = tuple(declared)
+        named = ", ".join(repr(step) for step in self.unknown)
+        declares = ", ".join(repr(step) for step in self.declared) if self.declared else "no steps"
+        super().__init__(
+            f"resume was told {named} already completed, but this recipe declares {declares}.",
+            remedy=(
+                "Resume against the recipe the run recorded, or start a fresh run -- a resumed "
+                "run never guesses which step an unrecognised id meant."
+            ),
+        )
+
+
+class AmbiguousCompletedStepError(ExecutionError):
+    """``resume`` was told a step completed that the recipe declares twice.
+
+    Nothing validates step-id uniqueness, so a recipe *can* declare the same id
+    more than once. ``run`` merely overwrites an output when that happens;
+    ``resume`` would skip real, unfinished work -- so it refuses rather than
+    guess which occurrence the recorded id meant (lib Core 8).
+    """
+
+    def __init__(self, ambiguous: Sequence[str]) -> None:
+        self.ambiguous = tuple(ambiguous)
+        named = ", ".join(repr(step) for step in self.ambiguous)
+        super().__init__(
+            f"resume was told {named} already completed, but this recipe declares that id more than once, "
+            "so which occurrence ran cannot be known.",
+            remedy=(
+                "Give every step a unique `id:` and start a fresh run -- resuming cannot "
+                "distinguish two steps that share one name."
             ),
         )
 
@@ -821,9 +872,86 @@ async def run(
     attached and no step run, and a step failure never reports success (lib
     Core 8).
     """
+    return await _plan_and_execute(
+        request,
+        completed_steps=(),
+        resolver=resolver,
+        spawn_backend=spawn_backend,
+        session_factory=session_factory,
+    )
+
+
+async def resume(
+    request: RunRequest,
+    *,
+    completed_steps: Sequence[str] = (),
+    resolver: DependencyResolver | None = None,
+    spawn_backend: SpawnBackend | None = None,
+    session_factory: SessionFactory | None = None,
+) -> RunResult:
+    """Continue ``request``'s run, skipping the steps it already completed.
+
+    Resuming is :func:`run` with a shorter step list -- the same preflight, the
+    same recipe-owned session, the same executor -- so a resumed step can never
+    mean something different from the step ``run`` would have executed.
+
+    ``completed_steps`` are matched by step id, not by position, so a run that
+    stopped with a gap never re-runs a step it already finished. Each recorded
+    id must name exactly one step, and both ways that can fail are refused
+    *before* a session is built rather than quietly ignored: a name the recipe
+    does not declare raises :class:`UnknownCompletedStepError`, and a name the
+    recipe declares twice raises :class:`AmbiguousCompletedStepError`.
+
+    Two things this deliberately does NOT do, because pretending otherwise
+    would be the fabricated success lib Core 8 forbids:
+
+    * It does not verify provenance. That is the caller's job and it must
+      happen first (manifest Core 8); the standalone CLI does it via
+      :func:`~amplifier_recipe_runner.provenance.check_resume_provenance`.
+    * It does not reconstruct a skipped step's output. Nothing is re-derived
+      and nothing is invented, so ``outputs`` carries only the steps this call
+      actually ran. This executor passes no step output into a later step, so
+      no remaining step can depend on one; an executor that later threads
+      outputs would need them recorded, not guessed.
+
+    The returned ``completed_steps`` covers the whole run -- the steps handed
+    in plus the ones this call ran -- so a host that records it verbatim can
+    resume again without losing what earlier attempts finished. That holds on
+    every failure path too: a refusal reports back at least what it was given,
+    because failing to resume never un-completes a step that already ran.
+    """
+    return await _plan_and_execute(
+        request,
+        completed_steps=completed_steps,
+        resolver=resolver,
+        spawn_backend=spawn_backend,
+        session_factory=session_factory,
+    )
+
+
+async def _plan_and_execute(
+    request: RunRequest,
+    *,
+    completed_steps: Sequence[str],
+    resolver: DependencyResolver | None,
+    spawn_backend: SpawnBackend | None,
+    session_factory: SessionFactory | None,
+) -> RunResult:
+    """The one execution path behind :func:`run` and :func:`resume`."""
     run_id = request.run_id or f"run-{uuid.uuid4().hex[:12]}"
+    # Carried on every early return: a resume that refuses must not report
+    # FEWER completed steps than it was handed, or a host recording the result
+    # would erase the very history it resumed from. Nothing is invented -- this
+    # is the caller's own list, echoed back unchanged.
+    already = tuple(dict.fromkeys(str(step) for step in completed_steps))
+
     if request.services is None:
-        return RunResult(run_id=run_id, status=RunStatus.FAILED, error=MissingHostServicesError())
+        return RunResult(
+            run_id=run_id,
+            status=RunStatus.FAILED,
+            completed_steps=already,
+            error=MissingHostServicesError(),
+        )
 
     services = request.services
     try:
@@ -831,7 +959,32 @@ async def run(
     except (PreflightError, ManifestError) as exc:
         # ManifestError is the parser's own strict-parse failure; it belongs in
         # the same bucket as a typed preflight refusal -- nothing ran either way.
-        return RunResult(run_id=run_id, status=RunStatus.FAILED, error=exc)
+        return RunResult(run_id=run_id, status=RunStatus.FAILED, completed_steps=already, error=exc)
+
+    steps = _recipe_steps(Path(request.recipe))
+    step_ids = _step_ids(steps)
+    # Refuse before a session exists: nothing should be composed for a request
+    # whose recorded step list cannot be honoured. Each recorded id must name
+    # exactly one step -- no match and two matches are different defects, so
+    # they are reported as different errors.
+    unknown = tuple(step for step in already if step not in set(step_ids))
+    if unknown:
+        return RunResult(
+            run_id=run_id,
+            status=RunStatus.FAILED,
+            plan=resolved,
+            completed_steps=already,
+            error=UnknownCompletedStepError(unknown, step_ids),
+        )
+    ambiguous = tuple(step for step in already if step_ids.count(step) > 1)
+    if ambiguous:
+        return RunResult(
+            run_id=run_id,
+            status=RunStatus.FAILED,
+            plan=resolved,
+            completed_steps=already,
+            error=AmbiguousCompletedStepError(ambiguous),
+        )
 
     session = await create_execution_session(
         resolved,
@@ -841,7 +994,7 @@ async def run(
         session_factory=session_factory,
     )
     try:
-        return await _execute_steps(session, resolved, request, services)
+        return await _execute_steps(session, resolved, request, services, steps, step_ids, already)
     finally:
         await session.aclose()
 
@@ -851,13 +1004,21 @@ async def _execute_steps(
     resolved: ExecutionPlan,
     request: RunRequest,
     services: HostServices,
+    steps: Sequence[Mapping[str, Any]],
+    step_ids: Sequence[str],
+    already_completed: Sequence[str] = (),
 ) -> RunResult:
     outputs: dict[str, Any] = {}
-    completed: list[str] = []
-    steps = _recipe_steps(Path(request.recipe))
+    # Seed with what a resumed run already finished, so the result describes
+    # the run rather than only this attempt.
+    completed: list[str] = list(already_completed)
+    skip = set(already_completed)
 
-    for index, step in enumerate(steps):
-        step_id = step.get("id") if isinstance(step.get("id"), str) else f"step-{index}"
+    for step, step_id in zip(steps, step_ids, strict=True):
+        if step_id in skip:
+            # Visible, not silent: a skipped step is a claim about earlier work.
+            _emit(services.event_sink, "step:skipped", session.run_id, {"step_id": step_id})
+            continue
         if _cancelled(services):
             return RunResult(
                 run_id=session.run_id,
@@ -914,6 +1075,18 @@ def _step_call(step: Mapping[str, Any], step_id: str) -> tuple[str, str]:
         if isinstance(value, str) and value.strip():
             return agent.strip(), value
     raise UnsupportedStepError(step_id, f"it declares no instruction ({', '.join(_INSTRUCTION_KEYS)})")
+
+
+def _step_ids(steps: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    """The id each step is known by, positional fallback included.
+
+    One derivation, used both to execute a step and to decide whether a
+    recorded id names it -- so a resumed run can never disagree with the run
+    that recorded it about which step is which.
+    """
+    return tuple(
+        step["id"] if isinstance(step.get("id"), str) else f"step-{index}" for index, step in enumerate(steps)
+    )
 
 
 def _recipe_steps(recipe_path: Path) -> tuple[Mapping[str, Any], ...]:

@@ -113,3 +113,13 @@ __all__ = [
     "TrustRefusedError",
     "UndeclaredAgentError",
 ]
+
+# recipes-4qf exports
+# ``resume`` is the third module-level entry point (lib Core 2 names
+# validate/plan/run/resume): ``run`` with the steps a recorded run already
+# completed skipped, on the same execution path rather than a second one. The
+# docstring above predates it and still says "two"; the count is stale, this
+# list is not.
+from .execution import resume  # noqa: E402
+
+__all__ += ["resume"]

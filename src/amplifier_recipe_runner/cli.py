@@ -13,7 +13,10 @@ list.
 what a step means, or execute anything. Every one of those lives in the
 library, and a copy here would be a second execution home -- exactly what
 Core 1 forbids. When a capability is missing from the library, this CLI says
-so and exits; it does not reimplement it (see :func:`resume`).
+so and exits (:class:`UnsupportedCapabilityError`); it does not reimplement it.
+Continuing a run mid-way is the worked example: rather than skipping completed
+steps here, :func:`resume_command` hands the recorded completed steps to the
+library's own ``resume`` entry point and renders what comes back.
 
 Machine-readable output
 -----------------------
@@ -56,6 +59,9 @@ Code   Meaning
 4      Legacy recipe refused (manifest Core 10). Distinct on purpose.
 5      Provenance mismatch on resume (manifest Core 8).
 6      A real, named capability this library version does not provide.
+       Reserved: no path raises it today (mid-run resume, its only former
+       user, is now wired to the library's ``resume``). It stays because the
+       honest answer to a future missing capability must not be exit 1.
 =====  ======================================================================
 """
 
@@ -86,6 +92,7 @@ from .errors import LegacyRecipeError
 from .errors import PreflightError
 from .errors import ProvenanceMismatchError
 from .execution import plan as plan_recipe
+from .execution import resume as resume_recipe
 from .execution import run as run_recipe
 from .lockfile import LockResult
 from .lockfile import apply_lock_mode
@@ -173,6 +180,12 @@ class UnsupportedCapabilityError(Exception):
     Deliberately not a :class:`~amplifier_recipe_runner.errors.RecipeRunnerError`:
     the library never raised it. It exists so the CLI can report a missing
     capability honestly instead of faking one or reimplementing it here.
+
+    Nothing raises it today. Its one former user -- resuming a run that had
+    completed some but not all of its steps -- is now served by the library's
+    own ``resume`` entry point. Kept, with its exit code, so the next genuinely
+    missing capability has an answer that is neither a lie nor a generic
+    failure.
     """
 
     def __init__(self, message: str, *, remedy: str | None = None) -> None:
@@ -960,11 +973,15 @@ def resume_command(
 
     * every step completed -- nothing to resume, and saying so is the correct
       answer, not a failure;
-    * no step completed -- resuming *is* running from the start, which is one
-      library call;
-    * some steps completed -- continuing mid-run needs a library ``resume``
-      entry point this version does not export, so it says so rather than
-      re-running completed steps behind your back.
+    * no step completed -- resuming *is* running from the start;
+    * some steps completed -- the recorded completed steps are handed to the
+      library's ``resume``, which skips them and runs the rest. This CLI does
+      not decide which steps remain; it reports which ones the run recorded and
+      lets the library act on them.
+
+    The last two are one library call with the same argument, differing only in
+    what the run recorded -- so a partial resume cannot take a different code
+    path from a full one.
     """
     runtime: Runtime = ctx.obj
     run_dir = _state_dir(state_dir, runtime) / run_id
@@ -1011,30 +1028,23 @@ def resume_command(
         click.echo("resume: nothing to resume; this run already completed every recorded step.")
         return
 
-    if completed:
-        # The only genuinely blocked case: continuing mid-run needs the library
-        # to skip completed steps, and re-running them here would be both wrong
-        # and a second execution home.
-        raise RunnerFailure(
-            UnsupportedCapabilityError(
-                f"Run {run_id!r} stopped after {len(completed)} of {len(recorded.step_ids)} step(s), and "
-                "continuing mid-run is not available: this library version exports no `resume` entry point, "
-                "so the completed steps cannot be skipped.",
-                remedy=(
-                    "Start a fresh run with `recipe-runner run` to redo every step (the recorded provenance "
-                    "above is unchanged), or upgrade to a runner version whose library exposes resume."
-                ),
-            )
-        )
-
     if bool(_pick(dry_run, runtime.config, "dry_run", False)):
-        click.echo(f"dry-run: would resume by running {len(recorded.step_ids)} step(s) from the start")
+        if completed:
+            remaining = [step for step in recorded.step_ids if step not in set(completed)]
+            click.echo(
+                f"dry-run: would resume by running {len(remaining)} remaining step(s), "
+                f"skipping {len(completed)} already completed"
+            )
+        else:
+            click.echo(f"dry-run: would resume by running {len(recorded.step_ids)} step(s) from the start")
         return
 
-    # Nothing completed, so resuming IS running from the start -- one library
-    # call, with the recorded run id, against the provenance just verified.
+    # One library call, with the recorded run id, against the provenance just
+    # verified. Which steps that skips is the library's decision, made from the
+    # completed list this run recorded -- an empty list simply means "from the
+    # start", not a different path.
     try:
-        result = asyncio.run(run_recipe(request, resolver=resolver))
+        result = asyncio.run(resume_recipe(request, completed_steps=completed, resolver=resolver))
     except Exception as exc:  # noqa: BLE001
         raise RunnerFailure(exc) from exc
 
