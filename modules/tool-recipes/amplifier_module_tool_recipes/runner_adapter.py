@@ -63,18 +63,25 @@ __all__ = [
     "RUNNER_DISTRIBUTION",
     "RUNNER_IMPORT_NAME",
     "V2_EXECUTION_MODE",
+    "MODEL_ROLE_RESOLVER_CAPABILITY",
+    "PROVIDER_ROLES_FALLBACK",
+    "PROVIDER_ROLES_RESOLVER",
+    "SESSION_DEFAULT_ROLE",
     "AdapterConfigError",
     "CallerAgentLeakError",
     "CoordinatorEventSink",
     "CoordinatorProviderAccess",
     "RecipeRunnerUnavailableError",
     "SessionApprovalCallback",
+    "ModelRoleUnavailableError",
     "SessionCancellationToken",
     "V2ResumeUnavailableError",
     "build_host_services",
     "build_run_request",
     "build_validate_request",
     "check_adapter_config",
+    "check_model_roles",
+    "declared_model_roles",
     "declared_schema_version",
     "execution_mode_of",
     "find_caller_agent_leak",
@@ -85,6 +92,7 @@ __all__ = [
     "library_resume",
     "load_runner",
     "manifest_header",
+    "provider_roles_label",
     "resume_v2_recipe",
     "run_v2_recipe",
     "validate_v2_recipe",
@@ -111,6 +119,21 @@ LEGACY_DEPRECATION_REMEDY = (
     "(recipe-dependency-manifest.v1 Core 10); the standalone recipe-runner CLI "
     "rejects them."
 )
+
+#: The duck-typed host capability that serves model roles.
+MODEL_ROLE_RESOLVER_CAPABILITY = "model_role_resolver"
+
+#: Role name the adapter synthesizes when the host registers no
+#: :data:`MODEL_ROLE_RESOLVER_CAPABILITY`. It means exactly what it says: the
+#: session's own default provider configuration, with no routing applied.
+SESSION_DEFAULT_ROLE = "default"
+
+#: Label for "roles came from the host's model_role_resolver capability".
+PROVIDER_ROLES_RESOLVER = "model-role-resolver"
+
+#: Label for "this host resolves no model roles, so the adapter served the
+#: session default". Reported on the run's output and logged, never silent.
+PROVIDER_ROLES_FALLBACK = "session-default-fallback"
 
 #: Import name and distribution name of the one execution home (lib.v1 Core 1).
 RUNNER_IMPORT_NAME = "amplifier_recipe_runner"
@@ -217,6 +240,35 @@ class V2ResumeUnavailableError(RuntimeError):
         self.message = message
         self.remedy = remedy
         super().__init__(f"{message} Remedy: {remedy}")
+
+
+class ModelRoleUnavailableError(RuntimeError):
+    """A step asked for a model role this session cannot serve.
+
+    The host, not the library, owns provider routing (``ProviderAccess`` is a
+    host port), so this refusal lives here. It exists because of the
+    session-default fallback (:data:`PROVIDER_ROLES_FALLBACK`): once a lean
+    session offers a default role, a step that asked for ``model_role: coding``
+    would otherwise run on the default provider and report success -- a silent
+    downgrade. The role is named instead, together with what this session
+    actually serves.
+    """
+
+    def __init__(self, role: str, *, step_id: str | None, served: Sequence[str], label: str) -> None:
+        self.role = role
+        self.step_id = step_id
+        self.served = tuple(served)
+        self.label = label
+        where = f"Step {step_id!r}" if step_id else "A step"
+        super().__init__(
+            f"{where} requests model role {role!r}, which this Amplifier session "
+            f"does not serve; it serves {', '.join(self.served) or 'no roles at all'} "
+            f"(provider_roles={label}). The step was NOT run on another provider: "
+            "an unavailable model role is a real failure, never a silent downgrade "
+            "(recipe-runner-lib.v1 Core 4). Remedy: activate a bundle registering a "
+            f"`{MODEL_ROLE_RESOLVER_CAPABILITY}` capability that serves {role!r}, or "
+            "remove the step's `model_role` so it runs on the session default."
+        )
 
 
 class AdapterConfigError(ValueError):
@@ -547,24 +599,61 @@ class CoordinatorProviderAccess:
     provider preferences they resolved to.
     """
 
-    __slots__ = ("_handles",)
+    __slots__ = ("_handles", "_role_source")
 
-    def __init__(self, handles: Mapping[str, Any]) -> None:
+    def __init__(self, handles: Mapping[str, Any], *, role_source: str = PROVIDER_ROLES_RESOLVER) -> None:
         self._handles = dict(handles)
+        self._role_source = role_source
 
     @classmethod
     async def create(cls, coordinator: Any) -> CoordinatorProviderAccess:
-        """Pre-resolve every role the host's resolver capability enumerates."""
+        """Pre-resolve every role the host's resolver capability enumerates.
+
+        A host with no :data:`MODEL_ROLE_RESOLVER_CAPABILITY` at all -- a lean
+        bundle such as ``anchors``, which routes nothing -- is not a host with
+        no providers: it runs its own agents on its configured default. So one
+        role is synthesized here, :data:`SESSION_DEFAULT_ROLE`, backed by that
+        default, and it is labeled :data:`PROVIDER_ROLES_FALLBACK` wherever it
+        is used.
+
+        This is deliberately a HOST-side fallback. The library's precondition
+        ("no roles, so no agent could run") stays exactly as strict: it is a
+        true statement about a host that offers nothing, and weakening it would
+        let a genuinely provider-less host fabricate a run.
+
+        A host that *does* register the capability is taken at its word,
+        including when it enumerates nothing: routing is configured and broken,
+        which is a real failure to report rather than one to paper over.
+        """
         resolver = None
         if hasattr(coordinator, "get_capability"):
-            resolver = coordinator.get_capability("model_role_resolver")
+            resolver = coordinator.get_capability(MODEL_ROLE_RESOLVER_CAPABILITY)
         if resolver is None:
+            providers = _session_provider_names(coordinator)
             logger.warning(
-                "No model_role_resolver capability is registered, so this host "
-                "offers the recipe runner no model roles; a v2 recipe with an "
-                "agent step will fail rather than silently pick a provider."
+                "No %s capability is registered, so this session routes no model "
+                "roles; the recipe runner is given one synthesized %r role backed "
+                "by the session's default provider configuration (%s) "
+                "[provider_roles=%s]. A step naming an explicit `model_role` still "
+                "fails rather than running on it.",
+                MODEL_ROLE_RESOLVER_CAPABILITY,
+                SESSION_DEFAULT_ROLE,
+                ", ".join(providers) or "no named providers",
+                PROVIDER_ROLES_FALLBACK,
             )
-            return cls({})
+            return cls(
+                {
+                    SESSION_DEFAULT_ROLE: {
+                        "source": PROVIDER_ROLES_FALLBACK,
+                        # No preference chain: "whatever the session is
+                        # configured to use", which is what the host's own
+                        # agent work already runs on.
+                        "provider_preferences": (),
+                        "session_providers": providers,
+                    }
+                },
+                role_source=PROVIDER_ROLES_FALLBACK,
+            )
 
         roles = getattr(resolver, "known_roles", None)
         if not isinstance(roles, (list, tuple)):
@@ -583,6 +672,16 @@ class CoordinatorProviderAccess:
                 handles[role] = list(resolved)
         return cls(handles)
 
+    @property
+    def role_source(self) -> str:
+        """Where these roles came from: the host's resolver, or the fallback."""
+        return self._role_source
+
+    @property
+    def is_session_default_fallback(self) -> bool:
+        """True when this session serves only the synthesized default role."""
+        return self._role_source == PROVIDER_ROLES_FALLBACK
+
     def roles(self) -> Sequence[str]:
         return tuple(sorted(self._handles))
 
@@ -591,15 +690,118 @@ class CoordinatorProviderAccess:
 
         Raises:
             KeyError: this host does not serve ``role``. An unavailable provider
-                is a real failure, never a silent downgrade (lib.v1 Core 4).
+                is a real failure, never a silent downgrade (lib.v1 Core 4) --
+                including under the session-default fallback, which serves
+                exactly one role and never stands in for a named one.
         """
         try:
             return self._handles[role]
         except KeyError:
             raise KeyError(
                 f"This Amplifier session serves no provider for model role {role!r}; "
-                f"it serves {', '.join(self.roles()) or 'no roles at all'}."
+                f"it serves {', '.join(self.roles()) or 'no roles at all'} "
+                f"(provider_roles={self._role_source})."
             ) from None
+
+
+def _session_provider_names(coordinator: Any) -> tuple[str, ...]:
+    """Names of the providers mounted in the calling session. Advisory only.
+
+    Recorded on the fallback handle so a reader can see *what* "the session
+    default" meant. Strings only -- nothing here holds a live provider object,
+    and nothing here can reach the caller's agent map.
+    """
+    providers: Any = None
+    getter = getattr(coordinator, "get", None)
+    if callable(getter):
+        try:
+            providers = getter("providers")
+        except Exception:  # noqa: BLE001 - a host that cannot answer is a fact
+            providers = None
+    if not isinstance(providers, Mapping):
+        mounts = getattr(coordinator, "mount_points", None)
+        providers = mounts.get("providers") if isinstance(mounts, Mapping) else None
+    if isinstance(providers, Mapping):
+        return tuple(sorted(str(name) for name in providers))
+    return ()
+
+
+def provider_roles_label(coordinator: Any) -> str:
+    """Which source serves this session's model roles, as a label.
+
+    The same predicate :meth:`CoordinatorProviderAccess.create` uses, exposed
+    synchronously so a caller can report it on a run's output without
+    re-resolving anything.
+    """
+    resolver = None
+    if hasattr(coordinator, "get_capability"):
+        resolver = coordinator.get_capability(MODEL_ROLE_RESOLVER_CAPABILITY)
+    return PROVIDER_ROLES_RESOLVER if resolver is not None else PROVIDER_ROLES_FALLBACK
+
+
+# ---------------------------------------------------------------------------
+# Explicit model roles a recipe asks for (host-side preflight)
+# ---------------------------------------------------------------------------
+
+
+def declared_model_roles(recipe_path: Path) -> tuple[tuple[str | None, tuple[str, ...]], ...]:
+    """Every explicit ``model_role`` a recipe's steps request.
+
+    Returns ``(step_id, roles)`` pairs -- a step may name a chain, and a step
+    that names none contributes nothing. Nested and staged step bodies are
+    walked, so a role buried in a ``foreach`` body is not missed.
+    """
+    header = manifest_header(recipe_path)
+    if header is None:
+        return ()
+
+    found: list[tuple[str | None, tuple[str, ...]]] = []
+
+    def visit(steps: Any) -> None:
+        if not isinstance(steps, Sequence) or isinstance(steps, (str, bytes)):
+            return
+        for step in steps:
+            if not isinstance(step, Mapping):
+                continue
+            step_id = step.get("id") if isinstance(step.get("id"), str) else None
+            declared = step.get("model_role")
+            roles: tuple[str, ...] = ()
+            if isinstance(declared, str) and declared.strip():
+                roles = (declared.strip(),)
+            elif isinstance(declared, Sequence) and not isinstance(declared, (str, bytes)):
+                roles = tuple(r.strip() for r in declared if isinstance(r, str) and r.strip())
+            if roles:
+                found.append((step_id, roles))
+            for key in ("steps", "while_steps"):
+                visit(step.get(key))
+
+    visit(header.get("steps"))
+    for stage in header.get("stages") or ():
+        if isinstance(stage, Mapping):
+            visit(stage.get("steps"))
+    return tuple(found)
+
+
+def check_model_roles(recipe_path: Path, provider_access: Any) -> None:
+    """Refuse a run whose steps name a model role this session cannot serve.
+
+    Raises:
+        ModelRoleUnavailableError: naming the first unserved role and the step
+            that asked for it. A step naming a *chain* passes when any entry in
+            it resolves -- that is what a chain means -- and fails naming its
+            first entry when none does.
+    """
+    served = set(provider_access.roles())
+    label = getattr(provider_access, "role_source", PROVIDER_ROLES_RESOLVER)
+    for step_id, roles in declared_model_roles(recipe_path):
+        if any(role in served for role in roles):
+            continue
+        raise ModelRoleUnavailableError(
+            roles[0],
+            step_id=step_id,
+            served=tuple(sorted(served)),
+            label=label,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -920,6 +1122,11 @@ async def run_v2_recipe(
 ) -> Any:
     """Execute a schema-v2 recipe in the runner library.
 
+    Before handing over, the steps' explicit ``model_role`` requests are
+    checked against what this session actually serves
+    (:func:`check_model_roles`) -- so the session-default fallback can never
+    stand in for a named role.
+
     Args:
         run: injection seam for tests; defaults to the library's own ``run``.
 
@@ -931,6 +1138,7 @@ async def run_v2_recipe(
     services = await build_host_services(
         coordinator, session_manager, project_path, session_id=session_id
     )
+    check_model_roles(recipe_path, services.provider_access)
     request = build_run_request(recipe_path, context_vars, services, coordinator)
     return await (run or runner.run)(request)
 
@@ -973,6 +1181,7 @@ async def resume_v2_recipe(
     services = await build_host_services(
         coordinator, session_manager, project_path, session_id=session_id
     )
+    check_model_roles(recipe_path, services.provider_access)
     request = build_run_request(
         recipe_path, context_vars, services, coordinator, run_id=run_id
     )
