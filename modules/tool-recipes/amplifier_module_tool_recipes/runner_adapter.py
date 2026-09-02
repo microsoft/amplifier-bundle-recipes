@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import warnings
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -241,17 +242,47 @@ class AdapterConfigError(ValueError):
 # ---------------------------------------------------------------------------
 
 
+def _in_bundle_library_src() -> Path | None:
+    """Locate the runner library shipped in this same bundle, if present.
+
+    The bundle tree always ships this module and the library together:
+
+        <bundle-root>/modules/tool-recipes/amplifier_module_tool_recipes/  (here)
+        <bundle-root>/src/amplifier_recipe_runner/                          (library)
+
+    Module activation installs only this module (`uv pip install -e <module>
+    --no-sources`), so the library is not on sys.path even though it sits two
+    directories up. Returns the `src` directory to add, or None.
+    """
+    bundle_src = Path(__file__).resolve().parents[3] / "src"
+    if (bundle_src / "amplifier_recipe_runner" / "__init__.py").is_file():
+        return bundle_src
+    return None
+
+
 def load_runner() -> ModuleType:
     """Import and return the runner library, or fail loud.
 
+    Tries the installed package first, then the library shipped in this same
+    bundle tree (see :func:`_in_bundle_library_src`).
+
     Raises:
-        RecipeRunnerUnavailableError: the library is not installed. Never falls
-            back to the legacy path -- see the class docstring.
+        RecipeRunnerUnavailableError: the library is not installed and not
+            found in the bundle tree. Never falls back to the legacy path --
+            see the class docstring.
     """
     try:
         import amplifier_recipe_runner  # noqa: PLC0415 -- deliberately lazy
     except ImportError as exc:
-        raise RecipeRunnerUnavailableError(exc) from exc
+        bundle_src = _in_bundle_library_src()
+        if bundle_src is None:
+            raise RecipeRunnerUnavailableError(exc) from exc
+        if str(bundle_src) not in sys.path:
+            sys.path.insert(0, str(bundle_src))
+        try:
+            import amplifier_recipe_runner  # noqa: PLC0415
+        except ImportError as retry_exc:
+            raise RecipeRunnerUnavailableError(retry_exc) from retry_exc
     return amplifier_recipe_runner
 
 
