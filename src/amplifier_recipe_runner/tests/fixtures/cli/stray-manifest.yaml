@@ -1,0 +1,9 @@
+# Manifest keys declared WITHOUT `schema_version`: a parse error, not legacy.
+name: forgot-the-version
+dependencies:
+  - source: ./toolkit
+    kind: bundle
+steps:
+  - id: review
+    agent: "toolkit:reviewer"
+    prompt: "review it"
