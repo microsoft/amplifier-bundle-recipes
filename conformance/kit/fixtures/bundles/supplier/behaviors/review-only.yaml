@@ -1,0 +1,9 @@
+bundle:
+  name: supplier
+  version: 3.1.0
+  description: Behavior partial contributing ONLY supplier:reviewer.
+  namespace_root: ..
+
+agents:
+  include:
+    - supplier:reviewer

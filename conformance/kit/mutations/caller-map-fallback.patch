@@ -1,0 +1,15 @@
+diff --git a/src/amplifier_recipe_runner/planner.py b/src/amplifier_recipe_runner/planner.py
+index 00c1769..13b4d13 100644
+--- a/src/amplifier_recipe_runner/planner.py
++++ b/src/amplifier_recipe_runner/planner.py
+@@ -350,6 +350,10 @@ def _build_provenance(
+     for reference, step_id in references:
+         canonical = aliases.get(reference, reference)
+         entry = catalog.resolve_reference(canonical)
++        if entry is None:
++            # MUTATION (conformance kit): resolve an undeclared reference from the caller session's agent map -- manifest.v1 Core 3 forbids exactly this, and it is what the pre-contract executor did.
++            provenance[reference] = AgentProvenance(agent=canonical, supplied_by="caller-session")
++            continue
+         if entry is None:
+             raise UndeclaredAgentError(
+                 reference,

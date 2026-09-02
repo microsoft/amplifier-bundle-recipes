@@ -1,0 +1,20 @@
+# BAD fixture recipe: step 2 references an agent NO declared dependency supplies.
+# The name is deliberately one the *caller* bundle has (lean-caller:packager),
+# so a caller-map fallback would silently satisfy it. manifest.v1 Core 3, 6.
+schema_version: 2
+name: undeclared-agent
+description: Declares supplier, references lean-caller:packager. Must fail preflight.
+
+dependencies:
+  - source: bundles/supplier
+    kind: bundle
+    required_agents:
+      - supplier:reviewer
+
+steps:
+  - id: review
+    agent: supplier:reviewer
+    instruction: Review the change.
+  - id: package
+    agent: lean-caller:packager
+    instruction: Package the artifact.

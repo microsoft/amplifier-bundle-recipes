@@ -1,0 +1,18 @@
+# BAD fixture recipe: a remote dependency on a host the trust policy disallows.
+# The LOCAL dependency is declared FIRST on purpose: if any fetch happened
+# before the refusal, the recorded resolver calls would prove it.
+# manifest.v1 Core 6 -- lib.v1 Core 6.
+schema_version: 2
+name: untrusted-dependency
+description: Declares a local dep, then a blocked-host remote dep. Must refuse first.
+
+dependencies:
+  - source: bundles/supplier
+    kind: bundle
+  - source: git+https://blocked.example.invalid/pkg@main
+    kind: bundle
+
+steps:
+  - id: review
+    agent: supplier:reviewer
+    instruction: Review the change.
