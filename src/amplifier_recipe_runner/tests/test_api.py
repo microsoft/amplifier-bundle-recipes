@@ -58,6 +58,7 @@ ALLOWLIST = {
     "RUN_MANIFEST_VERSION",
     "__version__",
     "plan",
+    "resume",
     "run",
     "AgentProvenance",
     "DependencyKind",

@@ -28,6 +28,8 @@ resolution, catalog, or execution logic ever moves into ``cli.py``.
 from __future__ import annotations
 
 import ast
+import asyncio
+import inspect
 import json
 import subprocess
 import sys
@@ -39,6 +41,11 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
+import amplifier_recipe_runner as pkg
+from amplifier_recipe_runner import execution
+from amplifier_recipe_runner.api import RunRequest
+from amplifier_recipe_runner.api import RunResult
+from amplifier_recipe_runner.api import RunStatus
 from amplifier_recipe_runner import cli as cli_module
 from amplifier_recipe_runner.cli import EXIT_FAILURE
 from amplifier_recipe_runner.cli import EXIT_LEGACY_RECIPE
@@ -49,6 +56,10 @@ from amplifier_recipe_runner.cli import EXIT_UNSUPPORTED
 from amplifier_recipe_runner.cli import EXIT_USAGE
 from amplifier_recipe_runner.cli import cli
 from amplifier_recipe_runner.cli import main
+from amplifier_recipe_runner.execution import AmbiguousCompletedStepError
+from amplifier_recipe_runner.execution import UnknownCompletedStepError
+from amplifier_recipe_runner.ports import HostServices
+from amplifier_recipe_runner.resolver import LocalBundleResolver
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cli"
 TOOLKIT = FIXTURES / "toolkit"
@@ -537,22 +548,80 @@ def test_resume_with_no_completed_steps_runs_from_the_start(runner: CliRunner, t
     assert "would resume by running 2 step(s) from the start" in text
 
 
-def test_resume_of_a_partially_completed_run_names_the_missing_capability(
-    runner: CliRunner, tmp_path: Path
+def test_resume_of_a_partially_completed_run_hands_the_completed_steps_to_the_library(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The one genuinely blocked case, and it refuses to redo completed steps."""
+    """The formerly-blocked case: continue mid-run instead of refusing.
+
+    The library is stubbed here because executing for real needs Foundation,
+    which this suite deliberately does not install. What is asserted is exactly
+    what the CLI owns: which entry point it calls, what it passes it, and what
+    it does with the answer. That the library then *skips* those steps is
+    asserted against the library itself, further down.
+    """
     recipe = write_recipe(tmp_path)
     _recorded_run(runner, tmp_path, recipe)
     _set_outcome(tmp_path, "failed", ["review"])
 
+    seen: dict[str, object] = {}
+
+    async def fake_resume(request, *, completed_steps=(), resolver=None, **kwargs):
+        seen["run_id"] = request.run_id
+        seen["completed_steps"] = tuple(completed_steps)
+        return RunResult(
+            run_id=str(request.run_id),
+            status=RunStatus.SUCCEEDED,
+            completed_steps=("review", "package"),
+        )
+
+    monkeypatch.setattr(cli_module, "resume_recipe", fake_resume)
+
     result = invoke(runner, ["--workspace", str(tmp_path), "resume", "--offline", "run-fixed"])
 
     text = combined(result)
-    assert result.exit_code == EXIT_UNSUPPORTED, text
-    assert "stopped after 1 of 2 step(s)" in text
-    assert "no `resume` entry point" in text
-    assert "remedy:" in text
-    assert "Traceback" not in text
+    assert result.exit_code == EXIT_OK, text
+    assert result.exit_code != EXIT_UNSUPPORTED
+    assert "no `resume` entry point" not in text
+    # The recorded completed steps reach the library verbatim -- not re-derived
+    # here, not silently dropped.
+    assert seen == {"run_id": "run-fixed", "completed_steps": ("review",)}
+    assert "completed_steps: review, package" in text
+    # And the outcome is recorded, so a second resume has nothing left to do.
+    recorded = json.loads((tmp_path / ".recipe-runner" / "runs" / "run-fixed" / "run.json").read_text("utf-8"))
+    assert recorded["status"] == "succeeded"
+    assert recorded["completed_steps"] == ["review", "package"]
+
+
+def test_resume_dry_run_mid_run_names_what_it_would_skip(runner: CliRunner, tmp_path: Path) -> None:
+    """A preview that says which steps are already done, and runs nothing."""
+    recipe = write_recipe(tmp_path)
+    _recorded_run(runner, tmp_path, recipe)
+    _set_outcome(tmp_path, "failed", ["review"])
+
+    result = invoke(runner, ["--workspace", str(tmp_path), "resume", "--offline", "--dry-run", "run-fixed"])
+
+    text = combined(result)
+    assert result.exit_code == EXIT_OK, text
+    assert "would resume by running 1 remaining step(s), skipping 1 already completed" in text
+
+
+def test_no_code_path_still_refuses_a_mid_run_resume() -> None:
+    """Acceptance: the ``UnsupportedCapabilityError`` branch is deleted.
+
+    Structural, not message-based: the branch could otherwise be reintroduced
+    under a different wording and no test would notice. The class and its exit
+    code survive on purpose (a future missing capability must not become a
+    generic exit 1), so what is asserted is that nothing constructs it.
+    """
+    tree = ast.parse(CLI_SOURCE.read_text(encoding="utf-8"))
+    constructed = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "UnsupportedCapabilityError"
+    ]
+    assert constructed == [], "mid-run resume is wired to the library; nothing should refuse it again"
 
 
 def test_resume_refuses_a_recipe_edited_after_the_run(runner: CliRunner, tmp_path: Path) -> None:
@@ -574,6 +643,253 @@ def test_resume_of_an_unknown_run_is_a_usage_error(runner: CliRunner, tmp_path: 
     text = combined(result)
     assert result.exit_code == EXIT_USAGE, text
     assert "never-ran" in text
+
+
+# --------------------------------------------------------------------------
+# The library entry point the CLI resumes through
+#
+# These call ``amplifier_recipe_runner.resume`` directly, with an injected
+# spawn backend. They sit beside the CLI tests deliberately: the CLI cannot
+# prove the skip in-process -- executing for real needs Foundation, which this
+# suite does not install -- so the behaviour the CLI depends on is proved here,
+# against the same fixture recipe, rather than asserted by assumption.
+# --------------------------------------------------------------------------
+
+
+class Providers:
+    """Provider port double. Never resolved: an injected backend needs none."""
+
+    def roles(self) -> list[str]:
+        return ["general"]
+
+    def resolve(self, role: str) -> object:  # pragma: no cover - never reached
+        return object()
+
+
+class RecordingBackend:
+    """Spawn backend double. Records every step that actually executed."""
+
+    def __init__(self) -> None:
+        self.canonicals: list[str] = []
+
+    async def spawn(self, request: object) -> str:
+        canonical = str(getattr(request, "canonical"))
+        self.canonicals.append(canonical)
+        return f"done:{canonical}"
+
+
+def _library_resume(recipe: Path, workspace: Path, backend: RecordingBackend, completed: tuple[str, ...]):
+    request = RunRequest(
+        recipe=recipe,
+        services=HostServices(provider_access=Providers(), workspace=workspace),  # type: ignore[arg-type]
+        run_id="run-fixed",
+    )
+    return asyncio.run(
+        pkg.resume(
+            request,
+            completed_steps=completed,
+            resolver=LocalBundleResolver(),
+            spawn_backend=backend,
+        )
+    )
+
+
+def test_library_exports_resume_as_an_async_entry_point() -> None:
+    """lib Core 2 names validate/plan/run/resume; the CLI drives this one."""
+    assert pkg.resume is execution.resume
+    assert "resume" in pkg.__all__
+    assert inspect.iscoroutinefunction(pkg.resume)
+
+
+def test_library_resume_runs_only_the_uncompleted_steps(tmp_path: Path) -> None:
+    """The acceptance case: continue mid-run, re-running nothing."""
+    recipe = write_recipe(tmp_path)
+    backend = RecordingBackend()
+
+    result = _library_resume(recipe, tmp_path, backend, ("review",))
+
+    assert result.status is RunStatus.SUCCEEDED
+    assert backend.canonicals == ["toolkit:packager"], "a completed step was re-run"
+    # The result describes the run, not just this attempt.
+    assert result.completed_steps == ("review", "package")
+    # A skipped step's output is absent rather than invented (lib Core 8).
+    assert "review" not in result.outputs
+    assert result.outputs["package"] == "done:toolkit:packager"
+
+
+def test_library_resume_with_nothing_completed_is_a_full_run(tmp_path: Path) -> None:
+    """Resuming a run that never started is running it -- same path, no skips."""
+    recipe = write_recipe(tmp_path)
+    backend = RecordingBackend()
+
+    result = _library_resume(recipe, tmp_path, backend, ())
+
+    assert result.status is RunStatus.SUCCEEDED
+    assert backend.canonicals == ["toolkit:reviewer", "toolkit:packager"]
+    assert result.completed_steps == ("review", "package")
+
+
+def test_library_resume_skips_by_id_not_by_position(tmp_path: Path) -> None:
+    """A run that stopped with a gap must not redo the step past the gap."""
+    recipe = write_recipe(tmp_path)
+    backend = RecordingBackend()
+
+    result = _library_resume(recipe, tmp_path, backend, ("package",))
+
+    assert result.status is RunStatus.SUCCEEDED
+    assert backend.canonicals == ["toolkit:reviewer"]
+    assert result.completed_steps == ("package", "review")
+
+
+def test_library_resume_refuses_a_step_id_the_recipe_does_not_declare(tmp_path: Path) -> None:
+    """Neither silent reading is honest, so it refuses before anything runs."""
+    recipe = write_recipe(tmp_path)
+    backend = RecordingBackend()
+
+    result = _library_resume(recipe, tmp_path, backend, ("review", "reviww"))
+
+    assert result.status is RunStatus.FAILED
+    assert isinstance(result.error, UnknownCompletedStepError)
+    assert "'reviww'" in str(result.error)
+    assert getattr(result.error, "remedy", None)
+    assert backend.canonicals == [], "nothing may run once the recorded step list is unusable"
+
+
+def test_library_resume_refuses_a_step_id_the_recipe_declares_twice(tmp_path: Path) -> None:
+    """Nothing enforces unique step ids, so resuming must not guess.
+
+    ``run`` merely overwrites an output when two steps share an id; skipping
+    both would drop real, unfinished work with no trace -- the silent skip lib
+    Core 8 forbids.
+    """
+    recipe = write_recipe(
+        tmp_path,
+        f"""
+        schema_version: 2
+        name: two-steps-one-name
+        dependencies:
+          - source: {TOOLKIT}
+            kind: bundle
+        steps:
+          - id: review
+            agent: "toolkit:reviewer"
+            prompt: "review it"
+          - id: review
+            agent: "toolkit:packager"
+            prompt: "review it again"
+        """,
+    )
+    backend = RecordingBackend()
+
+    result = _library_resume(recipe, tmp_path, backend, ("review",))
+
+    assert result.status is RunStatus.FAILED
+    assert isinstance(result.error, AmbiguousCompletedStepError)
+    assert "more than once" in str(result.error)
+    assert backend.canonicals == [], "no step may run once a recorded id is ambiguous"
+
+
+def test_a_refused_resume_still_reports_the_steps_it_was_given(tmp_path: Path) -> None:
+    """Failing to resume must not un-complete a step that already ran.
+
+    The CLI records ``completed_steps`` off the result verbatim, so a refusal
+    that reported an empty list would erase the very history the next resume
+    needs.
+    """
+    recipe = write_recipe(tmp_path)
+    backend = RecordingBackend()
+
+    result = _library_resume(recipe, tmp_path, backend, ("review", "reviww"))
+
+    assert result.status is RunStatus.FAILED
+    assert result.completed_steps == ("review", "reviww")
+
+
+def test_a_refused_resume_leaves_the_recorded_run_resumable(runner: CliRunner, tmp_path: Path) -> None:
+    """The same guarantee, observed where it actually matters: on disk."""
+    recipe = write_recipe(tmp_path)
+    _recorded_run(runner, tmp_path, recipe)
+    _set_outcome(tmp_path, "failed", ["review"])
+    run_json = tmp_path / ".recipe-runner" / "runs" / "run-fixed" / "run.json"
+
+    async def refusing_resume(request, *, completed_steps=(), resolver=None, **kwargs):
+        return RunResult(
+            run_id=str(request.run_id),
+            status=RunStatus.FAILED,
+            completed_steps=tuple(completed_steps),
+            error=RuntimeError("the remaining step failed"),
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(cli_module, "resume_recipe", refusing_resume)
+        result = invoke(runner, ["--workspace", str(tmp_path), "resume", "--offline", "run-fixed"])
+
+    assert result.exit_code == EXIT_FAILURE, combined(result)
+    assert json.loads(run_json.read_text("utf-8"))["completed_steps"] == ["review"]
+
+
+def test_library_run_is_unaffected_by_the_resume_checks(tmp_path: Path) -> None:
+    """``run`` passes no completed steps, so neither refusal can fire for it."""
+    recipe = write_recipe(
+        tmp_path,
+        f"""
+        schema_version: 2
+        name: two-steps-one-name
+        dependencies:
+          - source: {TOOLKIT}
+            kind: bundle
+        steps:
+          - id: review
+            agent: "toolkit:reviewer"
+            prompt: "review it"
+          - id: review
+            agent: "toolkit:packager"
+            prompt: "review it again"
+        """,
+    )
+    backend = RecordingBackend()
+    request = RunRequest(
+        recipe=recipe,
+        services=HostServices(provider_access=Providers(), workspace=tmp_path),  # type: ignore[arg-type]
+        run_id="run-fixed",
+    )
+
+    result = asyncio.run(pkg.run(request, resolver=LocalBundleResolver(), spawn_backend=backend))
+
+    assert result.status is RunStatus.SUCCEEDED
+    assert backend.canonicals == ["toolkit:reviewer", "toolkit:packager"]
+
+
+def test_library_resume_reports_every_skip_on_the_event_sink(tmp_path: Path) -> None:
+    """A skipped step is a claim about earlier work; it is made visibly."""
+    recipe = write_recipe(tmp_path)
+    events: list[str] = []
+
+    class Sink:
+        def emit(self, event: object) -> None:
+            events.append(f"{getattr(event, 'kind')}:{(getattr(event, 'data', {}) or {}).get('step_id')}")
+
+    request = RunRequest(
+        recipe=recipe,
+        services=HostServices(  # type: ignore[arg-type]
+            provider_access=Providers(),
+            workspace=tmp_path,
+            event_sink=Sink(),
+        ),
+        run_id="run-fixed",
+    )
+    asyncio.run(
+        pkg.resume(
+            request,
+            completed_steps=("review",),
+            resolver=LocalBundleResolver(),
+            spawn_backend=RecordingBackend(),
+        )
+    )
+
+    assert "step:skipped:review" in events
+    assert "step:start:package" in events
+    assert "step:start:review" not in events
 
 
 # --------------------------------------------------------------------------
@@ -677,6 +993,59 @@ def test_run_json_is_one_document_with_every_human_line_on_stderr(tmp_path: Path
     for line in ("run_id:", "provenance:", "dry-run:", "lock:"):
         assert line not in result.stdout, f"{line!r} leaked onto stdout under --json"
         assert line in result.stderr, f"{line!r} vanished instead of moving to stderr"
+
+
+# --------------------------------------------------------------------------
+# Resume exit codes, out of process
+#
+# ``CliRunner`` never reaches ``main()`` or a real process exit status, so the
+# exit-code contract is only actually proved through the dual entry point.
+# --------------------------------------------------------------------------
+
+
+def test_module_entry_point_mid_run_resume_no_longer_exits_unsupported(runner: CliRunner, tmp_path: Path) -> None:
+    """The regression this work item closes, in a real process.
+
+    ``--dry-run`` because a real mid-run continuation needs Foundation. The old
+    refusal preceded the dry-run check, so this invocation exited 6 before and
+    exits 0 now -- which is exactly the branch deletion, observed from outside.
+    """
+    recipe = write_recipe(tmp_path)
+    _recorded_run(runner, tmp_path, recipe)
+    _set_outcome(tmp_path, "failed", ["review"])
+
+    result = _module(["--workspace", str(tmp_path), "resume", "--offline", "--dry-run", "run-fixed"], cwd=tmp_path)
+
+    assert result.returncode == EXIT_OK, result.stderr
+    assert result.returncode != EXIT_UNSUPPORTED
+    assert "1 remaining step(s), skipping 1 already completed" in result.stdout
+
+
+def test_module_entry_point_completed_run_resume_exits_zero(runner: CliRunner, tmp_path: Path) -> None:
+    recipe = write_recipe(tmp_path)
+    _recorded_run(runner, tmp_path, recipe)
+    _set_outcome(tmp_path, "succeeded", ["review", "package"])
+
+    result = _module(["--workspace", str(tmp_path), "resume", "--offline", "run-fixed"], cwd=tmp_path)
+
+    assert result.returncode == EXIT_OK, result.stderr
+    assert "nothing to resume" in result.stdout
+
+
+def test_module_entry_point_resume_of_an_edited_recipe_exits_provenance_mismatch(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """Core 8, end to end: the check precedes execution, and it is exit 5."""
+    recipe = write_recipe(tmp_path)
+    _recorded_run(runner, tmp_path, recipe)
+    _set_outcome(tmp_path, "failed", ["review"])
+    recipe.write_text(recipe.read_text(encoding="utf-8").replace("review it", "review it twice"), encoding="utf-8")
+
+    result = _module(["--workspace", str(tmp_path), "resume", "--offline", "run-fixed"], cwd=tmp_path)
+
+    assert result.returncode == EXIT_PROVENANCE_MISMATCH, result.stdout + result.stderr
+    assert "remedy:" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 # --------------------------------------------------------------------------
