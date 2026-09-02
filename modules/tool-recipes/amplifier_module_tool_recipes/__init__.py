@@ -1,4 +1,20 @@
-"""Amplifier tool-recipes module - Execute multi-step AI agent recipes."""
+"""Amplifier tool-recipes module - Execute multi-step AI agent recipes.
+
+Two execution modes live behind the single ``recipes`` tool, chosen by the
+recipe's own manifest (``recipe-dependency-manifest.v1`` Core 1):
+
+* A recipe declaring ``schema_version`` is executed by the
+  ``amplifier-recipe-runner`` library -- the one execution home
+  (``recipe-runner-lib.v1`` Core 1). Amplifier reaches it through five named
+  ports only, none of which carries this session's agent map.
+* A recipe declaring none is a **legacy recipe**: it keeps its existing
+  caller-bound behavior, byte-identically, labeled
+  ``execution_mode="legacy-caller-bound"`` and accompanied by a deprecation
+  warning (Core 10).
+
+See ``runner_adapter.py`` for the port mapping and why the label rides beside
+the result payload rather than inside it.
+"""
 
 import json
 import logging
@@ -11,6 +27,16 @@ from amplifier_core import ToolResult
 from .executor import ApprovalGatePausedError
 from .executor import RecipeExecutor
 from .models import Recipe
+from .runner_adapter import LEGACY_EXECUTION_MODE
+from .runner_adapter import V2_EXECUTION_MODE
+from .runner_adapter import RecipeRunnerUnavailableError
+from .runner_adapter import declared_schema_version
+from .runner_adapter import is_v2_recipe
+from .runner_adapter import label_execution_mode
+from .runner_adapter import load_runner
+from .runner_adapter import recipe_display_name
+from .runner_adapter import run_v2_recipe
+from .runner_adapter import warn_legacy_recipe
 from .session import ApprovalStatus
 from .session import SessionManager
 from .validator import validate_recipe
@@ -387,7 +413,16 @@ Example:
         return Path(path_str).expanduser()
 
     async def _execute_recipe(self, input: dict[str, Any]) -> ToolResult:
-        """Execute recipe from YAML file."""
+        """Route a recipe to the runner library (v2) or the legacy path.
+
+        The manifest decides (``recipe-dependency-manifest.v1`` Core 1): a
+        recipe declaring ``schema_version`` executes in the runner library; one
+        that does not is a legacy recipe and runs exactly as it always has.
+
+        There is deliberately no fallback from v2 to legacy. If the library is
+        unavailable the run fails loud -- running a v2 recipe caller-bound would
+        resolve a *different* agent catalog while reporting success.
+        """
         recipe_path_str = input.get("recipe_path")
         if not recipe_path_str:
             return ToolResult(
@@ -409,6 +444,179 @@ Example:
         # Determine project path (from coordinator capability or cwd)
         project_path = self._get_working_dir()
 
+        if is_v2_recipe(recipe_path):
+            return await self._execute_v2_recipe(
+                recipe_path, context_vars, project_path
+            )
+
+        # Legacy recipe: labeled and confined (manifest.v1 Core 10). The warning
+        # rides `warnings`/`logging` only -- see runner_adapter.warn_legacy_recipe.
+        warn_legacy_recipe(recipe_path)
+        result = await self._execute_legacy_recipe(
+            recipe_path, context_vars, project_path
+        )
+        return label_execution_mode(result, LEGACY_EXECUTION_MODE)
+
+    async def _execute_v2_recipe(
+        self,
+        recipe_path: Path,
+        context_vars: dict[str, Any],
+        project_path: Path,
+    ) -> ToolResult:
+        """Execute a schema-v2 recipe in the runner library.
+
+        Amplifier's approvals, cancellation, events/display, workspace and
+        provider access are mapped onto the library's five ports; the caller's
+        agent map is not among them, and the adapter refuses the run if it ever
+        becomes reachable (``runner_adapter.CallerAgentLeakError``).
+        """
+        try:
+            runner = load_runner()
+        except RecipeRunnerUnavailableError as exc:
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": str(exc),
+                        "type": type(exc).__name__,
+                    },
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        recipe_name = recipe_display_name(recipe_path)
+
+        # Bind an Amplifier recipe session so the approval and cancellation
+        # ports have real state to read, and so `approvals`/`cancel`/`list`
+        # work for a v2 run exactly as they do for a legacy one.
+        session_id: str | None = None
+        try:
+            session_id = self.session_manager.create_session(
+                Recipe(
+                    name=recipe_name,
+                    description=f"schema_version {declared_schema_version(recipe_path)!r} recipe",
+                    version="",
+                ),
+                project_path,
+                recipe_path=recipe_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not bind an Amplifier session to this v2 run (%s); its "
+                "approval and cancellation ports will have no state to read.",
+                exc,
+            )
+
+        try:
+            result = await run_v2_recipe(
+                self.coordinator,
+                self.session_manager,
+                recipe_path,
+                context_vars,
+                project_path,
+                session_id=session_id,
+            )
+        except Exception as exc:
+            logger.error("v2 recipe execution failed: %s", exc, exc_info=True)
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": f"Recipe execution failed: {exc}",
+                        "type": type(exc).__name__,
+                    },
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        return label_execution_mode(
+            self._v2_tool_result(result, runner, recipe_path, recipe_name, session_id),
+            V2_EXECUTION_MODE,
+        )
+
+    def _v2_tool_result(
+        self,
+        result: Any,
+        runner: Any,
+        recipe_path: Path,
+        recipe_name: str,
+        session_id: str | None,
+    ) -> ToolResult:
+        """Translate the library's ``RunResult`` into a tool result.
+
+        Every non-success status is reported as itself; a paused or failed run
+        never reads as a completed one (``recipe-runner-lib.v1`` Core 8).
+        """
+        status = result.status
+        plan = result.plan
+        output: dict[str, Any] = {
+            "recipe": recipe_name,
+            "execution_mode": V2_EXECUTION_MODE,
+            "schema_version": declared_schema_version(recipe_path),
+            "run_id": result.run_id,
+            "session_id": session_id,
+            "completed_steps": list(result.completed_steps),
+        }
+        if plan is not None:
+            # Core 7 provenance: which dependency supplied each agent.
+            output["agent_provenance"] = {
+                name: provenance.supplied_by for name, provenance in plan.agents.items()
+            }
+            output["dependencies"] = [
+                {
+                    "uri": dependency.uri,
+                    "resolved_revision": dependency.resolved_revision,
+                    "content_digest": dependency.content_digest,
+                }
+                for dependency in plan.dependencies
+            ]
+
+        if status == runner.RunStatus.SUCCEEDED:
+            output["status"] = "completed"
+            output["summary"] = {
+                key: _truncate_value(value) for key, value in result.outputs.items()
+            }
+            return ToolResult(success=True, output=output)
+
+        if status == runner.RunStatus.PAUSED:
+            output["status"] = "paused_for_approval"
+            output["stage_name"] = result.pending_approval
+            output["message"] = (
+                f"Recipe paused at stage '{result.pending_approval}'. "
+                "Use 'approve' or 'deny' to continue, then 'resume'."
+            )
+            return ToolResult(success=True, output=output)
+
+        if status == runner.RunStatus.CANCELLED:
+            output["status"] = "cancelled"
+            output["message"] = "Recipe run was cancelled by the host."
+            return ToolResult(success=True, output=output)
+
+        output["status"] = "failed"
+        error = result.error
+        return ToolResult(
+            success=False,
+            output=output,
+            error={
+                "message": f"Recipe execution failed: {error}",
+                "type": type(error).__name__ if error is not None else "RunFailed",
+                "remedy": getattr(error, "remedy", None),
+            },
+        )
+
+    async def _execute_legacy_recipe(
+        self,
+        recipe_path: Path,
+        context_vars: dict[str, Any],
+        project_path: Path,
+    ) -> ToolResult:
+        """Execute a legacy (no ``schema_version``) recipe.
+
+        Behavior here is frozen: ``conformance/legacy-compat`` pins this path's
+        outcome and agent provenance byte-for-byte (manifest.v1 Core 10). Agents
+        resolve from the caller's map, which is exactly what schema v2 exists to
+        end -- but changing it here would break every recipe that works today.
+        """
         # Load recipe
         try:
             recipe = Recipe.from_yaml(recipe_path)
@@ -509,12 +717,41 @@ Example:
                 error={"message": f"Recipe file not found in session: {session_id}"},
             )
 
+        if is_v2_recipe(recipe_file):
+            # Resuming a v2 run is the runner library's `resume` (it replays
+            # recorded provenance -- manifest.v1 Core 8). That entry point is
+            # not wired through this adapter yet, and resuming a v2 recipe on
+            # the legacy path would silently re-bind its agents to this caller.
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": (
+                            f"Session {session_id} holds a schema_version "
+                            f"{declared_schema_version(recipe_file)!r} recipe. Resuming it "
+                            "belongs to the recipe-runner library's `resume`, which this "
+                            "adapter does not expose yet. It was NOT resumed on the legacy "
+                            "path: that would resolve its agents from this session instead "
+                            "of its declared dependencies. Re-run the recipe with the "
+                            "`execute` operation."
+                        ),
+                        "type": "V2ResumeUnsupported",
+                    },
+                ),
+                V2_EXECUTION_MODE,
+            )
+
+        warn_legacy_recipe(original_recipe_path or recipe_file)
+
         try:
             recipe = Recipe.from_yaml(recipe_file)
         except Exception as e:
-            return ToolResult(
-                success=False,
-                error={"message": f"Failed to load recipe from session: {str(e)}"},
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={"message": f"Failed to load recipe from session: {str(e)}"},
+                ),
+                LEGACY_EXECUTION_MODE,
             )
 
         # Resume execution (recipe_path recovered from state for sub-recipe resolution)
@@ -531,35 +768,44 @@ Example:
             # Full context is saved in session files and can be massive (1MB+)
             result_summary = _extract_result_summary(final_context, recipe=recipe)
 
-            return ToolResult(
-                success=True,
-                output={
-                    "status": "completed",
-                    "recipe": recipe.name,
-                    "session_id": session_id,
-                    "summary": result_summary,
-                },
+            return label_execution_mode(
+                ToolResult(
+                    success=True,
+                    output={
+                        "status": "completed",
+                        "recipe": recipe.name,
+                        "session_id": session_id,
+                        "summary": result_summary,
+                    },
+                ),
+                LEGACY_EXECUTION_MODE,
             )
         except ApprovalGatePausedError as e:
             # Recipe paused at another approval gate
-            return ToolResult(
-                success=True,
-                output={
-                    "status": "paused_for_approval",
-                    "recipe": recipe.name,
-                    "session_id": e.session_id,
-                    "stage_name": e.stage_name,
-                    "approval_prompt": e.approval_prompt,
-                    "message": f"Recipe paused at stage '{e.stage_name}'. Use 'approve' or 'deny' to continue.",
-                },
+            return label_execution_mode(
+                ToolResult(
+                    success=True,
+                    output={
+                        "status": "paused_for_approval",
+                        "recipe": recipe.name,
+                        "session_id": e.session_id,
+                        "stage_name": e.stage_name,
+                        "approval_prompt": e.approval_prompt,
+                        "message": f"Recipe paused at stage '{e.stage_name}'. Use 'approve' or 'deny' to continue.",
+                    },
+                ),
+                LEGACY_EXECUTION_MODE,
             )
         except Exception as e:
-            return ToolResult(
-                success=False,
-                error={
-                    "message": f"Failed to resume recipe: {str(e)}",
-                    "type": type(e).__name__,
-                },
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": f"Failed to resume recipe: {str(e)}",
+                        "type": type(e).__name__,
+                    },
+                ),
+                LEGACY_EXECUTION_MODE,
             )
 
     async def _list_sessions(self, input: dict[str, Any]) -> ToolResult:
@@ -599,6 +845,31 @@ Example:
                 error={
                     "message": f"Could not resolve @mention path: {recipe_path_str}"
                 },
+            )
+
+        if is_v2_recipe(recipe_path):
+            # The library owns manifest parsing and validation (lib.v1 Core 1);
+            # this adapter must not grow a second opinion. Its `validate` entry
+            # point is not exposed here yet, and answering with the *legacy*
+            # validator would report a v2 recipe "valid" while ignoring the
+            # manifest that decides what it actually resolves to.
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": (
+                            f"Recipe declares schema_version "
+                            f"{declared_schema_version(recipe_path)!r}. Validating it "
+                            "belongs to the recipe-runner library, which this adapter "
+                            "does not expose a `validate` entry point for yet. It was "
+                            "NOT checked with the legacy validator, which ignores the "
+                            "`dependencies` manifest entirely. Use the `execute` "
+                            "operation, or the standalone recipe-runner CLI."
+                        ),
+                        "type": "V2ValidateUnsupported",
+                    },
+                ),
+                V2_EXECUTION_MODE,
             )
 
         try:
