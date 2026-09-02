@@ -32,6 +32,7 @@ import argparse
 import asyncio
 import dataclasses
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -50,8 +51,10 @@ BUNDLES = FIXTURES / "bundles"
 
 sys.path.insert(0, str(KIT_DIR))
 
+from _bootstrap import PLACEMENT_FIELDS  # noqa: E402
 from _bootstrap import ensure_runner_importable  # noqa: E402
 from _bootstrap import graph_identity  # noqa: E402
+from _bootstrap import runner_source_path  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -235,6 +238,54 @@ async def plan_recipe(recipe: str, *, resolver: Any = None, **kwargs: Any) -> An
     return await _plan(request_for(recipe, **kwargs), resolver=resolver or local_resolver())
 
 
+# --------------------------------------------------------------------------
+# Talking to a second host process
+# --------------------------------------------------------------------------
+
+
+def subprocess_env() -> dict[str, str]:
+    """Environment for a second host, pinned to the SAME runner source.
+
+    If ``_bootstrap`` had to put the library on ``sys.path`` (a checkout rather
+    than an install), a child process would not inherit that and could silently
+    import a *different* copy -- turning "two hosts disagree" into a statement
+    about two versions rather than about conformance. Forwarding the path it
+    chose makes both hosts provably the same implementation.
+    """
+    env = dict(os.environ)
+    added = runner_source_path()
+    if added:
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{added}{os.pathsep}{existing}" if existing else added
+    return env
+
+
+#: The two fields ``_bootstrap.graph_identity`` drops from the in-process plan.
+#: A run id and a wall-clock timestamp describe THIS invocation, not the graph
+#: it resolved; comparing them would fail the fixture for a reason that has
+#: nothing to do with conformance.
+PER_RUN_FIELDS: tuple[str, ...] = ("run_id", "created_at")
+
+
+def manifest_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    """``graph_identity`` for a run manifest that arrived as JSON.
+
+    The CLI prints the library's run-manifest mapping verbatim (lib.v1 Core 7)
+    -- the same mapping ``graph_identity`` starts from -- so exactly the same
+    exclusions apply, and only those: the per-run fields above and the
+    placement fields ``_bootstrap`` already names. Nothing else is dropped,
+    renamed, or coerced, so an extra or missing key still fails the comparison.
+    """
+    data = {key: value for key, value in payload.items() if key not in PER_RUN_FIELDS}
+    for dependency in data.get("dependencies") or []:
+        for key in PLACEMENT_FIELDS:
+            dependency.pop(key, None)
+    for agent in (data.get("agents") or {}).values():
+        for key in PLACEMENT_FIELDS:
+            agent.pop(key, None)
+    return data
+
+
 async def simulated_caller_agents() -> set[str]:
     """The agent map of a CALLER that has no reviewer of any kind.
 
@@ -361,9 +412,11 @@ async def good_declared_dependency() -> str:
     clauses=("lib.v1 Core 1", "lib.v1 Core 7", "manifest.v1 Core 7"),
     rows=("RCP-101", "RCP-107", "RCP-007"),
     notes=(
-        "Host B is a separate OS process. It prefers the real `recipe-runner` CLI "
-        "when importable and falls back to conformance/kit/host_adapter.py, "
-        "reporting which surface it used. The Amplifier tool adapter is not yet a "
+        "Host B is a separate OS process. It prefers the real `recipe-runner` CLI, "
+        "invoked through its DOCUMENTED dual entry point "
+        "`python -m amplifier_recipe_runner plan --json`, and falls back to "
+        "conformance/kit/host_adapter.py where the CLI is not installed -- reporting "
+        "which surface it used either way. The Amplifier tool adapter is not yet a "
         "runner host, so it is not compared -- see kit README residual R1."
     ),
 )
@@ -375,10 +428,28 @@ async def good_identical_graph_across_hosts() -> str:
     expect(in_process["dependencies"], "resolved graph has no dependencies; comparison would be vacuous")
     expect(in_process["agents"], "resolved graph has no agents; comparison would be vacuous")
 
-    cli_available = importlib.util.find_spec("amplifier_recipe_runner.cli") is not None
-    if cli_available:  # pragma: no cover - the CLI module does not exist yet
-        argv = [sys.executable, "-m", "amplifier_recipe_runner.cli", "plan", "--json", str(RECIPES / "declared.yaml")]
-        surface = "amplifier_recipe_runner.cli"
+    # `python -m amplifier_recipe_runner` -- NOT `-m amplifier_recipe_runner.cli`.
+    # cli.py declares no `__main__` guard, so importing it as a module runs
+    # nothing, exits 0, and prints an empty stdout; __main__.py is the entry
+    # point the library documents, and the console script shares its `main`.
+    cli_available = importlib.util.find_spec("amplifier_recipe_runner.__main__") is not None
+    if cli_available:
+        argv = [
+            sys.executable,
+            "-m",
+            "amplifier_recipe_runner",
+            "plan",
+            "--json",
+            # Configure host B exactly as host A: the in-process request passes
+            # no trust policy and resolves offline. Anything else would compare
+            # two DIFFERENTLY configured hosts and report the difference as a
+            # conformance failure.
+            "--offline",
+            "--trust",
+            "none",
+            str(RECIPES / "declared.yaml"),
+        ]
+        surface = "recipe-runner CLI (python -m amplifier_recipe_runner plan --json)"
     else:
         argv = [
             sys.executable,
@@ -390,9 +461,23 @@ async def good_identical_graph_across_hosts() -> str:
         ]
         surface = "conformance/kit/host_adapter.py (standalone process)"
 
-    completed = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    completed = subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        # The recipe declares `bundles/supplier` as a path relative to the
+        # fixture root, which is the root host A pins via
+        # LocalBundleResolver(base_path=FIXTURES). The CLI's offline resolver
+        # falls back to the process CWD, so this is the same root, named.
+        cwd=str(FIXTURES),
+        env=subprocess_env(),
+    )
     expect_eq(completed.returncode, 0, f"second host exited non-zero: {completed.stderr.strip()}")
+    expect(completed.stdout.strip(), f"second host printed nothing on stdout (stderr: {completed.stderr.strip()!r})")
     out_of_process = json.loads(completed.stdout)
+    if cli_available:
+        out_of_process = manifest_identity(out_of_process)
 
     if in_process != out_of_process:
         differing = sorted(
