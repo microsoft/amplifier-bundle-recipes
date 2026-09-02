@@ -44,6 +44,7 @@ from amplifier_recipe_runner.resolver import ResolvedAgent
 from amplifier_recipe_runner.resolver import ResolvedBundle
 from amplifier_recipe_runner.resolver import canonical_agent_name
 from amplifier_recipe_runner.resolver import split_source
+from amplifier_recipe_runner.trust import TrustPolicy as RealTrustPolicy
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ACME = FIXTURES / "acme"
@@ -646,6 +647,149 @@ def test_permissive_policy_is_recorded_in_effective_policy(tmp_path: Path) -> No
     assert result.policy is not None
     assert result.policy.trust_policy == "allow-all"
     assert result.policy.lock_mode is LockMode.UNLOCKED
+
+
+# --------------------------------------------------------------------------
+# Core 9 -- effective capabilities are the three-way intersection
+# --------------------------------------------------------------------------
+
+
+def capability_recipe(tmp_path: Path, declared: str) -> Path:
+    """A minimal planned recipe declaring ``capabilities: <declared>``."""
+    return write_recipe(
+        tmp_path,
+        f"""
+        schema_version: 2
+        dependencies:
+          - source: {ACME}
+            kind: bundle
+        capabilities: {declared}
+        steps:
+          - id: review
+            agent: "acme:reviewer"
+            prompt: p
+        """,
+    )
+
+
+def test_plan_capabilities_are_the_three_way_intersection(tmp_path: Path) -> None:
+    """host ∩ runner ∩ manifest -- the manifest term now has a real source."""
+    recipe = capability_recipe(tmp_path, "[net, fs, exec]")
+    policy = RealTrustPolicy.interactive(capability_allowlist=("net", "fs"))
+
+    result = planned(recipe, trust_policy=policy, host_capabilities=("fs", "exec"))
+
+    assert result.policy is not None
+    assert result.policy.capabilities == ("fs",)
+
+
+def test_a_manifest_cannot_widen_what_the_policies_allow(tmp_path: Path) -> None:
+    recipe = capability_recipe(tmp_path, "[net, exec]")
+    policy = RealTrustPolicy.interactive(capability_allowlist=("net", "exec"))
+
+    result = planned(recipe, trust_policy=policy, host_capabilities=("fs",))
+
+    assert result.policy is not None
+    assert result.policy.capabilities == ()
+
+
+def test_a_recipe_declaring_no_capabilities_is_granted_none(tmp_path: Path) -> None:
+    """Both open policies still grant nothing: an intersection cannot add."""
+    recipe = write_recipe(
+        tmp_path,
+        f"""
+        schema_version: 2
+        dependencies:
+          - source: {ACME}
+            kind: bundle
+        steps:
+          - id: review
+            agent: "acme:reviewer"
+            prompt: p
+        """,
+    )
+
+    result = planned(recipe, trust_policy=RealTrustPolicy.interactive(), host_capabilities=None)
+
+    assert result.policy is not None
+    assert result.policy.capabilities == ()
+
+
+def test_empty_declaration_and_no_declaration_plan_identically(tmp_path: Path) -> None:
+    policy = RealTrustPolicy.interactive(capability_allowlist=("net",))
+
+    declared = write_recipe(
+        tmp_path,
+        f"""
+        schema_version: 2
+        dependencies:
+          - source: {ACME}
+            kind: bundle
+        capabilities: []
+        steps:
+          - id: review
+            agent: "acme:reviewer"
+            prompt: p
+        """,
+        name="declared.yaml",
+    )
+    absent = write_recipe(
+        tmp_path,
+        f"""
+        schema_version: 2
+        dependencies:
+          - source: {ACME}
+            kind: bundle
+        steps:
+          - id: review
+            agent: "acme:reviewer"
+            prompt: p
+        """,
+        name="absent.yaml",
+    )
+
+    declared_plan = planned(declared, trust_policy=policy, host_capabilities=("net",))
+    absent_plan = planned(absent, trust_policy=policy, host_capabilities=("net",))
+
+    assert declared_plan.policy is not None
+    assert absent_plan.policy is not None
+    assert declared_plan.policy.capabilities == absent_plan.policy.capabilities == ()
+
+
+def test_a_policy_carrying_no_allowlist_is_unconstrained_not_empty(tmp_path: Path) -> None:
+    """The TrustPolicy protocol names only `name`/`check_source`.
+
+    A minimal conforming policy must therefore mean "the runner imposes no
+    capability constraint" -- reading its absent allowlist as an empty set
+    would silently strip every capability the recipe declared.
+    """
+    recipe = capability_recipe(tmp_path, "[net, fs]")
+
+    result = planned(recipe, trust_policy=PermissivePolicy(), host_capabilities=None)
+
+    assert result.policy is not None
+    assert result.policy.capabilities == ("fs", "net")
+
+
+def test_a_host_permitting_nothing_differs_from_no_host_constraint(tmp_path: Path) -> None:
+    recipe = capability_recipe(tmp_path, "[net]")
+    policy = RealTrustPolicy.interactive(capability_allowlist=("net",))
+
+    unconstrained = planned(recipe, trust_policy=policy, host_capabilities=None)
+    closed = planned(recipe, trust_policy=policy, host_capabilities=())
+
+    assert unconstrained.policy is not None and closed.policy is not None
+    assert unconstrained.policy.capabilities == ("net",)
+    assert closed.policy.capabilities == ()
+
+
+def test_capabilities_are_granted_with_no_trust_policy_at_all(tmp_path: Path) -> None:
+    recipe = capability_recipe(tmp_path, "[net]")
+
+    result = planned(recipe)
+
+    assert result.policy is not None
+    assert result.policy.capabilities == ("net",)
 
 
 def test_legacy_recipe_is_refused_by_the_planner(tmp_path: Path) -> None:

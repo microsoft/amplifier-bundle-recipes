@@ -9,6 +9,14 @@ Implements the parse-time half of contract ``recipe-dependency-manifest.v1``:
 * **Core 2** -- ``dependencies`` entries are source URIs with
   ``kind: bundle`` or ``kind: behavior`` only, each optionally listing
   ``required_agents``.
+* **Core 9** -- an optional top-level ``capabilities`` list is the recipe's own
+  term of the effective-capability intersection (host policy ∩ runner policy ∩
+  manifest-declared needs). Absent means the recipe declares *none*: an
+  intersection can never add, so a recipe that asks for nothing is granted
+  nothing. That is the same empty-term semantics
+  :func:`~amplifier_recipe_runner.trust.intersect_capabilities` already
+  implements, and it is deliberately distinct from "unconstrained" -- which
+  only the *host* and *runner* terms can express, via ``None``.
 * **Core 12** -- the historical ``agent_config`` step field is REJECTED at
   parse under schema 2. It is never silently retained inert.
 
@@ -60,7 +68,7 @@ DEPENDENCY_KINDS: Final[tuple[str, ...]] = ("bundle", "behavior")
 DEPENDENCY_KEYS: Final[frozenset[str]] = frozenset({"source", "kind", "required_agents"})
 
 #: Manifest keys introduced by schema 2.
-_MANIFEST_KEYS: Final[frozenset[str]] = frozenset({"schema_version", "dependencies", "agents"})
+_MANIFEST_KEYS: Final[frozenset[str]] = frozenset({"schema_version", "dependencies", "agents", "capabilities"})
 
 #: Recipe-body keys that predate the manifest and remain valid under schema 2.
 _RECIPE_BODY_KEYS: Final[frozenset[str]] = frozenset(
@@ -121,6 +129,16 @@ class Manifest:
 
     schema_version: int
     dependencies: tuple[Dependency, ...]
+    capabilities: tuple[str, ...] = ()
+    """Capabilities the recipe declares it needs -- the manifest term of the
+    Core 9 intersection, in declaration order.
+
+    Empty means the recipe declared none, which is the same thing as declaring
+    ``capabilities: []``: nothing is granted. A manifest has no way to say
+    "unconstrained", by design -- an intersection term that could widen the
+    host's or runner's grant would not be an intersection.
+    """
+
     agents: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     source: str | None = None
 
@@ -171,8 +189,9 @@ def parse_manifest(data: Any, *, source: str | None = None) -> ParseResult:
 
     Raises:
         ManifestError: on any contract violation -- unknown top-level or
-            dependency key, malformed ``dependencies``/``agents``, an
-            unsupported ``schema_version``, or an ``agent_config`` step field.
+            dependency key, malformed
+            ``dependencies``/``capabilities``/``agents``, an unsupported
+            ``schema_version``, or an ``agent_config`` step field.
     """
     if not isinstance(data, Mapping):
         raise ManifestError(
@@ -211,11 +230,13 @@ def parse_manifest(data: Any, *, source: str | None = None) -> ParseResult:
         )
 
     dependencies = _parse_dependencies(data["dependencies"], source=source)
+    capabilities = _parse_capabilities(data.get("capabilities"), source=source)
     agents = _parse_agent_aliases(data.get("agents"), source=source)
 
     return Manifest(
         schema_version=SCHEMA_VERSION,
         dependencies=dependencies,
+        capabilities=capabilities,
         agents=agents,
         source=source,
     )
@@ -342,6 +363,44 @@ def _parse_required_agents(value: Any, *, where: str, source: str | None) -> tup
             )
         agents.append(name)
     return tuple(agents)
+
+
+def _parse_capabilities(value: Any, *, source: str | None) -> tuple[str, ...]:
+    """Parse the optional top-level ``capabilities`` list (Core 9).
+
+    Absent (``None``) and ``[]`` mean the same thing -- the recipe declares no
+    needs -- so both yield an empty tuple. A duplicate entry is an ERROR rather
+    than a quiet de-dupe: silently collapsing a list the author wrote twice is
+    the same class of silent edit Core 1 forbids for unknown keys.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ManifestError(
+            f"'capabilities' must be a list of capability names, got {type(value).__name__} "
+            "(omit the key, or use 'capabilities: []', to declare none)",
+            clause="Core 9",
+            source=source,
+        )
+
+    capabilities: list[str] = []
+    for index, name in enumerate(value):
+        if isinstance(name, bool) or not isinstance(name, str) or not name.strip():
+            raise ManifestError(
+                f"capabilities[{index}] must be a non-empty string, got {name!r}",
+                clause="Core 9",
+                source=source,
+            )
+        if name in capabilities:
+            raise ManifestError(
+                f"capabilities[{index}]: duplicate capability {name!r} "
+                f"(already declared at capabilities[{capabilities.index(name)}])",
+                clause="Core 9",
+                source=source,
+            )
+        capabilities.append(name)
+
+    return tuple(capabilities)
 
 
 def _parse_agent_aliases(value: Any, *, source: str | None) -> Mapping[str, str]:

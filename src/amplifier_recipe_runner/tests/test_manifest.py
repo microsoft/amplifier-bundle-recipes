@@ -349,6 +349,112 @@ def test_agents_block_is_optional():
     assert dict(manifest.agents) == {}
 
 
+# --- Core 9: manifest-declared capability needs --------------------------
+
+
+def test_declared_capabilities_parse_in_declaration_order():
+    manifest = parse_manifest({"schema_version": 2, "dependencies": [], "capabilities": ["net", "fs.read"]})
+
+    assert isinstance(manifest, Manifest)
+    assert manifest.capabilities == ("net", "fs.read")
+
+
+def test_capabilities_survive_a_full_yaml_parse():
+    """The key spelling is verified against the parser, not just the dataclass."""
+    manifest = parse_manifest_text(
+        textwrap.dedent(
+            """
+            schema_version: 2
+            name: needs-net
+            dependencies: []
+            capabilities:
+              - net
+              - fs.read
+            """
+        ),
+        source="recipe.yaml",
+    )
+
+    assert isinstance(manifest, Manifest)
+    assert manifest.capabilities == ("net", "fs.read")
+
+
+def test_absent_capabilities_means_the_recipe_declares_none():
+    manifest = parse_manifest({"schema_version": 2, "dependencies": []})
+
+    assert isinstance(manifest, Manifest)
+    assert manifest.capabilities == ()
+
+
+def test_empty_capabilities_list_is_identical_to_absent():
+    """`capabilities: []` and no key at all both mean 'declares none'.
+
+    An intersection cannot add, so both grant nothing. There is deliberately no
+    manifest spelling for 'unconstrained'.
+    """
+    absent = parse_manifest({"schema_version": 2, "dependencies": []})
+    explicit = parse_manifest({"schema_version": 2, "dependencies": [], "capabilities": []})
+
+    assert isinstance(absent, Manifest)
+    assert isinstance(explicit, Manifest)
+    assert absent.capabilities == explicit.capabilities == ()
+
+
+@pytest.mark.parametrize("bad", ["net", {"net": True}, 7, True])
+def test_capabilities_must_be_a_list(bad):
+    with pytest.raises(ManifestError) as excinfo:
+        parse_manifest({"schema_version": 2, "dependencies": [], "capabilities": bad})
+
+    message = str(excinfo.value)
+    assert "'capabilities'" in message
+    assert f"{CONTRACT} Core 9" in message
+
+
+@pytest.mark.parametrize("bad", [[""], ["  "], [None], [7], [True], [["net"]]])
+def test_capability_entries_must_be_non_empty_strings(bad):
+    with pytest.raises(ManifestError) as excinfo:
+        parse_manifest({"schema_version": 2, "dependencies": [], "capabilities": bad})
+
+    message = str(excinfo.value)
+    assert "capabilities[0]" in message
+    assert f"{CONTRACT} Core 9" in message
+
+
+def test_duplicate_capability_errors_naming_both_positions():
+    with pytest.raises(ManifestError) as excinfo:
+        parse_manifest({"schema_version": 2, "dependencies": [], "capabilities": ["net", "fs", "net"]})
+
+    message = str(excinfo.value)
+    assert "capabilities[2]" in message
+    assert "capabilities[0]" in message
+    assert "'net'" in message
+
+
+def test_capabilities_without_schema_version_is_an_error_not_a_legacy_recipe():
+    """`capabilities` is a MANIFEST key: declaring it bare cannot be ignored (Core 1)."""
+    with pytest.raises(ManifestError) as excinfo:
+        parse_manifest({"name": "r", "capabilities": ["net"]})
+
+    message = str(excinfo.value)
+    assert "'capabilities'" in message
+    assert "schema_version" in message
+    assert f"{CONTRACT} Core 1" in message
+
+
+def test_capabilities_is_not_a_dependency_key():
+    with pytest.raises(ManifestError) as excinfo:
+        parse_manifest(
+            {
+                "schema_version": 2,
+                "dependencies": [{"source": "pkg", "kind": "bundle", "capabilities": ["net"]}],
+            }
+        )
+
+    message = str(excinfo.value)
+    assert "'capabilities'" in message
+    assert "dependencies[0]" in message
+
+
 # --- top-level shape ------------------------------------------------------
 
 

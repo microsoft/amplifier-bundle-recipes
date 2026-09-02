@@ -1,6 +1,6 @@
 """Dependency planning: manifest in, resolved :class:`ExecutionPlan` out.
 
-Contracts: ``recipe-dependency-manifest.v1`` Core 3, 5, 6, 7 (the planning
+Contracts: ``recipe-dependency-manifest.v1`` Core 3, 5, 6, 7, 9 (the planning
 half) and ``recipe-runner-lib.v1`` Core 5, 7.
 
 :func:`plan` answers one question -- *what would this recipe run with?* -- and
@@ -49,12 +49,33 @@ lives here is the *hook point* it needs: when a ``trust_policy`` is passed,
 ``check_source`` is called for every declared source **before any source
 reaches the resolver** -- so a refusal on the last dependency still cannot
 follow a fetch of the first (manifest Core 6, lib Core 6).
+
+Capabilities (manifest Core 9)
+------------------------------
+``ExecutionPlan.policy.capabilities`` is the three-way intersection -- host
+policy ∩ runner policy ∩ manifest-declared needs -- computed by
+:func:`~amplifier_recipe_runner.trust.intersect_capabilities`. The planner
+supplies each term from the one place that owns it and invents none of them:
+
+* **manifest** -- ``Manifest.capabilities``, parsed from the recipe's own
+  top-level ``capabilities`` list. Absent means the recipe declares none, and
+  an intersection cannot add, so the plan grants none.
+* **runner** -- the trust policy's ``capability_allowlist``, read structurally
+  (the ``TrustPolicy`` *protocol* names only ``name`` and ``check_source``, so
+  a policy that carries no allowlist is unconstrained, not empty).
+* **host** -- the caller's ``host_capabilities`` argument. ``None`` means the
+  host imposes no constraint; an empty iterable means it permits nothing.
+
+An empty intersection is a *reported outcome*, never a raise -- consistent with
+``trust.py``. Refusing to run with no capabilities is a policy decision for the
+caller, not a planning error.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -81,6 +102,7 @@ from .ports import WorkspacePath
 from .resolver import DependencyResolver
 from .resolver import ResolvedAgent
 from .resolver import ResolvedBundle
+from .trust import intersect_capabilities
 
 __all__ = [
     "CONTRACTS",
@@ -207,6 +229,7 @@ async def plan(
     *,
     recipe: Mapping[str, Any] | str | Path | None = None,
     trust_policy: TrustPolicy | None = None,
+    host_capabilities: Iterable[str] | None = None,
     lock_mode: LockMode = LockMode.LOCKED,
 ) -> ExecutionPlan:
     """Resolve ``manifest``'s dependency closure into an :class:`ExecutionPlan`.
@@ -225,7 +248,12 @@ async def plan(
             at an existing file. Steps supply the agent references checked
             against the closure and the ``step_ids`` recorded in the plan.
         trust_policy: When supplied, ``check_source`` is called for every
-            declared source *before* it reaches the resolver.
+            declared source *before* it reaches the resolver. Its
+            ``capability_allowlist``, when it has one, is the runner term of
+            the Core 9 intersection.
+        host_capabilities: The host term of the Core 9 intersection. ``None``
+            (the default) means the host imposes no constraint; an empty
+            iterable means it permits nothing. The two are never conflated.
         lock_mode: Recorded in the plan's effective policy.
 
     Returns:
@@ -282,7 +310,7 @@ async def plan(
         policy=EffectivePolicy(
             lock_mode=lock_mode,
             trust_policy=getattr(trust_policy, "name", None),
-            capabilities=(),
+            capabilities=_effective_capabilities(manifest, trust_policy, host_capabilities),
             isolated=True,
         ),
         runner_version=_runner_version(),
@@ -293,6 +321,24 @@ async def plan(
 # --------------------------------------------------------------------------
 # Closure -> plan records
 # --------------------------------------------------------------------------
+
+
+def _effective_capabilities(
+    manifest: Manifest,
+    trust_policy: TrustPolicy | None,
+    host: Iterable[str] | None,
+) -> tuple[str, ...]:
+    """The Core 9 three-way intersection, as granted (manifest Core 9).
+
+    The runner term is read with ``getattr`` on purpose: the ``TrustPolicy``
+    protocol names only ``name`` and ``check_source``, so a conforming policy
+    need not carry an allowlist at all. Absent means *unconstrained* -- which
+    is why the fallback is ``None`` and never ``frozenset()``. Conflating the
+    two would silently strip every capability from any host passing a minimal
+    policy.
+    """
+    runner = getattr(trust_policy, "capability_allowlist", None)
+    return intersect_capabilities(manifest=manifest.capabilities, host=host, runner=runner).granted
 
 
 def _record_dependency(dependency: Any, bundle: ResolvedBundle) -> ResolvedDependency:
@@ -468,6 +514,7 @@ def _recipe_digest(text: str | None, body: Mapping[str, Any], manifest: Manifest
                 {"source": d.source, "kind": d.kind, "required_agents": list(d.required_agents)}
                 for d in manifest.dependencies
             ],
+            "capabilities": list(manifest.capabilities),
             "agents": dict(manifest.agents),
         },
         sort_keys=True,
