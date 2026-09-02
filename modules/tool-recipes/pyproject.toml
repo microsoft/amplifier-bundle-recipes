@@ -11,6 +11,12 @@ authors = [
 
 dependencies = [
     "pyyaml>=6.0",
+    # The one execution home for schema_version:2 recipes
+    # (recipe-runner-lib.v1 Core 1). This module is a thin adapter over it.
+    # Imported lazily, so a legacy recipe still runs if it is absent -- but a
+    # v2 recipe fails loud rather than silently falling back to caller-bound
+    # resolution.
+    "amplifier-recipe-runner @ git+https://github.com/microsoft/amplifier-recipe-runner@main",
 ]
 
 [project.entry-points."amplifier.modules"]
@@ -25,6 +31,9 @@ dev = [
 
 [tool.uv.sources]
 amplifier-core = { path = "../../../amplifier-core", editable = true }
+# The runner library is not published yet; resolve it from the sibling checkout
+# in a standard workspace layout, the same convention amplifier-core uses above.
+amplifier-recipe-runner = { path = "../../../amplifier-recipe-runner", editable = true }
 
 [build-system]
 requires = ["hatchling"]
