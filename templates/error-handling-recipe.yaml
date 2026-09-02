@@ -29,7 +29,11 @@ tags: ["error-handling", "resilience", "retry"]
 
 context:
   input_data: ""
-  max_retries: 3
+# NOTE: context variables reach {{...}} placeholders in *string* fields only
+# (prompt, command, cwd, env values, condition, recipe path, sub-recipe context,
+# while_condition/break_when). Numeric fields — retry.max_attempts, timeout,
+# max_iterations, max_while_iterations — are read verbatim, never substituted,
+# so they must be written as literal numbers. See the retry blocks below.
 
 steps:
   # Critical step: Must succeed or recipe fails
@@ -44,7 +48,10 @@ steps:
     timeout: 300
     # Default: on_error="fail" - recipe stops if this fails
     retry:
-      max_attempts: "{{max_retries}}"
+      # Literal integer, NOT "{{max_retries}}": numeric fields are not
+      # substituted. A placeholder here fails validation, and would fail at
+      # execution time too (the executor loops over max_attempts directly).
+      max_attempts: 3
       backoff: "exponential"
       initial_delay: 5
       max_delay: 60
@@ -113,6 +120,12 @@ steps:
 #    - Quick operations: 60-300 seconds
 #    - Standard operations: 300-600 seconds
 #    - Long operations: 600-1800 seconds
+#
+# 5. Known limitation — numeric fields take literals only:
+#    retry.max_attempts, retry.initial_delay, retry.max_delay, timeout,
+#    max_iterations and max_while_iterations are never {{substituted}}. To vary
+#    them per run, pass a different recipe (or a sub-recipe path chosen by a
+#    variable) rather than a placeholder in the numeric position.
 #
 # Usage:
 #   amplifier run "execute error-handling-recipe.yaml with input_data=test.json"
