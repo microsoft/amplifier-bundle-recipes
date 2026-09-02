@@ -1,0 +1,9 @@
+bundle:
+  name: acme
+  version: 1.2.0
+  description: Behavior partial contributing ONLY the reviewer agent.
+  namespace_root: ..
+
+agents:
+  include:
+    - acme:reviewer

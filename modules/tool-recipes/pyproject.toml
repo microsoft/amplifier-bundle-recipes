@@ -16,7 +16,9 @@ dependencies = [
     # Imported lazily, so a legacy recipe still runs if it is absent -- but a
     # v2 recipe fails loud rather than silently falling back to caller-bound
     # resolution.
-    "amplifier-recipe-runner @ git+https://github.com/microsoft/amplifier-recipe-runner@main",
+    # The library lives in this same repo's root package (hybrid bundle + CLI),
+    # so it resolves from here rather than from a separate repo.
+    "amplifier-recipe-runner @ git+https://github.com/microsoft/amplifier-bundle-recipes@main",
 ]
 
 [project.entry-points."amplifier.modules"]
@@ -31,9 +33,10 @@ dev = [
 
 [tool.uv.sources]
 amplifier-core = { path = "../../../amplifier-core", editable = true }
-# The runner library is not published yet; resolve it from the sibling checkout
-# in a standard workspace layout, the same convention amplifier-core uses above.
-amplifier-recipe-runner = { path = "../../../amplifier-recipe-runner", editable = true }
+# The runner library is not published yet; it now lives in this same repo's root
+# package (see the repo-root pyproject.toml), so resolve it from there -- two
+# directories up from this module -- rather than from a sibling checkout.
+amplifier-recipe-runner = { path = "../..", editable = true }
 
 [build-system]
 requires = ["hatchling"]
