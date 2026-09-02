@@ -19,6 +19,21 @@ python3 conformance/kit/kit.py --run --json   # machine-readable
 No network, no model call, no Foundation install. Everything resolves from
 local fixture bundles under `fixtures/` through injected spawn backends.
 
+### Pointing the kit at a specific runner checkout
+
+`_bootstrap` uses an already-importable `amplifier_recipe_runner` when there is
+one, so with the library **pip-installed** (including `-e`)
+`AMPLIFIER_RECIPE_RUNNER_SRC` is never consulted — the install wins. To run the
+kit against a different checkout, put it ahead of site-packages:
+
+```bash
+PYTHONPATH=/path/to/amplifier-recipe-runner/src python3 conformance/kit/kit.py --run
+```
+
+The cross-host fixture forwards whatever source `_bootstrap` settled on into
+its second host process, so both hosts are provably the same implementation
+rather than two versions being compared as if they were one.
+
 ## 1. The claim this kit makes
 
 A conformance kit that passes proves nothing on its own. The load-bearing
@@ -137,7 +152,7 @@ filed, **not** worked around:
 | # | Finding | Filed |
 |---|---|---|
 | R1 | The library exposes no `validate` and no `resume`, though `api.RecipeRunner` declares both. RCP-102 is only partially checkable. | `recipes-akb` |
-| R2 | `pyproject.toml` declares `recipe-runner = amplifier_recipe_runner.cli:main`, but no `cli` module exists. The "standalone CLI rejects legacy recipes" fixture asserts on the standalone *library* surface plus `host_adapter.py`, a stand-in second host process. | `recipes-akb` |
+| R2 | ~~no `cli` module exists~~ **RESOLVED** (`recipes-8yo` shipped it; `recipes-d7e` gave `plan`/`run` a `--json` flag and wired the kit to it). The cross-host identity fixture now drives the real CLI through its documented dual entry point, `python -m amplifier_recipe_runner plan --json`. Two notes remain: `-m amplifier_recipe_runner.cli` is **not** an entry point (`cli.py` declares no `__main__` guard — it imports, exits 0, prints nothing), and the "standalone CLI rejects legacy recipes" fixture still asserts on the library surface plus `host_adapter.py` rather than the CLI. | `recipes-akb` |
 | R3 | `RunRequest.legacy_mode` is accepted and never read — `execution.plan()` raises `LegacyRecipeError` regardless. The labeled caller-bound adapter mode does not exist, so neither the deprecation warning nor the byte-identical half of manifest Core 10 is checkable. | `recipes-akb` |
 | R4 | The Amplifier tool adapter is not a runner host, so the cross-host identity fixture compares two hosts, not the three lib.v1 names. | `recipes-akb` |
 | R5 | RECIPE_SCHEMA v2 has no capability-declaration field, so the third term of the Core 9 intersection has no source. RCP-009 is `coverage: none`. | `recipes-54n` |
