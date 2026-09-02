@@ -11,25 +11,38 @@ authors = [
 
 dependencies = [
     "pyyaml>=6.0",
-    # The one execution home for schema_version:2 recipes
-    # (recipe-runner-lib.v1 Core 1). This module is a thin adapter over it.
-    # Imported lazily, so a legacy recipe still runs if it is absent -- but a
-    # v2 recipe fails loud rather than silently falling back to caller-bound
-    # resolution.
-    # The library lives in this same repo's root package (hybrid bundle + CLI),
-    # so it resolves from here rather than from a separate repo.
-    "amplifier-recipe-runner @ git+https://github.com/microsoft/amplifier-bundle-recipes@main",
+    # NOTE: amplifier-recipe-runner (the one execution home for
+    # schema_version:2 recipes, recipe-runner-lib.v1 Core 1) is deliberately
+    # NOT a hard dependency. Module activation installs this package with
+    # `uv pip install -e <module> --no-sources`, where (a) a direct-URL dep
+    # fails hatchling metadata validation without allow-direct-references,
+    # and (b) the runner's own transitive URL dep on amplifier-foundation is
+    # rejected by uv ("URL dependencies must be expressed as direct
+    # requirements"). Both broke `amplifier update` in production (2026-09-02).
+    # Instead, runner_adapter.load_runner() imports the library from this same
+    # bundle's root package (src/amplifier_recipe_runner, two directories up)
+    # via a sys.path fallback -- the bundle cache always ships both together.
+    # Legacy recipes run without it; a v2 recipe fails loud if it is absent.
 ]
 
 [project.entry-points."amplifier.modules"]
 tool-recipes = "amplifier_module_tool_recipes:mount"
 
 [project.optional-dependencies]
+# Opt-in extra for standalone installs of this module OUTSIDE the bundle
+# tree (where the sys.path fallback cannot find the sibling library).
+runner = [
+    "amplifier-recipe-runner @ git+https://github.com/microsoft/amplifier-bundle-recipes@main",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "amplifier-core",
 ]
+
+[tool.hatch.metadata]
+# Required for the direct-URL reference in the `runner` extra.
+allow-direct-references = true
 
 [tool.uv.sources]
 amplifier-core = { path = "../../../amplifier-core", editable = true }
