@@ -1,0 +1,612 @@
+{
+  "caller_agents": [
+    "foundation:zen-architect"
+  ],
+  "case": "code-review-comprehensive",
+  "covers": [
+    "multiple agent steps (6)",
+    "conditional routing on a step output",
+    "legacy step-level provider + model fields",
+    "model glob provenance (claude-sonnet-* / claude-opus-*)"
+  ],
+  "events": [
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+        "name": "code-review-comprehensive",
+        "status": "running",
+        "steps": [
+          {
+            "id": "analyze-structure",
+            "name": "analyze-structure",
+            "status": "running"
+          },
+          {
+            "id": "identify-issues",
+            "name": "identify-issues",
+            "status": "pending"
+          },
+          {
+            "id": "assess-severity",
+            "name": "assess-severity",
+            "status": "pending"
+          },
+          {
+            "id": "suggest-improvements",
+            "name": "suggest-improvements",
+            "status": "pending"
+          },
+          {
+            "id": "validate-suggestions",
+            "name": "validate-suggestions",
+            "status": "pending"
+          },
+          {
+            "id": "quick-approval",
+            "name": "quick-approval",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:start"
+    },
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+        "name": "code-review-comprehensive",
+        "status": "running",
+        "steps": [
+          {
+            "id": "analyze-structure",
+            "name": "analyze-structure",
+            "status": "running"
+          },
+          {
+            "id": "identify-issues",
+            "name": "identify-issues",
+            "status": "pending"
+          },
+          {
+            "id": "assess-severity",
+            "name": "assess-severity",
+            "status": "pending"
+          },
+          {
+            "id": "suggest-improvements",
+            "name": "suggest-improvements",
+            "status": "pending"
+          },
+          {
+            "id": "validate-suggestions",
+            "name": "validate-suggestions",
+            "status": "pending"
+          },
+          {
+            "id": "quick-approval",
+            "name": "quick-approval",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 1,
+        "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+        "name": "code-review-comprehensive",
+        "status": "running",
+        "steps": [
+          {
+            "id": "analyze-structure",
+            "name": "analyze-structure",
+            "status": "completed"
+          },
+          {
+            "id": "identify-issues",
+            "name": "identify-issues",
+            "status": "running"
+          },
+          {
+            "id": "assess-severity",
+            "name": "assess-severity",
+            "status": "pending"
+          },
+          {
+            "id": "suggest-improvements",
+            "name": "suggest-improvements",
+            "status": "pending"
+          },
+          {
+            "id": "validate-suggestions",
+            "name": "validate-suggestions",
+            "status": "pending"
+          },
+          {
+            "id": "quick-approval",
+            "name": "quick-approval",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 2,
+        "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+        "name": "code-review-comprehensive",
+        "status": "running",
+        "steps": [
+          {
+            "id": "analyze-structure",
+            "name": "analyze-structure",
+            "status": "completed"
+          },
+          {
+            "id": "identify-issues",
+            "name": "identify-issues",
+            "status": "completed"
+          },
+          {
+            "id": "assess-severity",
+            "name": "assess-severity",
+            "status": "running"
+          },
+          {
+            "id": "suggest-improvements",
+            "name": "suggest-improvements",
+            "status": "pending"
+          },
+          {
+            "id": "validate-suggestions",
+            "name": "validate-suggestions",
+            "status": "pending"
+          },
+          {
+            "id": "quick-approval",
+            "name": "quick-approval",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 3,
+        "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+        "name": "code-review-comprehensive",
+        "status": "running",
+        "steps": [
+          {
+            "id": "analyze-structure",
+            "name": "analyze-structure",
+            "status": "completed"
+          },
+          {
+            "id": "identify-issues",
+            "name": "identify-issues",
+            "status": "completed"
+          },
+          {
+            "id": "assess-severity",
+            "name": "assess-severity",
+            "status": "completed"
+          },
+          {
+            "id": "suggest-improvements",
+            "name": "suggest-improvements",
+            "status": "running"
+          },
+          {
+            "id": "validate-suggestions",
+            "name": "validate-suggestions",
+            "status": "pending"
+          },
+          {
+            "id": "quick-approval",
+            "name": "quick-approval",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 4,
+        "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+        "name": "code-review-comprehensive",
+        "status": "running",
+        "steps": [
+          {
+            "id": "analyze-structure",
+            "name": "analyze-structure",
+            "status": "completed"
+          },
+          {
+            "id": "identify-issues",
+            "name": "identify-issues",
+            "status": "completed"
+          },
+          {
+            "id": "assess-severity",
+            "name": "assess-severity",
+            "status": "completed"
+          },
+          {
+            "id": "suggest-improvements",
+            "name": "suggest-improvements",
+            "status": "completed"
+          },
+          {
+            "id": "validate-suggestions",
+            "name": "validate-suggestions",
+            "status": "running"
+          },
+          {
+            "id": "quick-approval",
+            "name": "quick-approval",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 5,
+        "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+        "name": "code-review-comprehensive",
+        "status": "running",
+        "steps": [
+          {
+            "id": "analyze-structure",
+            "name": "analyze-structure",
+            "status": "completed"
+          },
+          {
+            "id": "identify-issues",
+            "name": "identify-issues",
+            "status": "completed"
+          },
+          {
+            "id": "assess-severity",
+            "name": "assess-severity",
+            "status": "completed"
+          },
+          {
+            "id": "suggest-improvements",
+            "name": "suggest-improvements",
+            "status": "completed"
+          },
+          {
+            "id": "validate-suggestions",
+            "name": "validate-suggestions",
+            "status": "completed"
+          },
+          {
+            "id": "quick-approval",
+            "name": "quick-approval",
+            "status": "running"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 6,
+        "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+        "name": "code-review-comprehensive",
+        "status": "completed",
+        "steps": [
+          {
+            "id": "analyze-structure",
+            "name": "analyze-structure",
+            "status": "completed"
+          },
+          {
+            "id": "identify-issues",
+            "name": "identify-issues",
+            "status": "completed"
+          },
+          {
+            "id": "assess-severity",
+            "name": "assess-severity",
+            "status": "completed"
+          },
+          {
+            "id": "suggest-improvements",
+            "name": "suggest-improvements",
+            "status": "completed"
+          },
+          {
+            "id": "validate-suggestions",
+            "name": "validate-suggestions",
+            "status": "completed"
+          },
+          {
+            "id": "quick-approval",
+            "name": "quick-approval",
+            "status": "completed"
+          }
+        ],
+        "success": true,
+        "total_steps": 6
+      },
+      "event": "recipe:complete"
+    }
+  ],
+  "final_context": {
+    "_skipped_steps": [
+      "quick-approval"
+    ],
+    "file_path": "src/example.py",
+    "identified_issues": "STUB AGENT OUTPUT (step=identify-issues, agent=foundation:zen-architect)",
+    "improvement_suggestions": "STUB AGENT OUTPUT (step=suggest-improvements, agent=foundation:zen-architect)",
+    "recipe": {
+      "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+      "name": "code-review-comprehensive",
+      "version": "1.2.0"
+    },
+    "session": {
+      "id": "<SESSION_ID>",
+      "project": "<WORKSPACE>",
+      "started": "<TIMESTAMP>"
+    },
+    "severity": "high",
+    "step": {
+      "id": "quick-approval",
+      "index": 5
+    },
+    "structure_analysis": "STUB AGENT OUTPUT (step=analyze-structure, agent=foundation:zen-architect)",
+    "validated_suggestions": "STUB AGENT OUTPUT (step=validate-suggestions, agent=foundation:zen-architect)"
+  },
+  "harness_version": 1,
+  "notes": "Scripted severity \"high\" takes the branch that runs suggest-improvements and validate-suggestions and skips quick-approval, so the baseline pins both the taken and the skipped paths.",
+  "outcome": {
+    "final_error": null,
+    "final_status": "completed",
+    "final_success": true,
+    "tool_call_count": 1
+  },
+  "progress": [
+    {
+      "level": "info",
+      "message": "📋 Starting recipe: code-review-comprehensive (6 steps)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [1/6] analyze-structure (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [2/6] identify-issues (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [3/6] assess-severity (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [4/6] suggest-improvements (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [5/6] validate-suggestions (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [6/6] quick-approval (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "✅ Recipe completed: code-review-comprehensive",
+      "source": "recipe"
+    }
+  ],
+  "provenance": {
+    "agent_spawn_count": 5,
+    "agent_spawns": [
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided architect agent"
+        },
+        "index": 0,
+        "instruction": "MODE: ANALYZE\n\nAnalyze the code structure in src/example.py:\n\n1. Overall architecture and organization\n2. Code patterns and design choices\n3. Complexity assessment\n4. Alignment with implementation philosophy principles\n\nProvide a structured analysis focusing on what exists and how it works.\n",
+        "orchestrator_config": null,
+        "provider_preferences": [
+          {
+            "model": "claude-sonnet-*",
+            "provider": "anthropic"
+          }
+        ],
+        "recipe_name": "code-review-comprehensive",
+        "recipe_step": "analyze-structure",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "code-review-comprehensive",
+          "recipe_step": "analyze-structure",
+          "recipe_step_index": 0
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided architect agent"
+        },
+        "index": 1,
+        "instruction": "MODE: ANALYZE\n\nBased on this analysis: STUB AGENT OUTPUT (step=analyze-structure, agent=foundation:zen-architect)\n\nIdentify specific issues in src/example.py:\n\n1. Anti-patterns and code smells\n2. Complexity hotspots\n3. Philosophy violations (unnecessary abstraction, future-proofing, etc.)\n4. Potential bugs or edge cases\n\nFor each issue, provide:\n- Location (line numbers or function names)\n- Severity (critical/high/medium/low)\n- Explanation of the problem\n- Impact on maintainability\n\nFocus on issues that genuinely impact quality, not style preferences.\n\nIf the code is clean with no significant issues, explicitly state:\n\"No significant issues found. Code quality is good.\"\n",
+        "orchestrator_config": null,
+        "provider_preferences": [
+          {
+            "model": "claude-sonnet-*",
+            "provider": "anthropic"
+          }
+        ],
+        "recipe_name": "code-review-comprehensive",
+        "recipe_step": "identify-issues",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "code-review-comprehensive",
+          "recipe_step": "identify-issues",
+          "recipe_step_index": 1
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided architect agent"
+        },
+        "index": 2,
+        "instruction": "MODE: ANALYZE\n\nBased on the identified issues: STUB AGENT OUTPUT (step=identify-issues, agent=foundation:zen-architect)\n\nDetermine the OVERALL severity level for this code review.\n\nRespond with EXACTLY ONE of these words (nothing else):\n- none (no issues found, code is clean)\n- low (only minor style or documentation issues)\n- medium (some issues but code works correctly)\n- high (significant problems affecting maintainability)\n- critical (bugs, security issues, or major design flaws)\n\nConsider the highest severity issue found. If no issues were found,\nrespond with: none\n",
+        "orchestrator_config": null,
+        "provider_preferences": [
+          {
+            "model": "claude-haiku",
+            "provider": "anthropic"
+          }
+        ],
+        "recipe_name": "code-review-comprehensive",
+        "recipe_step": "assess-severity",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "code-review-comprehensive",
+          "recipe_step": "assess-severity",
+          "recipe_step_index": 2
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided architect agent"
+        },
+        "index": 3,
+        "instruction": "MODE: ARCHITECT\n\nGiven this analysis: STUB AGENT OUTPUT (step=analyze-structure, agent=foundation:zen-architect)\nAnd these issues: STUB AGENT OUTPUT (step=identify-issues, agent=foundation:zen-architect)\nOverall severity: high\n\nDesign concrete improvement suggestions for src/example.py:\n\n1. For each critical/high issue, provide specific solution\n2. Suggest refactoring opportunities (where they genuinely simplify)\n3. Recommend testing strategies\n4. Identify what should be kept (don't change for the sake of change)\n\nFor each suggestion:\n- What to change\n- Why it improves the code\n- How to implement (specific steps)\n- Potential risks or trade-offs\n\nPrioritize ruthless simplicity over clever solutions.\n",
+        "orchestrator_config": null,
+        "provider_preferences": [
+          {
+            "model": "claude-opus-*",
+            "provider": "anthropic"
+          }
+        ],
+        "recipe_name": "code-review-comprehensive",
+        "recipe_step": "suggest-improvements",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "code-review-comprehensive",
+          "recipe_step": "suggest-improvements",
+          "recipe_step_index": 3
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided architect agent"
+        },
+        "index": 4,
+        "instruction": "MODE: REVIEW\n\nReview these improvement suggestions: STUB AGENT OUTPUT (step=suggest-improvements, agent=foundation:zen-architect)\n\nFor the file: src/example.py\nWith these issues: STUB AGENT OUTPUT (step=identify-issues, agent=foundation:zen-architect)\nSeverity level: high\n\nThis is a high-severity review, so thorough validation is critical.\n\nValidate each suggestion:\n\n1. Feasibility: Can this be implemented safely?\n2. Value: Does this genuinely improve the code?\n3. Scope: Is this the right level of change?\n4. Philosophy alignment: Does this follow ruthless simplicity?\n\nProvide:\n- Priority ranking (must-do / should-do / nice-to-have)\n- Implementation order (dependencies between changes)\n- Time estimates (rough effort)\n- Any suggestions to drop (not worth the effort)\n\nBe honest about what's truly valuable vs what's just \"different\".\n",
+        "orchestrator_config": null,
+        "provider_preferences": [
+          {
+            "model": "claude-opus-*",
+            "provider": "anthropic"
+          }
+        ],
+        "recipe_name": "code-review-comprehensive",
+        "recipe_step": "validate-suggestions",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "code-review-comprehensive",
+          "recipe_step": "validate-suggestions",
+          "recipe_step_index": 4
+        },
+        "use_subprocess": false
+      }
+    ],
+    "agents_by_step": {
+      "analyze-structure": "foundation:zen-architect",
+      "assess-severity": "foundation:zen-architect",
+      "identify-issues": "foundation:zen-architect",
+      "suggest-improvements": "foundation:zen-architect",
+      "validate-suggestions": "foundation:zen-architect"
+    }
+  },
+  "recipe": "examples/code-review-recipe.yaml",
+  "recipe_sha256": "45f7bd021d58915c961dcee15fb0b1afcc71aa9691935a0684bb0eb28c821891",
+  "tool_calls": [
+    {
+      "error": null,
+      "input": {
+        "context": {
+          "file_path": "src/example.py"
+        },
+        "operation": "execute",
+        "recipe_path": "<REPO>/examples/code-review-recipe.yaml"
+      },
+      "output": {
+        "recipe": "code-review-comprehensive",
+        "session_id": "<SESSION_ID>",
+        "status": "completed",
+        "summary": {
+          "available_outputs": [
+            "file_path",
+            "structure_analysis",
+            "identified_issues",
+            "severity",
+            "improvement_suggestions",
+            "validated_suggestions"
+          ],
+          "full_results_location": "Full results saved in recipe session: <SESSION_ID>. Use 'recipes list' to see session details.",
+          "last_step": {
+            "id": "quick-approval",
+            "index": 5
+          },
+          "recipe_metadata": {
+            "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
+            "name": "code-review-comprehensive",
+            "version": "1.2.0"
+          },
+          "session": {
+            "id": "<SESSION_ID>",
+            "project": "<WORKSPACE>",
+            "started": "<TIMESTAMP>"
+          },
+          "skipped_steps": [
+            "quick-approval"
+          ]
+        }
+      },
+      "success": true
+    }
+  ],
+  "volatile_outputs": []
+}

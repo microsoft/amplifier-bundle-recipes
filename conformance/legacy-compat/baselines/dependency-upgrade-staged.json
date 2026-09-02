@@ -1,0 +1,650 @@
+{
+  "caller_agents": [
+    "foundation:integration-specialist",
+    "foundation:zen-architect"
+  ],
+  "case": "dependency-upgrade-staged",
+  "covers": [
+    "staged recipe",
+    "approval gates (4), driven THROUGH the gates",
+    "recipes tool approve + resume operations",
+    "multiple agent steps across stages",
+    "two distinct caller agents"
+  ],
+  "events": [
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Systematic dependency upgrade with approval gates between phases",
+        "name": "dependency-upgrade-staged",
+        "prompt": "DEPENDENCY AUDIT AND UPGRADE PLAN COMPLETE\n\nReview the assessment before proceeding:\n- Audit: {{dependency_audit}}\n- Plan: {{upgrade_plan}}\n\nApprove to validate compatibility and generate upgrade commands.\nDeny to stop and review the plan manually.\n",
+        "stage_name": "validation",
+        "status": "waiting_approval",
+        "steps": [
+          {
+            "id": "audit-dependencies",
+            "name": "audit-dependencies",
+            "status": "completed"
+          },
+          {
+            "id": "plan-upgrade-strategy",
+            "name": "plan-upgrade-strategy",
+            "status": "completed"
+          },
+          {
+            "id": "validate-compatibility",
+            "is_approval_gate": true,
+            "name": "validate-compatibility",
+            "status": "waiting_approval"
+          },
+          {
+            "id": "generate-phase1-commands",
+            "name": "generate-phase1-commands",
+            "status": "pending"
+          },
+          {
+            "id": "generate-phase2-commands",
+            "name": "generate-phase2-commands",
+            "status": "pending"
+          },
+          {
+            "id": "generate-phase3-commands",
+            "name": "generate-phase3-commands",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:approval"
+    },
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Systematic dependency upgrade with approval gates between phases",
+        "name": "dependency-upgrade-staged",
+        "prompt": "COMPATIBILITY VALIDATION COMPLETE\n\nReview: {{compatibility_check}}\n\nReady to generate Phase 1 commands (CRITICAL SECURITY FIXES).\nThese are the highest priority updates that should be applied first.\n\nApprove to generate Phase 1 upgrade commands.\n",
+        "stage_name": "phase-1-security",
+        "status": "waiting_approval",
+        "steps": [
+          {
+            "id": "audit-dependencies",
+            "name": "audit-dependencies",
+            "status": "completed"
+          },
+          {
+            "id": "plan-upgrade-strategy",
+            "name": "plan-upgrade-strategy",
+            "status": "completed"
+          },
+          {
+            "id": "validate-compatibility",
+            "name": "validate-compatibility",
+            "status": "completed"
+          },
+          {
+            "id": "generate-phase1-commands",
+            "is_approval_gate": true,
+            "name": "generate-phase1-commands",
+            "status": "waiting_approval"
+          },
+          {
+            "id": "generate-phase2-commands",
+            "name": "generate-phase2-commands",
+            "status": "pending"
+          },
+          {
+            "id": "generate-phase3-commands",
+            "name": "generate-phase3-commands",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:approval"
+    },
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Systematic dependency upgrade with approval gates between phases",
+        "name": "dependency-upgrade-staged",
+        "prompt": "PHASE 1 COMMANDS GENERATED\n\nSecurity fix commands: {{phase1_commands}}\n\nReady to generate Phase 2 commands (MINOR VERSION UPDATES).\nThese are low-risk updates with backward-compatible changes.\n\nApprove to generate Phase 2 upgrade commands.\nYou can also deny and execute Phase 1 commands first.\n",
+        "stage_name": "phase-2-minor",
+        "status": "waiting_approval",
+        "steps": [
+          {
+            "id": "audit-dependencies",
+            "name": "audit-dependencies",
+            "status": "completed"
+          },
+          {
+            "id": "plan-upgrade-strategy",
+            "name": "plan-upgrade-strategy",
+            "status": "completed"
+          },
+          {
+            "id": "validate-compatibility",
+            "name": "validate-compatibility",
+            "status": "completed"
+          },
+          {
+            "id": "generate-phase1-commands",
+            "name": "generate-phase1-commands",
+            "status": "completed"
+          },
+          {
+            "id": "generate-phase2-commands",
+            "is_approval_gate": true,
+            "name": "generate-phase2-commands",
+            "status": "waiting_approval"
+          },
+          {
+            "id": "generate-phase3-commands",
+            "name": "generate-phase3-commands",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:approval"
+    },
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Systematic dependency upgrade with approval gates between phases",
+        "name": "dependency-upgrade-staged",
+        "prompt": "PHASE 2 COMMANDS GENERATED\n\nMinor update commands: {{phase2_commands}}\n\nReady to generate Phase 3 commands (MAJOR VERSION UPDATES).\n⚠️  These carry HIGHER RISK and may require code changes.\n\nApprove to generate Phase 3 upgrade commands.\nDeny if you want to stop here and apply earlier phases first.\n",
+        "stage_name": "phase-3-major",
+        "status": "waiting_approval",
+        "steps": [
+          {
+            "id": "audit-dependencies",
+            "name": "audit-dependencies",
+            "status": "completed"
+          },
+          {
+            "id": "plan-upgrade-strategy",
+            "name": "plan-upgrade-strategy",
+            "status": "completed"
+          },
+          {
+            "id": "validate-compatibility",
+            "name": "validate-compatibility",
+            "status": "completed"
+          },
+          {
+            "id": "generate-phase1-commands",
+            "name": "generate-phase1-commands",
+            "status": "completed"
+          },
+          {
+            "id": "generate-phase2-commands",
+            "name": "generate-phase2-commands",
+            "status": "completed"
+          },
+          {
+            "id": "generate-phase3-commands",
+            "is_approval_gate": true,
+            "name": "generate-phase3-commands",
+            "status": "waiting_approval"
+          }
+        ],
+        "total_steps": 6
+      },
+      "event": "recipe:approval"
+    },
+    {
+      "data": {
+        "current_step": 6,
+        "description": "Systematic dependency upgrade with approval gates between phases",
+        "name": "dependency-upgrade-staged",
+        "status": "completed",
+        "steps": [
+          {
+            "id": "audit-dependencies",
+            "name": "audit-dependencies",
+            "status": "completed"
+          },
+          {
+            "id": "plan-upgrade-strategy",
+            "name": "plan-upgrade-strategy",
+            "status": "completed"
+          },
+          {
+            "id": "validate-compatibility",
+            "name": "validate-compatibility",
+            "status": "completed"
+          },
+          {
+            "id": "generate-phase1-commands",
+            "name": "generate-phase1-commands",
+            "status": "completed"
+          },
+          {
+            "id": "generate-phase2-commands",
+            "name": "generate-phase2-commands",
+            "status": "completed"
+          },
+          {
+            "id": "generate-phase3-commands",
+            "name": "generate-phase3-commands",
+            "status": "completed"
+          }
+        ],
+        "success": true,
+        "total_steps": 6
+      },
+      "event": "recipe:complete"
+    }
+  ],
+  "final_context": {
+    "_approval_message": "approved by legacy-compat harness",
+    "compatibility_check": "STUB AGENT OUTPUT (step=validate-compatibility, agent=foundation:integration-specialist)",
+    "dependency_audit": "STUB AGENT OUTPUT (step=audit-dependencies, agent=foundation:integration-specialist)",
+    "package_manager": "uv",
+    "phase1_commands": "STUB AGENT OUTPUT (step=generate-phase1-commands, agent=foundation:integration-specialist)",
+    "phase2_commands": "STUB AGENT OUTPUT (step=generate-phase2-commands, agent=foundation:integration-specialist)",
+    "phase3_commands": "STUB AGENT OUTPUT (step=generate-phase3-commands, agent=foundation:integration-specialist)",
+    "project_path": ".",
+    "recipe": {
+      "description": "Systematic dependency upgrade with approval gates between phases",
+      "name": "dependency-upgrade-staged",
+      "version": "2.0.0"
+    },
+    "session": {
+      "id": "<SESSION_ID>",
+      "project": "<WORKSPACE>",
+      "started": "<TIMESTAMP>"
+    },
+    "stage": {
+      "index": 4,
+      "name": "phase-3-major"
+    },
+    "step": {
+      "id": "generate-phase3-commands",
+      "index": 0,
+      "stage": "phase-3-major"
+    },
+    "upgrade_plan": "STUB AGENT OUTPUT (step=plan-upgrade-strategy, agent=foundation:zen-architect)"
+  },
+  "harness_version": 1,
+  "notes": "Baselined THROUGH every gate (not up-to-gate): each pause is cleared with the tool's `approve` operation followed by `resume`, exactly as a caller would. The paused ToolResults are recorded too, so a change to the pause payload is drift.",
+  "outcome": {
+    "final_error": null,
+    "final_status": "completed",
+    "final_success": true,
+    "tool_call_count": 9
+  },
+  "progress": [
+    {
+      "level": "info",
+      "message": "📦 Stage 1/5: assessment",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "📦 Stage 2/5: validation",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "⏸️ Waiting for approval: validation",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "📦 Stage 3/5: phase-1-security",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "⏸️ Waiting for approval: phase-1-security",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "📦 Stage 4/5: phase-2-minor",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "⏸️ Waiting for approval: phase-2-minor",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "📦 Stage 5/5: phase-3-major",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "⏸️ Waiting for approval: phase-3-major",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "✅ Recipe completed: dependency-upgrade-staged",
+      "source": "recipe"
+    }
+  ],
+  "provenance": {
+    "agent_spawn_count": 6,
+    "agent_spawns": [
+      {
+        "agent_name": "foundation:integration-specialist",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided integration agent"
+        },
+        "index": 0,
+        "instruction": "Audit Python dependencies in .:\n\nPackage manager: uv\n\nTasks:\n1. List current dependencies (pyproject.toml, requirements.txt)\n2. Check for available updates\n3. Identify security vulnerabilities (if any)\n4. Note deprecated packages\n\nOutput format:\nFor each dependency:\n- Current version\n- Latest version\n- Security issues (if any)\n- Breaking changes indicator\n- Update priority (critical/high/medium/low)\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "dependency-upgrade-staged",
+        "recipe_step": "audit-dependencies",
+        "session_metadata": {
+          "agent_name": "foundation:integration-specialist",
+          "recipe_name": "dependency-upgrade-staged",
+          "recipe_step": "audit-dependencies",
+          "recipe_step_index": 0
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided architect agent"
+        },
+        "index": 1,
+        "instruction": "MODE: ARCHITECT\n\nBased on this dependency audit: STUB AGENT OUTPUT (step=audit-dependencies, agent=foundation:integration-specialist)\n\nFor project: .\nUsing: uv\n\nCreate upgrade strategy:\n\n1. **Upgrade order**: Which dependencies first (resolve conflicts, minimize risk)\n2. **Risk assessment**: Major version changes, known breaking changes\n3. **Testing strategy**: What to test after each upgrade\n4. **Rollback plan**: How to revert if issues found\n\nConsider:\n- Security fixes should be prioritized\n- Major version upgrades need careful testing\n- Dependencies with many dependents upgraded last\n- Group compatible upgrades together\n\nOutput structured plan with three phases:\n- Phase 1: Critical security fixes (must do immediately)\n- Phase 2: Minor version updates (low risk)\n- Phase 3: Major version updates (higher risk, needs testing)\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "dependency-upgrade-staged",
+        "recipe_step": "plan-upgrade-strategy",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "dependency-upgrade-staged",
+          "recipe_step": "plan-upgrade-strategy",
+          "recipe_step_index": 1
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:integration-specialist",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided integration agent"
+        },
+        "index": 2,
+        "instruction": "Validate compatibility for this upgrade plan: STUB AGENT OUTPUT (step=plan-upgrade-strategy, agent=foundation:zen-architect)\n\nFor project: .\n\nCheck:\n1. Breaking changes in release notes\n2. Python version compatibility\n3. Dependency conflicts (new versions compatible with each other?)\n4. Known migration issues\n\nFor each proposed upgrade:\n- Compatibility status (safe / needs-testing / risky)\n- Breaking changes summary\n- Migration steps required\n- Estimated effort\n\nFlag any upgrades that should be deferred or split into separate work.\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "dependency-upgrade-staged",
+        "recipe_step": "validate-compatibility",
+        "session_metadata": {
+          "agent_name": "foundation:integration-specialist",
+          "recipe_name": "dependency-upgrade-staged",
+          "recipe_step": "validate-compatibility",
+          "recipe_step_index": 0
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:integration-specialist",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided integration agent"
+        },
+        "index": 3,
+        "instruction": "Generate Phase 1 upgrade commands (CRITICAL SECURITY FIXES).\n\nBased on:\n- Upgrade plan: STUB AGENT OUTPUT (step=plan-upgrade-strategy, agent=foundation:zen-architect)\n- Compatibility check: STUB AGENT OUTPUT (step=validate-compatibility, agent=foundation:integration-specialist)\n- Package manager: uv\n\nCreate ONLY the commands for critical security fixes:\n1. Exact commands to run\n2. Pre-upgrade checks (backup, git status)\n3. Post-upgrade tests to run\n4. Rollback commands if needed\n\nMake commands copy-paste ready.\nFocus ONLY on security-critical updates.\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "dependency-upgrade-staged",
+        "recipe_step": "generate-phase1-commands",
+        "session_metadata": {
+          "agent_name": "foundation:integration-specialist",
+          "recipe_name": "dependency-upgrade-staged",
+          "recipe_step": "generate-phase1-commands",
+          "recipe_step_index": 0
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:integration-specialist",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided integration agent"
+        },
+        "index": 4,
+        "instruction": "Generate Phase 2 upgrade commands (MINOR VERSION UPDATES).\n\nBased on:\n- Upgrade plan: STUB AGENT OUTPUT (step=plan-upgrade-strategy, agent=foundation:zen-architect)\n- Compatibility check: STUB AGENT OUTPUT (step=validate-compatibility, agent=foundation:integration-specialist)\n- Package manager: uv\n\nCreate ONLY the commands for minor version updates:\n1. Exact commands to run\n2. Pre-upgrade checks\n3. Post-upgrade tests to run\n4. Rollback commands if needed\n\nMake commands copy-paste ready.\nFocus ONLY on minor version updates (not major).\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "dependency-upgrade-staged",
+        "recipe_step": "generate-phase2-commands",
+        "session_metadata": {
+          "agent_name": "foundation:integration-specialist",
+          "recipe_name": "dependency-upgrade-staged",
+          "recipe_step": "generate-phase2-commands",
+          "recipe_step_index": 0
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:integration-specialist",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {
+          "description": "Caller-provided integration agent"
+        },
+        "index": 5,
+        "instruction": "Generate Phase 3 upgrade commands (MAJOR VERSION UPDATES).\n\nBased on:\n- Upgrade plan: STUB AGENT OUTPUT (step=plan-upgrade-strategy, agent=foundation:zen-architect)\n- Compatibility check: STUB AGENT OUTPUT (step=validate-compatibility, agent=foundation:integration-specialist)\n- Package manager: uv\n\nCreate ONLY the commands for major version updates:\n1. Exact commands to run\n2. Pre-upgrade checks (comprehensive backup recommended)\n3. Post-upgrade tests to run (thorough testing required)\n4. Rollback commands (essential for major updates)\n5. Migration steps if API changes detected\n\nMake commands copy-paste ready.\nInclude warnings about breaking changes.\nFocus ONLY on major version updates.\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "dependency-upgrade-staged",
+        "recipe_step": "generate-phase3-commands",
+        "session_metadata": {
+          "agent_name": "foundation:integration-specialist",
+          "recipe_name": "dependency-upgrade-staged",
+          "recipe_step": "generate-phase3-commands",
+          "recipe_step_index": 0
+        },
+        "use_subprocess": false
+      }
+    ],
+    "agents_by_step": {
+      "audit-dependencies": "foundation:integration-specialist",
+      "generate-phase1-commands": "foundation:integration-specialist",
+      "generate-phase2-commands": "foundation:integration-specialist",
+      "generate-phase3-commands": "foundation:integration-specialist",
+      "plan-upgrade-strategy": "foundation:zen-architect",
+      "validate-compatibility": "foundation:integration-specialist"
+    }
+  },
+  "recipe": "examples/dependency-upgrade-staged-recipe.yaml",
+  "recipe_sha256": "5ad171a6510c3e1d930950f8fd7dca7309714d8124b7b46ad2e5c8b505d039c1",
+  "tool_calls": [
+    {
+      "error": null,
+      "input": {
+        "context": {
+          "package_manager": "uv",
+          "project_path": "."
+        },
+        "operation": "execute",
+        "recipe_path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml"
+      },
+      "output": {
+        "approval_prompt": "DEPENDENCY AUDIT AND UPGRADE PLAN COMPLETE\n\nReview the assessment before proceeding:\n- Audit: STUB AGENT OUTPUT (step=audit-dependencies, agent=foundation:integration-specialist)\n- Plan: STUB AGENT OUTPUT (step=plan-upgrade-strategy, agent=foundation:zen-architect)\n\nApprove to validate compatibility and generate upgrade commands.\nDeny to stop and review the plan manually.\n",
+        "message": "Recipe paused at stage 'validation'. Use 'approve' or 'deny' to continue.",
+        "recipe": "dependency-upgrade-staged",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "validation",
+        "status": "paused_for_approval"
+      },
+      "success": true
+    },
+    {
+      "error": null,
+      "input": {
+        "message": "approved by legacy-compat harness",
+        "operation": "approve",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "validation"
+      },
+      "output": {
+        "approval_message": "approved by legacy-compat harness",
+        "message": "Stage 'validation' approved. Use 'resume' operation to continue execution.",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "validation",
+        "status": "approved"
+      },
+      "success": true
+    },
+    {
+      "error": null,
+      "input": {
+        "operation": "resume",
+        "session_id": "<SESSION_ID>"
+      },
+      "output": {
+        "approval_prompt": "COMPATIBILITY VALIDATION COMPLETE\n\nReview: STUB AGENT OUTPUT (step=validate-compatibility, agent=foundation:integration-specialist)\n\nReady to generate Phase 1 commands (CRITICAL SECURITY FIXES).\nThese are the highest priority updates that should be applied first.\n\nApprove to generate Phase 1 upgrade commands.\n",
+        "message": "Recipe paused at stage 'phase-1-security'. Use 'approve' or 'deny' to continue.",
+        "recipe": "dependency-upgrade-staged",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "phase-1-security",
+        "status": "paused_for_approval"
+      },
+      "success": true
+    },
+    {
+      "error": null,
+      "input": {
+        "message": "approved by legacy-compat harness",
+        "operation": "approve",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "phase-1-security"
+      },
+      "output": {
+        "approval_message": "approved by legacy-compat harness",
+        "message": "Stage 'phase-1-security' approved. Use 'resume' operation to continue execution.",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "phase-1-security",
+        "status": "approved"
+      },
+      "success": true
+    },
+    {
+      "error": null,
+      "input": {
+        "operation": "resume",
+        "session_id": "<SESSION_ID>"
+      },
+      "output": {
+        "approval_prompt": "PHASE 1 COMMANDS GENERATED\n\nSecurity fix commands: STUB AGENT OUTPUT (step=generate-phase1-commands, agent=foundation:integration-specialist)\n\nReady to generate Phase 2 commands (MINOR VERSION UPDATES).\nThese are low-risk updates with backward-compatible changes.\n\nApprove to generate Phase 2 upgrade commands.\nYou can also deny and execute Phase 1 commands first.\n",
+        "message": "Recipe paused at stage 'phase-2-minor'. Use 'approve' or 'deny' to continue.",
+        "recipe": "dependency-upgrade-staged",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "phase-2-minor",
+        "status": "paused_for_approval"
+      },
+      "success": true
+    },
+    {
+      "error": null,
+      "input": {
+        "message": "approved by legacy-compat harness",
+        "operation": "approve",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "phase-2-minor"
+      },
+      "output": {
+        "approval_message": "approved by legacy-compat harness",
+        "message": "Stage 'phase-2-minor' approved. Use 'resume' operation to continue execution.",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "phase-2-minor",
+        "status": "approved"
+      },
+      "success": true
+    },
+    {
+      "error": null,
+      "input": {
+        "operation": "resume",
+        "session_id": "<SESSION_ID>"
+      },
+      "output": {
+        "approval_prompt": "PHASE 2 COMMANDS GENERATED\n\nMinor update commands: STUB AGENT OUTPUT (step=generate-phase2-commands, agent=foundation:integration-specialist)\n\nReady to generate Phase 3 commands (MAJOR VERSION UPDATES).\n⚠️  These carry HIGHER RISK and may require code changes.\n\nApprove to generate Phase 3 upgrade commands.\nDeny if you want to stop here and apply earlier phases first.\n",
+        "message": "Recipe paused at stage 'phase-3-major'. Use 'approve' or 'deny' to continue.",
+        "recipe": "dependency-upgrade-staged",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "phase-3-major",
+        "status": "paused_for_approval"
+      },
+      "success": true
+    },
+    {
+      "error": null,
+      "input": {
+        "message": "approved by legacy-compat harness",
+        "operation": "approve",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "phase-3-major"
+      },
+      "output": {
+        "approval_message": "approved by legacy-compat harness",
+        "message": "Stage 'phase-3-major' approved. Use 'resume' operation to continue execution.",
+        "session_id": "<SESSION_ID>",
+        "stage_name": "phase-3-major",
+        "status": "approved"
+      },
+      "success": true
+    },
+    {
+      "error": null,
+      "input": {
+        "operation": "resume",
+        "session_id": "<SESSION_ID>"
+      },
+      "output": {
+        "recipe": "dependency-upgrade-staged",
+        "session_id": "<SESSION_ID>",
+        "status": "completed",
+        "summary": {
+          "available_outputs": [
+            "project_path",
+            "package_manager",
+            "dependency_audit",
+            "upgrade_plan",
+            "compatibility_check",
+            "phase1_commands",
+            "phase2_commands",
+            "phase3_commands"
+          ],
+          "final_output": "STUB AGENT OUTPUT (step=generate-phase3-commands, agent=foundation:integration-specialist)",
+          "final_output_key": "phase3_commands",
+          "full_results_location": "Full results saved in recipe session: <SESSION_ID>. Use 'recipes list' to see session details.",
+          "last_stage": {
+            "index": 4,
+            "name": "phase-3-major"
+          },
+          "last_step": {
+            "id": "generate-phase3-commands",
+            "index": 0,
+            "stage": "phase-3-major"
+          },
+          "recipe_metadata": {
+            "description": "Systematic dependency upgrade with approval gates between phases",
+            "name": "dependency-upgrade-staged",
+            "version": "2.0.0"
+          },
+          "session": {
+            "id": "<SESSION_ID>",
+            "project": "<WORKSPACE>",
+            "started": "<TIMESTAMP>"
+          }
+        }
+      },
+      "success": true
+    }
+  ],
+  "volatile_outputs": []
+}

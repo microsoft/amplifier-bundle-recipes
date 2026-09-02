@@ -1,0 +1,319 @@
+{
+  "caller_agents": [
+    "foundation:zen-architect"
+  ],
+  "case": "test-parse-json",
+  "covers": [
+    "parse_json opt-in (aggressive extraction from prose)",
+    "parse_json default (prose preserved verbatim)",
+    "multiple agent steps",
+    "agent provenance with no provider/model on the step"
+  ],
+  "events": [
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Test recipe to verify parse_json functionality",
+        "name": "test-parse-json",
+        "status": "running",
+        "steps": [
+          {
+            "id": "prose-step",
+            "name": "prose-step",
+            "status": "running"
+          },
+          {
+            "id": "json-step",
+            "name": "json-step",
+            "status": "pending"
+          },
+          {
+            "id": "verify",
+            "name": "verify",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 3
+      },
+      "event": "recipe:start"
+    },
+    {
+      "data": {
+        "current_step": 0,
+        "description": "Test recipe to verify parse_json functionality",
+        "name": "test-parse-json",
+        "status": "running",
+        "steps": [
+          {
+            "id": "prose-step",
+            "name": "prose-step",
+            "status": "running"
+          },
+          {
+            "id": "json-step",
+            "name": "json-step",
+            "status": "pending"
+          },
+          {
+            "id": "verify",
+            "name": "verify",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 3
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 1,
+        "description": "Test recipe to verify parse_json functionality",
+        "name": "test-parse-json",
+        "status": "running",
+        "steps": [
+          {
+            "id": "prose-step",
+            "name": "prose-step",
+            "status": "completed"
+          },
+          {
+            "id": "json-step",
+            "name": "json-step",
+            "status": "running"
+          },
+          {
+            "id": "verify",
+            "name": "verify",
+            "status": "pending"
+          }
+        ],
+        "total_steps": 3
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 2,
+        "description": "Test recipe to verify parse_json functionality",
+        "name": "test-parse-json",
+        "status": "running",
+        "steps": [
+          {
+            "id": "prose-step",
+            "name": "prose-step",
+            "status": "completed"
+          },
+          {
+            "id": "json-step",
+            "name": "json-step",
+            "status": "completed"
+          },
+          {
+            "id": "verify",
+            "name": "verify",
+            "status": "running"
+          }
+        ],
+        "total_steps": 3
+      },
+      "event": "recipe:step"
+    },
+    {
+      "data": {
+        "current_step": 3,
+        "description": "Test recipe to verify parse_json functionality",
+        "name": "test-parse-json",
+        "status": "completed",
+        "steps": [
+          {
+            "id": "prose-step",
+            "name": "prose-step",
+            "status": "completed"
+          },
+          {
+            "id": "json-step",
+            "name": "json-step",
+            "status": "completed"
+          },
+          {
+            "id": "verify",
+            "name": "verify",
+            "status": "completed"
+          }
+        ],
+        "success": true,
+        "total_steps": 3
+      },
+      "event": "recipe:complete"
+    }
+  ],
+  "final_context": {
+    "json_output": {
+      "input": "example",
+      "length": 7,
+      "type": "string"
+    },
+    "prose_output": "## Analysis\n\nThe value **example** is a short lowercase string. Nothing surprising here.\n",
+    "recipe": {
+      "description": "Test recipe to verify parse_json functionality",
+      "name": "test-parse-json",
+      "version": "1.0.0"
+    },
+    "session": {
+      "id": "<SESSION_ID>",
+      "project": "<WORKSPACE>",
+      "started": "<TIMESTAMP>"
+    },
+    "step": {
+      "id": "verify",
+      "index": 2
+    },
+    "test_data": "example",
+    "verification": "STUB AGENT OUTPUT (step=verify, agent=foundation:zen-architect)"
+  },
+  "harness_version": 1,
+  "notes": "Pins both halves of _process_step_result: parse_json:true must extract the dict out of surrounding prose, the default must leave markdown untouched.",
+  "outcome": {
+    "final_error": null,
+    "final_status": "completed",
+    "final_success": true,
+    "tool_call_count": 1
+  },
+  "progress": [
+    {
+      "level": "info",
+      "message": "📋 Starting recipe: test-parse-json (3 steps)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [1/3] prose-step (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [2/3] json-step (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "  [3/3] verify (agent)",
+      "source": "recipe"
+    },
+    {
+      "level": "info",
+      "message": "✅ Recipe completed: test-parse-json",
+      "source": "recipe"
+    }
+  ],
+  "provenance": {
+    "agent_spawn_count": 3,
+    "agent_spawns": [
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {},
+        "index": 0,
+        "instruction": "MODE: ANALYZE\n\nProvide a brief analysis of the test data: example\n\nInclude your response in natural language with markdown formatting.\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "test-parse-json",
+        "recipe_step": "prose-step",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "test-parse-json",
+          "recipe_step": "prose-step",
+          "recipe_step_index": 0
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {},
+        "index": 1,
+        "instruction": "MODE: ANALYZE\n\nExtract structured data about the test input: example\n\nReturn a JSON object with these fields:\n{\n  \"input\": \"the test data value\",\n  \"length\": number of characters,\n  \"type\": \"string\"\n}\n\nYou may wrap this in explanation text if helpful.\n\n\n---\n\n**CRITICAL: JSON OUTPUT REQUIRED**\n\nYour response MUST end with valid JSON (object or array as required by the prompt above). The recipe system will parse your final JSON output.\n\nRequirements:\n1. Your response MUST contain a JSON code block or raw JSON\n2. The JSON must be valid (proper quotes, no trailing commas, etc.)\n3. If you include explanation, put the JSON block LAST in your response\n4. Use ```json fences or return raw JSON - both work\n\nExample valid endings:\n```json\n{\"key\": \"value\", \"count\": 5}\n```\n\nOr a JSON array:\n```json\n[{\"id\": 1, \"name\": \"first\"}, {\"id\": 2, \"name\": \"second\"}]\n```\n\nOr raw JSON at the end:\n{\"key\": \"value\", \"count\": 5}\n\nDO NOT return the JSON as a string or with escape characters. Return actual JSON structure.\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "test-parse-json",
+        "recipe_step": "json-step",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "test-parse-json",
+          "recipe_step": "json-step",
+          "recipe_step_index": 1
+        },
+        "use_subprocess": false
+      },
+      {
+        "agent_name": "foundation:zen-architect",
+        "agent_present_in_caller": true,
+        "caller_agent_config": {},
+        "index": 2,
+        "instruction": "MODE: ANALYZE\n\nVerify the outputs:\n\nProse output (should be string): ## Analysis\n\nThe value **example** is a short lowercase string. Nothing surprising here.\n\n\nJSON output (should be parsed dict): {\"input\": \"example\", \"length\": 7, \"type\": \"string\"}\n\nConfirm that:\n1. prose_output is preserved as natural language\n2. json_output is extracted as structured data\n",
+        "orchestrator_config": null,
+        "provider_preferences": null,
+        "recipe_name": "test-parse-json",
+        "recipe_step": "verify",
+        "session_metadata": {
+          "agent_name": "foundation:zen-architect",
+          "recipe_name": "test-parse-json",
+          "recipe_step": "verify",
+          "recipe_step_index": 2
+        },
+        "use_subprocess": false
+      }
+    ],
+    "agents_by_step": {
+      "json-step": "foundation:zen-architect",
+      "prose-step": "foundation:zen-architect",
+      "verify": "foundation:zen-architect"
+    }
+  },
+  "recipe": "examples/test-parse-json.yaml",
+  "recipe_sha256": "18599d6887cae9ae5f639cec56e5734faf1d0f0349fe6cf8376b247398473a21",
+  "tool_calls": [
+    {
+      "error": null,
+      "input": {
+        "context": {
+          "test_data": "example"
+        },
+        "operation": "execute",
+        "recipe_path": "<REPO>/examples/test-parse-json.yaml"
+      },
+      "output": {
+        "recipe": "test-parse-json",
+        "session_id": "<SESSION_ID>",
+        "status": "completed",
+        "summary": {
+          "available_outputs": [
+            "test_data",
+            "prose_output",
+            "json_output",
+            "verification"
+          ],
+          "final_output": "STUB AGENT OUTPUT (step=verify, agent=foundation:zen-architect)",
+          "final_output_key": "verification",
+          "full_results_location": "Full results saved in recipe session: <SESSION_ID>. Use 'recipes list' to see session details.",
+          "last_step": {
+            "id": "verify",
+            "index": 2
+          },
+          "recipe_metadata": {
+            "description": "Test recipe to verify parse_json functionality",
+            "name": "test-parse-json",
+            "version": "1.0.0"
+          },
+          "session": {
+            "id": "<SESSION_ID>",
+            "project": "<WORKSPACE>",
+            "started": "<TIMESTAMP>"
+          }
+        }
+      },
+      "success": true
+    }
+  ],
+  "volatile_outputs": []
+}
