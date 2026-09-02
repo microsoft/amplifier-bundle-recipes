@@ -10,6 +10,12 @@ Recipes are declarative YAML specifications that define multi-step agent workflo
 
 **Schema Version:** 1.3.0
 
+> **Schema v2 is in draft.** Recipes that declare their own bundle/behavior
+> dependencies are specified in
+> [Schema v2 — Dependency Manifests (DRAFT)](#schema-v2--dependency-manifests-draft)
+> near the end of this document. Everything before that section describes
+> schema v1, the only executable format today.
+
 ## Top-Level Structure
 
 ```yaml
@@ -2635,6 +2641,342 @@ Full results are always saved in the recipe session files. Use `recipes list` to
 ├── checkpoint.json # Latest checkpoint
 └── ...
 ```
+
+---
+
+## Schema v2 — Dependency Manifests (DRAFT)
+
+> **DRAFT — not yet implemented. Field names are provisional.**
+>
+> This section is authored from the ratified seam contract
+> [`contracts/recipe-dependency-manifest.v1.md`](../contracts/recipe-dependency-manifest.v1.md)
+> (status DRAFT, 2026-09-01), *ahead of the parser*. Every behavior below is
+> contract-backed and cited to its clause. The **key spellings shown are not
+> yet verified against a parser implementation** and will be reconciled with it
+> before this DRAFT marker is removed — tracked by work item `recipes-yh0`.
+> Treat the semantics as settled and the spellings as subject to change.
+>
+> Everything earlier in this document describes **schema v1**, which remains the
+> only executable format today. A recipe that does not declare
+> `schema_version` is a *legacy recipe* and keeps its existing v1 behavior — see
+> [Legacy recipes](#legacy-recipes-no-schema_version) below.
+
+**Citation key.** `manifest.v1 Core N` refers to numbered invariant N in
+`contracts/recipe-dependency-manifest.v1.md`. `runner-lib.v1 Core N` refers to
+`contracts/recipe-runner-lib.v1.md`. Nothing is documented here that those
+contracts do not state.
+
+### What v2 changes
+
+In v1 a recipe borrows its agent catalog from whatever session invokes it. A
+recipe that works in one caller bundle silently fails — or silently resolves a
+*different* agent — in another.
+
+Schema v2 makes a recipe a **self-contained, lockable dependency root**: it
+declares the bundles and behaviors it needs, and its agents resolve *only* from
+that declared closure. The same recipe run through the runner library, the
+standalone `recipe-runner` CLI, or the Amplifier `recipes` tool resolves to the
+same dependency provenance and the same agent catalog
+(`runner-lib.v1` Conformance/GOOD).
+
+### Recipe shape at a glance
+
+```yaml
+schema_version: 2               # Required for v2 (manifest.v1 Core 1)
+
+name: string                    # As in v1
+description: string
+version: string
+# ... all other v1 top-level fields are unchanged
+
+dependencies:                   # Required for v2 (manifest.v1 Core 1)
+  - source: string              # Foundation-resolvable URI (manifest.v1 Core 2)
+    kind: bundle | behavior     # (manifest.v1 Core 2)
+    required_agents:            # Optional (manifest.v1 Core 2)
+      - "namespace:agent-name"
+
+steps: list[Step]               # As in v1, but `agent:` resolves closed-world
+```
+
+### `schema_version` (required for v2)
+
+**Type:** integer
+**Value:** `2`
+
+A portable recipe declares `schema_version: 2` **and** a `dependencies` block. A
+recipe with neither is a *legacy recipe* (`manifest.v1` Core 1, Core 10).
+
+**Unknown manifest keys are a parse ERROR, never silently ignored**
+(`manifest.v1` Core 1). This is the sharpest behavioral break from v1: a typo in
+a manifest key fails the recipe rather than being dropped.
+
+Values above `2` are **Reserved** (`manifest.v1` Reserved) — do not use them.
+
+### `dependencies`
+
+**Type:** list of dependency entries
+**Required for v2** (`manifest.v1` Core 1)
+
+Each entry declares one Foundation-resolvable bundle or behavior source
+(`manifest.v1` Core 2).
+
+| Field | Type | Required | Contract | Meaning |
+|-------|------|----------|----------|---------|
+| `source` | string | yes | Core 2 | Foundation-resolvable bundle/behavior source URI. Partial behavior bundles are addressed with the `#subdirectory=` fragment. |
+| `kind` | string | — | Core 2 | `bundle` or `behavior`. **v1 of this contract permits no other values**; anything else is Reserved. |
+| `required_agents` | list[string] | no | Core 2 | Canonical `namespace:name` agents this dependency must supply. Verified in preflight (Core 6). |
+
+```yaml
+dependencies:
+  # A whole bundle
+  - source: "git+https://github.com/microsoft/amplifier-bundle-foundation@main"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+
+  # A partial behavior bundle, addressed with #subdirectory=
+  - source: "git+https://github.com/example/some-bundle@v1.2.0#subdirectory=behaviors/review.yaml"
+    kind: behavior
+```
+
+A behavior-partial dependency **composes only its declared contribution** —
+not the whole bundle it lives in (`manifest.v1` Conformance/GOOD).
+
+### Agent references and aliases
+
+A step's `agent:` reference — either an **alias** or a canonical
+`namespace:name` — resolves **only** from the recipe's declared dependency
+closure plus the runner baseline. It never resolves from the caller session's
+agent map (`manifest.v1` Core 3).
+
+Two consequences worth internalizing:
+
+- **Undeclared is unresolved.** Referencing an agent no declared dependency
+  supplies is a preflight failure, not a runtime surprise (`manifest.v1`
+  Core 6).
+- **No namespace inference.** Writing `agent: "foundation:zen-architect"` does
+  *not* declare a Foundation dependency. The runner never infers dependencies
+  from agent-name namespaces (`manifest.v1` Core 11). You must declare the
+  dependency explicitly.
+
+**Alias declaration — provisional shape.** The contract establishes that an
+alias may stand in for a canonical agent name (`manifest.v1` Core 3) but does
+not fix *where* aliases are declared. The form shown throughout this section —
+a per-dependency `aliases` map from alias to canonical name — is one
+provisional spelling; a top-level alias map is an equally contract-compatible
+alternative. This is exactly the kind of detail `recipes-yh0` will settle
+against the parser.
+
+```yaml
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-bundle-foundation@main"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+    aliases:                       # PROVISIONAL SPELLING — semantics per Core 3
+      architect: "foundation:zen-architect"
+
+steps:
+  - id: "review"
+    agent: "architect"             # alias — resolved from the closure
+    prompt: "..."
+```
+
+### Isolation and precedence
+
+**Isolation by default.** The runner builds the execution session *exclusively*
+from the declared dependency closure plus the runner baseline (`manifest.v1`
+Core 4). There are **no host imports** in v1 beyond five explicitly named runner
+ports:
+
+| Port | Contract |
+|------|----------|
+| workspace path | `manifest.v1` Core 4, `runner-lib.v1` Core 4 |
+| approved provider access | `manifest.v1` Core 4, `runner-lib.v1` Core 4 |
+| approval callback | `manifest.v1` Core 4, `runner-lib.v1` Core 4 |
+| event sink | `manifest.v1` Core 4, `runner-lib.v1` Core 4 |
+| cancellation | `manifest.v1` Core 4, `runner-lib.v1` Core 4 |
+
+No port grants the host's ambient agent map to the recipe
+(`runner-lib.v1` Core 4).
+
+**Collision is an error — there is no precedence rule to learn.** Duplicate
+agent names across the dependency closure are a **preflight ERROR**
+(`manifest.v1` Core 5). There is no last-wins, no first-wins, no shadowing: two
+dependencies supplying the same agent name is a failure you must resolve by
+changing the declaration.
+
+Correspondingly, a **caller agent with a colliding name can never satisfy,
+alter, or override a recipe dependency** (`manifest.v1` Core 5,
+Conformance/BAD). Caller-side composition cannot influence a recipe's result.
+
+### Preflight
+
+Preflight runs **before any side effects** (`manifest.v1` Core 6):
+
+1. **Trust policy is enforced before any remote fetch or module activation.** A
+   dependency requiring a trust-policy-disallowed module refuses *before*
+   activation (`manifest.v1` Core 6, Conformance/BAD; `runner-lib.v1` Core 6).
+2. **Every declared dependency and every referenced agent is verified before
+   any recipe step executes** (`manifest.v1` Core 6).
+3. **A missing declaration fails naming the undeclared reference and the
+   remedy** (`manifest.v1` Core 6).
+
+Preflight failures — undeclared agent, collision, trust refusal, provenance
+mismatch — are **distinct, typed errors** raised before recipe steps run. A
+missing artifact or refused dependency is a real result, never a fabricated
+success (`runner-lib.v1` Core 8).
+
+### Lock modes
+
+A lockfile is **optional and generated** (`manifest.v1` Core 8).
+
+| Mode | Behavior | Contract |
+|------|----------|----------|
+| `locked` | **Default for CI.** Requires exact lock entries. | Core 8 |
+| `update-lock` | Rewrites the lock **explicitly**. | Core 8 |
+| `unlocked` | **Interactive-only**, and emits a warning. | Core 8 |
+
+**Locks are never updated silently on run** (`manifest.v1` Core 8). If you want
+a lock rewritten, you ask for it with `update-lock`.
+
+CI-mode execution requires locked immutable refs (`runner-lib.v1` Core 6).
+
+Lockfile `lock_version` values above `1` are **Reserved** (`manifest.v1`
+Reserved).
+
+### Resume and provenance
+
+Every run records (`manifest.v1` Core 7):
+
+- the recipe digest
+- each declared URI/ref
+- the resolved immutable revision / content digest
+- included partials
+- the agent-to-dependency provenance map
+- runner and Foundation versions
+- the effective trust and capability policy
+
+`plan`/`run` expose this resolved graph in a stable, documented shape
+(`runner-lib.v1` Core 7).
+
+**Resume uses recorded provenance.** A provenance mismatch **fails visibly** and
+never silently re-resolves (`manifest.v1` Core 8) — a locked resume that sees a
+different resolved revision is a failure (`manifest.v1` Conformance/BAD).
+
+### Capabilities
+
+Effective capabilities are the **intersection** of three inputs
+(`manifest.v1` Core 9):
+
+```
+effective = host policy ∩ runner policy ∩ manifest-declared needs
+```
+
+A manifest cannot widen what the host or runner policy allows.
+
+### `agent_config` under v2
+
+In v1, `agent_config` is parsed but ignored. Under this schema it must be
+**either implemented or rejected at parse — never silently retained inert**
+(`manifest.v1` Core 12). Which of those two v2 chooses is an implementation
+decision not yet made; do not rely on v1's silent-no-op behavior persisting.
+
+### Legacy recipes (no `schema_version`)
+
+A recipe without `schema_version` and `dependencies` is a **legacy recipe**
+(`manifest.v1` Core 1). Legacy mode is **labeled and confined**
+(`manifest.v1` Core 10):
+
+| Surface | Legacy recipe behavior |
+|---------|------------------------|
+| Amplifier `recipes` tool adapter | **Runs**, in explicitly labeled caller-bound mode, with a **deprecation warning**. Behavior is byte-identical to pre-contract behavior — *including* failing when the caller lacks a referenced agent. |
+| Standalone `recipe-runner` CLI | **Rejected**, with an actionable error. |
+| Runner library (isolated execution) | Not a legacy path — legacy runs *only* through the embedded tool adapter. |
+
+The boundary is deliberate: legacy recipes keep working exactly where they
+already worked, they are never silently upgraded, and they cannot be run from
+the portable surfaces that promise isolation.
+
+### Worked example
+
+A v2 recipe declaring a Foundation bundle dependency and using both an aliased
+and a canonical agent reference. This recipe runs identically from a caller
+bundle that has no Foundation agents at all (`manifest.v1` Conformance/GOOD).
+
+```yaml
+schema_version: 2
+
+name: "architecture-review"
+description: "Review a design document against architectural principles"
+version: "1.0.0"
+tags: ["review", "architecture"]
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-bundle-foundation@main"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+    aliases:                          # PROVISIONAL SPELLING (see above)
+      architect: "foundation:zen-architect"
+
+context:
+  design_doc: "docs/DESIGN.md"
+
+steps:
+  # Aliased reference — resolves from the declared closure only (Core 3)
+  - id: "review-design"
+    agent: "architect"
+    prompt: |
+      Review the design document at {{design_doc}}.
+
+      Assess: module boundaries, contract clarity, and whether any
+      abstraction exists without a second caller justifying it.
+
+      Return findings as a numbered list, most severe first.
+    output: "findings"
+
+  # Canonical reference to the same agent — equally valid (Core 3)
+  - id: "summarize"
+    agent: "foundation:zen-architect"
+    prompt: |
+      Summarize these findings into a one-paragraph verdict
+      and a single recommended next action:
+
+      {{findings}}
+    output: "final_output"
+```
+
+**What preflight checks before step 1 runs** (`manifest.v1` Core 6):
+
+- the Foundation dependency resolves under the active trust policy, *before*
+  any fetch;
+- `foundation:zen-architect` is actually supplied by it (`required_agents`);
+- the alias `architect` resolves within the closure;
+- no agent name collides across the closure (Core 5).
+
+**What this recipe does *not* get:** any agent from the caller's session, even
+one named `architect` or `foundation:zen-architect` (Core 3, Core 5).
+
+### Not in v2 — named backlog
+
+These are deliberately **out of scope** for v2, each with a named promotion
+trigger (`manifest.v1` Backlogged). Do not write recipes that assume them:
+
+| Capability | Promotion trigger |
+|------------|-------------------|
+| Constrained inline agents (instruction-only; no modules, hooks, or undeclared tools; `capabilities: []` mandatory) | First real recipe needing a recipe-private prompt-only role |
+| Narrowly named host-import mechanism | First real embedding that cannot express a need via declared dependencies |
+| Shared content-addressed cache dedup | Measured duplicate-cache cost |
+| Signed archive / content-addressed dependency sources | First hermetic-distribution requirement |
+
+### Reserved
+
+Reserved by `manifest.v1` — do not use:
+
+- `schema_version` values above `2`
+- `dependencies[].kind` values beyond `bundle` / `behavior`
+- Lockfile `lock_version` above `1`
 
 ---
 
