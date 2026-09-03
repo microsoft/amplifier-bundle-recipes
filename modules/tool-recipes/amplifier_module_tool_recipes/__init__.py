@@ -923,6 +923,12 @@ Example:
                 error={"message": f"Session not found: {session_id}"},
             )
 
+        # A caller may hold either of a v2 run's two ids; the run is re-entered
+        # under its OWN one either way, so its record is the one that stays
+        # current. Resuming under the engine's id instead left the run's own
+        # session frozen at "paused" after the run had finished (recipes-3f6).
+        session_id = self._run_session(session_id, project_path)
+
         # Validate session exists and recover recipe_path for sub-recipe resolution
         try:
             state = self.session_manager.load_state(session_id, project_path)
@@ -1495,13 +1501,22 @@ Example:
         )
 
     async def _list_approvals(self, input: dict[str, Any]) -> ToolResult:
-        """List pending approvals across all sessions."""
+        """List pending approvals across all sessions.
+
+        A v2 run's gate physically lives in the engine's own session, so the
+        raw listing named an id the caller had never seen and could not
+        ``resume`` with. Each entry is reported under the run's own id instead,
+        with the gate's actual session named alongside (recipes-3f6).
+        """
         project_path = self._get_working_dir()
 
         try:
-            pending_approvals = self.session_manager.list_pending_approvals(
-                project_path
-            )
+            pending_approvals = [
+                self._approval_under_run_session(approval, project_path)
+                for approval in self.session_manager.list_pending_approvals(
+                    project_path
+                )
+            ]
 
             return ToolResult(
                 success=True,
@@ -1515,6 +1530,27 @@ Example:
                 success=False,
                 error={"message": f"Failed to list approvals: {str(e)}"},
             )
+
+    def _approval_under_run_session(
+        self, approval: dict[str, Any], project_path: Path
+    ) -> dict[str, Any]:
+        """Re-address one pending-approval entry to the run's own session.
+
+        Leaves a legacy entry (whose gate session *is* the run session)
+        untouched, so the listing keeps its shape for every recipe that has
+        only ever had one session.
+        """
+        gate_session_id = approval.get("session_id")
+        if not isinstance(gate_session_id, str):
+            return approval
+        run_session_id = self._run_session(gate_session_id, project_path)
+        if run_session_id == gate_session_id:
+            return approval
+        return {
+            **approval,
+            "session_id": run_session_id,
+            "gate_session_id": gate_session_id,
+        }
 
     def _gate_session(self, session_id: str, project_path: Path) -> str:
         """The session actually holding the approval gate for this run.
@@ -1558,6 +1594,49 @@ Example:
             return session_id
         return session_id
 
+    def _run_session(self, session_id: str, project_path: Path) -> str:
+        """The run's OWN session id -- the one ``execute`` reported.
+
+        A v2 run has two addressable sessions: the one this tool bound and
+        reported to the caller, and the engine's own. Either may be *given* to
+        an operation (``_gate_session`` accepts both), but only one may ever be
+        *reported back*, or a caller finishes a round trip holding a different
+        id from the one they started with -- which is exactly what made the
+        documented "approve ... then resume" workflow impossible to follow
+        (recipes-3f6).
+
+        The run record names its owner in ``session_id``; an engine session
+        carries the same record, so the owner is recoverable from either side.
+        Only ever redirects to a session that exists; anything unreadable,
+        unrecorded, or self-naming is left exactly where the caller aimed it.
+        """
+        try:
+            state = self.session_manager.load_state(session_id, project_path)
+        except Exception:  # noqa: BLE001 - an unreadable session is not redirected
+            return session_id
+
+        record = state.get(V2_RUN_STATE_KEY)
+        if not isinstance(record, dict):
+            return session_id
+        owner = record.get("session_id")
+        if not owner or owner == session_id:
+            return session_id
+
+        try:
+            if not self.session_manager.session_exists(str(owner), project_path):
+                return session_id
+        except Exception:  # noqa: BLE001 - fall back to what the caller named
+            return session_id
+
+        logger.info(
+            "Session %s is the engine session of run %s; reporting and resuming "
+            "under the run's own session %s.",
+            session_id,
+            record.get("run_id") or "(unrecorded)",
+            owner,
+        )
+        return str(owner)
+
     async def _approve_stage(self, input: dict[str, Any]) -> ToolResult:
         """Approve a stage to continue execution."""
         session_id = input.get("session_id")
@@ -1584,7 +1663,12 @@ Example:
                 error={"message": f"Session not found: {session_id}"},
             )
 
-        # The gate may live in the engine's own session (see _gate_session).
+        # One id in, one id out (recipes-3f6): the caller may address either of
+        # a v2 run's two sessions, the gate is written wherever it actually
+        # lives (`_gate_session`), and what comes back is always the run's own
+        # id -- the one `execute` reported and `resume` re-enters. Reporting
+        # the engine's id here is what forced the caller to juggle two.
+        run_session_id = self._run_session(session_id, project_path)
         session_id = self._gate_session(session_id, project_path)
 
         # Check if there's a pending approval for this stage
@@ -1627,16 +1711,26 @@ Example:
                     message=message,
                 )
 
-            return ToolResult(
-                success=True,
-                output={
-                    "status": "approved",
-                    "session_id": session_id,
-                    "stage_name": stage_name,
-                    "approval_message": message,
-                    "message": f"Stage '{stage_name}' approved. Use 'resume' operation to continue execution.",
-                },
-            )
+            output: dict[str, Any] = {
+                "status": "approved",
+                "session_id": run_session_id,
+                "stage_name": stage_name,
+                "approval_message": message,
+                "message": f"Stage '{stage_name}' approved. Use 'resume' operation to continue execution.",
+            }
+            if session_id != run_session_id:
+                # Named, not hidden: the gate really was written elsewhere. It
+                # is not the id to resume with, and saying so beats leaving the
+                # caller to discover that from a refusal. Only ever added when
+                # a second session exists, so a legacy run's result keeps the
+                # exact shape and bytes it has always had (conformance/
+                # legacy-compat, manifest.v1 Core 10).
+                output["gate_session_id"] = session_id
+                output["message"] = (
+                    f"Stage '{stage_name}' approved. Use 'resume' operation with "
+                    f"session_id {run_session_id} to continue execution."
+                )
+            return ToolResult(success=True, output=output)
         except Exception as e:
             return ToolResult(
                 success=False,
@@ -1669,7 +1763,8 @@ Example:
                 error={"message": f"Session not found: {session_id}"},
             )
 
-        # The gate may live in the engine's own session (see _gate_session).
+        # One id in, one id out -- see _approve_stage (recipes-3f6).
+        run_session_id = self._run_session(session_id, project_path)
         session_id = self._gate_session(session_id, project_path)
 
         # Check if there's a pending approval for this stage
@@ -1710,16 +1805,16 @@ Example:
             # Clear the pending approval
             self.session_manager.clear_pending_approval(session_id, project_path)
 
-            return ToolResult(
-                success=True,
-                output={
-                    "status": "denied",
-                    "session_id": session_id,
-                    "stage_name": stage_name,
-                    "reason": reason,
-                    "message": f"Stage '{stage_name}' denied. Recipe execution will not continue.",
-                },
-            )
+            output: dict[str, Any] = {
+                "status": "denied",
+                "session_id": run_session_id,
+                "stage_name": stage_name,
+                "reason": reason,
+                "message": f"Stage '{stage_name}' denied. Recipe execution will not continue.",
+            }
+            if session_id != run_session_id:
+                output["gate_session_id"] = session_id
+            return ToolResult(success=True, output=output)
         except Exception as e:
             return ToolResult(
                 success=False,

@@ -384,6 +384,14 @@ approval:
    amplifier run "resume recipe session <session-id>"
    ```
 
+**One session id, the whole way through.** The `session_id` in the
+`paused_for_approval` result is the id `approve`, `deny`, `approvals` and
+`resume` all accept and all report back. A `schema_version: 2` run executes on
+a step engine in a session of its own, and its gate physically lives there --
+so `approve`/`deny` additionally report `gate_session_id`. That is where the
+approval was written, not a second id to resume with; `resume` takes the run's
+own id (recipes-3f6).
+
 **List pending approvals:**
 ```bash
 amplifier run "list pending approvals"
