@@ -62,6 +62,7 @@ __all__ = [
     "LEGACY_DEPRECATION_REMEDY",
     "LEGACY_EXECUTION_MODE",
     "REJECTED_CONFIG_KEYS",
+    "SELF_AGENT",
     "RUNNER_DISTRIBUTION",
     "RUNNER_IMPORT_NAME",
     "V2_EXECUTION_MODE",
@@ -83,7 +84,9 @@ __all__ = [
     "build_run_request",
     "build_validate_request",
     "check_adapter_config",
+    "check_legacy_agents_available",
     "check_model_roles",
+    "collect_agent_references",
     "declared_model_roles",
     "declared_schema_version",
     "execution_mode_of",
@@ -92,6 +95,7 @@ __all__ = [
     "issue_for",
     "label_execution_mode",
     "legacy_deprecation_message",
+    "legacy_missing_agents_message",
     "library_resume",
     "load_runner",
     "manifest_header",
@@ -470,6 +474,153 @@ def warn_legacy_recipe(recipe_path: Path | str) -> str:
     warnings.warn(message, DeprecationWarning, stacklevel=3)
     logger.warning("%s", message)
     return message
+
+
+# ---------------------------------------------------------------------------
+# Legacy plan-time agent preflight
+# ---------------------------------------------------------------------------
+
+#: Pseudo-agent meaning "spawn the current agent". It is never looked up in an
+#: agent registry, so the preflight exempts it (same rule the availability
+#: warning already applies).
+SELF_AGENT = "self"
+
+
+def collect_agent_references(recipe: Any) -> set[str]:
+    """Every ``agent:`` a legacy recipe would resolve, ``self`` excluded.
+
+    Covers flat and staged steps (via ``Recipe.get_all_steps``) *and* the
+    nested bodies of compound steps. A ``foreach``/``while`` body is stored as
+    ``while_steps`` -- a list of **raw dicts** parsed on the fly by the
+    executor, so it never appears in ``get_all_steps()`` and its ``agent:``
+    references would otherwise be invisible to any plan-time check. Bodies
+    nest, so the walk recurses.
+
+    Deliberately out of scope: ``type: recipe`` sub-recipes. Their agent
+    references live in a *different* file resolved at execution time; reading
+    them here would mean resolving sub-recipe paths at plan time, which is a
+    behavior change of its own rather than a diagnostic.
+    """
+    references: set[str] = set()
+
+    def _add(agent: Any) -> None:
+        if isinstance(agent, str) and agent and agent != SELF_AGENT:
+            references.add(agent)
+
+    def _walk_raw(bodies: Any) -> None:
+        if not isinstance(bodies, (list, tuple)):
+            return
+        for entry in bodies:
+            if not isinstance(entry, Mapping):
+                continue
+            _add(entry.get("agent"))
+            # Raw YAML uses `steps` for a nested body; the parsed model renames
+            # it to `while_steps`. A raw dict can carry either.
+            _walk_raw(entry.get("steps"))
+            _walk_raw(entry.get("while_steps"))
+
+    try:
+        steps = recipe.get_all_steps()
+    except Exception:  # pragma: no cover - defensive; models always provide it
+        return references
+
+    for step in steps:
+        _add(getattr(step, "agent", None))
+        _walk_raw(getattr(step, "while_steps", None))
+
+    return references
+
+
+def _caller_bundle_name(coordinator: Any) -> str | None:
+    """Best-effort name of the bundle whose agent map a legacy recipe binds to.
+
+    The CLI writes ``bundle_name`` into the session config, which is the same
+    mapping the coordinator exposes as ``config``. Returns ``None`` when the
+    host does not publish it, so the message can say less rather than guess.
+    """
+    for holder in (coordinator, getattr(coordinator, "session", None)):
+        try:
+            config = getattr(holder, "config", None)
+            if isinstance(config, Mapping):
+                name = config.get("bundle_name")
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+        except Exception:
+            continue
+    return None
+
+
+def _example_bundle(missing: Sequence[str]) -> str:
+    """A concrete ``-b`` value for the remedy, taken from a missing reference.
+
+    ``foundation:zen-architect`` names its bundle already; a bare ``reviewer``
+    does not, so the example falls back to a placeholder rather than inventing
+    a bundle that may not exist.
+    """
+    for agent in missing:
+        namespace, sep, _ = agent.partition(":")
+        if sep and namespace:
+            return namespace
+    return "<bundle>"
+
+
+def legacy_missing_agents_message(
+    missing: Sequence[str], bundle_name: str | None = None
+) -> str:
+    """The plan-time diagnostic for a legacy recipe the caller cannot serve.
+
+    Names the agents, the bundle, and **both** remedies. Without this the run
+    reaches its first agent step and dies on a bare "agent not found", which
+    says nothing about why the recipe worked elsewhere or what to do next.
+    """
+    agents = ", ".join(f"'{agent}'" for agent in missing)
+    bundle_clause = (
+        f"the calling bundle '{bundle_name}'" if bundle_name else "the calling bundle"
+    )
+    return (
+        f"This legacy recipe references agent(s) {agents} which {bundle_clause} "
+        f"does not mount. A legacy recipe resolves `agent:` from the calling "
+        f"session's agent map, so this run would fail at its first agent step. "
+        f"Remedy 1: run it from a bundle that includes them (e.g. "
+        f"`amplifier tool invoke -b {_example_bundle(missing)} recipes ...`). "
+        f"Remedy 2: migrate the recipe to `schema_version: 2` with a "
+        f"`dependencies:` block so it carries its own agents "
+        f"(see docs/RECIPE_SCHEMA.md, 'Recipe schema v2')."
+    )
+
+
+def check_legacy_agents_available(
+    recipe: Any, coordinator: Any
+) -> tuple[list[str], str] | None:
+    """Plan-time preflight for the legacy path: can the caller serve this recipe?
+
+    Returns ``None`` when the run may proceed, or ``(missing, message)`` when it
+    cannot. Enumeration is best-effort and *skips* -- returning ``None`` -- when
+    the host exposes no readable agent registry, exactly as
+    :func:`~amplifier_module_tool_recipes.validator.check_agent_availability`
+    does. Refusing a runnable recipe because we could not read a registry would
+    be strictly worse than the mid-run failure this replaces.
+
+    This only fires where the run was already doomed: every agent the recipe
+    names is missing from the map the executor would resolve against. Recipes
+    whose agents ARE present are unaffected, which is what keeps
+    ``conformance/legacy-compat`` byte-identical.
+    """
+    from .validator import _enumerate_available_agents
+
+    available = _enumerate_available_agents(coordinator)
+    if available is None:
+        return None
+
+    missing = sorted(
+        agent for agent in collect_agent_references(recipe) if agent not in available
+    )
+    if not missing:
+        return None
+
+    return missing, legacy_missing_agents_message(
+        missing, _caller_bundle_name(coordinator)
+    )
 
 
 def label_execution_mode(result: Any, mode: str) -> Any:
