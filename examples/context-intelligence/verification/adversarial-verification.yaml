@@ -1,3 +1,52 @@
+# --- Why this recipe is still schema_version-less (recipes-c6w) -------------
+# Every other recipe under examples/context-intelligence/ carries a v2
+# dependency manifest. This one cannot yet, and the reason is structural
+# rather than an oversight.
+#
+# The recipe uses `agent: "self"` on six steps, and `self` cannot currently be
+# made safe under a v2 closed world. Read the whole reason before "fixing" it:
+# the obvious fix is the dangerous one.
+#
+# What happens today. `self` is a documented pseudo-agent of the LEGACY engine
+# -- validator.py names it explicitly, `collect_agent_references` excludes it
+# -- but neither `planner._build_provenance` nor `execution.AgentCatalog.
+# resolve` special-cases it, so planning this file as v2 fails preflight with
+#
+#   UndeclaredAgentError: Agent 'self' referenced by step 'validate_inputs'
+#   is not supplied by any declared dependency
+#
+# and the remedy that error suggests cannot be followed: no `dependencies:`
+# block can supply `self`, because `self` does not name a bundle agent.
+#
+# Why the obvious exemption is WRONG. It is tempting to read the above as "the
+# planner just forgot to exempt `self`, like validator.py already does" and add
+# two lines. That would open a silent containment hole. `self` is NOT
+# undefined -- the host's spawner defines it precisely
+# (amplifier_app_cli/session_spawner.py, `if agent_name == "self"`): an EMPTY
+# overlay, i.e. `merge_configs(parent_session.config, {})` -- inherit the
+# parent session's config as-is. And in the closed-world path the parent
+# session is the CALLER's: executor.py passes
+# `parent_session = self.coordinator.session`, and ClosedWorldCoordinator
+# substitutes only the agent map and the spawn, never the session. So an
+# exempted `self` step would inherit the caller's entire config -- agent map
+# included -- silently restoring exactly the world that
+# recipe-dependency-manifest.v1 Core 3/5 exists to keep out. No error, no
+# warning: just the closed world quietly reopened for that step.
+#
+# What it would actually take: substituting a recipe-owned parent session at
+# the closed-world boundary, or redefining `self` against the plan rather than
+# against the parent session. Either is a design change with a safety property
+# attached, not something a migration may invent. Tracked as recipes-80q; this
+# file stays honestly labelled legacy until it is settled.
+#
+# What DID change here: the `lsp-python:python-code-intel` references were
+# corrected to `python-dev:code-intel`. `amplifier-bundle-lsp-python` is a
+# DEPRECATED forwarding shell (bundle v2.0.0) that ships no `agents/`
+# directory at all and merely includes `amplifier-bundle-python-dev`, where
+# the agent actually lives -- renamed away from `python-code-intel`. The old
+# reference could never have resolved from any bundle.
+# ---------------------------------------------------------------------------
+
 # Adversarial Deep Dive Investigation Recipe v2.2
 #
 # IMPROVEMENTS OVER v2.1:
@@ -305,7 +354,7 @@ context:
         Find entry points, key files, data flow, and dependencies.
         Map the complete flow from trigger to completion.
     - name: "lsp"
-      agent: "lsp-python:python-code-intel"
+      agent: "python-dev:code-intel"
       focus: "precise call chains, types, and line numbers"
       weight: 1.0
       mission: |
@@ -325,7 +374,7 @@ context:
   # NOTE: In continuation mode, completeness_verifier weight is reduced dynamically
   verification_agents:
     - name: "lsp_verifier"
-      agent: "lsp-python:python-code-intel"
+      agent: "python-dev:code-intel"
       focus: "code accuracy and call chains"
       weight: 1.0
       is_factual: true  # v2.2: Mark as factual verifier
@@ -783,7 +832,7 @@ stages:
           
           ### Investigation Agents
           - explorer (foundation:explorer)
-          - lsp (lsp-python:python-code-intel)
+          - lsp (python-dev:code-intel)
           - architect (foundation:zen-architect)
           - Additional: {{additional_agents}}
           

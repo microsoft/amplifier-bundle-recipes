@@ -1,3 +1,21 @@
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it --
+# and so does a v2 orchestrator that reaches this file as a `type: recipe`
+# step, because `schema_version` is read per recipe, not inherited.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+# ---------------------------------------------------------------------------
+
 name: "synthesize-findings"
 description: "Synthesize aggregated findings into a coherent, prioritized action plan"
 version: "1.0.0"
@@ -621,63 +639,69 @@ steps:
     output: "final_synthesis"
     timeout: 180
 
-output:
-  format: "json"
-  schema: |
-    {
-      "synthesis_summary": {
-        "total_unique_findings": "integer - findings after deduplication",
-        "deduplicated_count": "integer - how many duplicates were removed",
-        "root_causes_identified": "integer - number of root causes found",
-        "action_themes": "integer - number of themes",
-        "total_actions": "integer - number of actions in plan",
-        "repo_health": "string (A|B|C|D|F)",
-        "repo_health_score": "integer (0-100)"
-      },
-      "root_cause_analysis": [
-        {
-          "root_cause_id": "string - unique identifier",
-          "root_cause": "string - description of underlying issue",
-          "symptoms": "array of finding IDs this root cause explains",
-          "severity": "string (critical|high|medium|low)",
-          "fix_once_impact": "string - impact description",
-          "recommended_fix": "string - how to address"
-        }
-      ],
-      "action_themes": [
-        {
-          "theme_id": "string - unique identifier",
-          "theme": "string - theme name",
-          "findings": "array of finding IDs",
-          "total_findings": "integer",
-          "aggregate_severity": "string (critical|high|medium|low)",
-          "recommended_approach": "string (sprint|incremental|hotfix)"
-        }
-      ],
-      "action_plan": [
-        {
-          "priority": "integer - 1 is highest",
-          "action_id": "string - unique identifier",
-          "action": "string - what to do",
-          "addresses": "array of finding/root-cause/theme IDs",
-          "effort": "string (low|medium|high)",
-          "impact": "string (low|medium|high)",
-          "suggested_assignee": "string - team or role"
-        }
-      ],
-      "quick_wins": [
-        {
-          "action_id": "string",
-          "action": "string",
-          "impact": "string",
-          "effort": "string"
-        }
-      ],
-      "executive_summary": "string - 2-3 paragraph summary for stakeholders",
-      "metadata": {
-        "synthesis_version": "string",
-        "sources_analyzed": "object",
-        "focus_areas_applied": "array of strings",
-        "generated_at": "string - timestamp"
-      }
-    }
+# NOTE (recipes-c6w): the `output:` block below is commented out, not
+# deleted. It documents the JSON shape the final step emits, but it was
+# never a recipe key: `output` is a STEP field, and the legacy engine's
+# `Recipe` model has no top-level `output` at all, so nothing has ever
+# read it. The v2 manifest parser enumerates its allowed top-level keys
+# and refuses the unknown one, so it is preserved here as prose.
+# output:
+#   format: "json"
+#   schema: |
+#     {
+#       "synthesis_summary": {
+#         "total_unique_findings": "integer - findings after deduplication",
+#         "deduplicated_count": "integer - how many duplicates were removed",
+#         "root_causes_identified": "integer - number of root causes found",
+#         "action_themes": "integer - number of themes",
+#         "total_actions": "integer - number of actions in plan",
+#         "repo_health": "string (A|B|C|D|F)",
+#         "repo_health_score": "integer (0-100)"
+#       },
+#       "root_cause_analysis": [
+#         {
+#           "root_cause_id": "string - unique identifier",
+#           "root_cause": "string - description of underlying issue",
+#           "symptoms": "array of finding IDs this root cause explains",
+#           "severity": "string (critical|high|medium|low)",
+#           "fix_once_impact": "string - impact description",
+#           "recommended_fix": "string - how to address"
+#         }
+#       ],
+#       "action_themes": [
+#         {
+#           "theme_id": "string - unique identifier",
+#           "theme": "string - theme name",
+#           "findings": "array of finding IDs",
+#           "total_findings": "integer",
+#           "aggregate_severity": "string (critical|high|medium|low)",
+#           "recommended_approach": "string (sprint|incremental|hotfix)"
+#         }
+#       ],
+#       "action_plan": [
+#         {
+#           "priority": "integer - 1 is highest",
+#           "action_id": "string - unique identifier",
+#           "action": "string - what to do",
+#           "addresses": "array of finding/root-cause/theme IDs",
+#           "effort": "string (low|medium|high)",
+#           "impact": "string (low|medium|high)",
+#           "suggested_assignee": "string - team or role"
+#         }
+#       ],
+#       "quick_wins": [
+#         {
+#           "action_id": "string",
+#           "action": "string",
+#           "impact": "string",
+#           "effort": "string"
+#         }
+#       ],
+#       "executive_summary": "string - 2-3 paragraph summary for stakeholders",
+#       "metadata": {
+#         "synthesis_version": "string",
+#         "sources_analyzed": "object",
+#         "focus_areas_applied": "array of strings",
+#         "generated_at": "string - timestamp"
+#       }
+#     }

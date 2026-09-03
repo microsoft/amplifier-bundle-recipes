@@ -1,3 +1,22 @@
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it --
+# and so does a v2 orchestrator that reaches this file as a `type: recipe`
+# step, because `schema_version` is read per recipe, not inherited.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:modular-builder"
+      - "foundation:zen-architect"
+# ---------------------------------------------------------------------------
+
 name: "full-analysis-workflow"
 description: "Master workflow that orchestrates a complete repository analysis from start to finish"
 version: "1.0.0"
@@ -1347,39 +1366,45 @@ stages:
 #   - action-items.md          : Developer checklist (2-5 pages)
 #   - analysis-data.json       : Structured data for programmatic access
 #
-output:
-  format: "json"
-  key: "final_output"
-  schema: |
-    {
-      "status": "string - 'completed' | 'failed' | 'partial'",
-      "workflow_id": "string - unique workflow identifier (wf-YYYYMMDD-HHMMSS)",
-      "repository": {
-        "path": "string - repository path analyzed",
-        "health_grade": "string - A|B|C|D|F",
-        "health_score": "integer - 0-100"
-      },
-      "summary": {
-        "files_analyzed": "integer - number of files analyzed",
-        "total_findings": "integer - total unique findings",
-        "by_severity": {
-          "critical": "integer",
-          "high": "integer",
-          "medium": "integer",
-          "low": "integer"
-        },
-        "auto_fixable": "integer - findings that can be auto-fixed",
-        "quick_wins": "integer - high-impact low-effort items"
-      },
-      "reports": {
-        "full_report": "string - path to full-analysis-report.md",
-        "executive_summary": "string - path to executive-summary.md",
-        "action_items": "string - path to action-items.md"
-      },
-      "top_3_actions": "array of string - top 3 prioritized actions (max 80 chars each)",
-      "execution": {
-        "dry_run": "boolean - whether dry_run mode was enabled",
-        "fixes_applied": "integer - number of auto-fixes applied",
-        "fixes_available": "integer - number of auto-fixes available"
-      }
-    }
+# NOTE (recipes-c6w): the `output:` block below is commented out, not
+# deleted. It documents the JSON shape the final step emits, but it was
+# never a recipe key: `output` is a STEP field, and the legacy engine's
+# `Recipe` model has no top-level `output` at all, so nothing has ever
+# read it. The v2 manifest parser enumerates its allowed top-level keys
+# and refuses the unknown one, so it is preserved here as prose.
+# output:
+#   format: "json"
+#   key: "final_output"
+#   schema: |
+#     {
+#       "status": "string - 'completed' | 'failed' | 'partial'",
+#       "workflow_id": "string - unique workflow identifier (wf-YYYYMMDD-HHMMSS)",
+#       "repository": {
+#         "path": "string - repository path analyzed",
+#         "health_grade": "string - A|B|C|D|F",
+#         "health_score": "integer - 0-100"
+#       },
+#       "summary": {
+#         "files_analyzed": "integer - number of files analyzed",
+#         "total_findings": "integer - total unique findings",
+#         "by_severity": {
+#           "critical": "integer",
+#           "high": "integer",
+#           "medium": "integer",
+#           "low": "integer"
+#         },
+#         "auto_fixable": "integer - findings that can be auto-fixed",
+#         "quick_wins": "integer - high-impact low-effort items"
+#       },
+#       "reports": {
+#         "full_report": "string - path to full-analysis-report.md",
+#         "executive_summary": "string - path to executive-summary.md",
+#         "action_items": "string - path to action-items.md"
+#       },
+#       "top_3_actions": "array of string - top 3 prioritized actions (max 80 chars each)",
+#       "execution": {
+#         "dry_run": "boolean - whether dry_run mode was enabled",
+#         "fixes_applied": "integer - number of auto-fixes applied",
+#         "fixes_available": "integer - number of auto-fixes available"
+#       }
+#     }

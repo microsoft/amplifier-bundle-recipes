@@ -1,3 +1,21 @@
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it --
+# and so does a v2 orchestrator that reaches this file as a `type: recipe`
+# step, because `schema_version` is read per recipe, not inherited.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+# ---------------------------------------------------------------------------
+
 name: "categorize-findings"
 description: "Categorize synthesized findings into actionable buckets for routing to different teams or processes"
 version: "1.0.0"
@@ -550,82 +568,88 @@ steps:
     output: "final_output"
     timeout: 180
 
-output:
-  format: "json"
-  schema: |
-    {
-      "categorized": {
-        "auto_fixable": {
-          "findings": "array - findings that can be automatically fixed",
-          "count": "integer",
-          "estimated_time_saved": "string - e.g., '2 hours'",
-          "automation_ready": "boolean",
-          "actions": "array - automation commands/scripts"
-        },
-        "quick_wins": {
-          "findings": "array - low effort, high impact findings",
-          "count": "integer",
-          "total_effort": "string - e.g., '4 hours'",
-          "recommended_sprint": "boolean",
-          "actions": "array - prioritized task list"
-        },
-        "tech_debt": {
-          "findings": "array - important but not urgent findings",
-          "count": "integer",
-          "total_effort": "string - e.g., '3 days'",
-          "backlog_priority": "string - high|medium|low",
-          "actions": "array - backlog items"
-        },
-        "needs_discussion": {
-          "findings": "array - findings requiring team decision",
-          "count": "integer",
-          "topics": "array - discussion topics",
-          "stakeholders": "array - required participants",
-          "actions": "array - agenda items"
-        },
-        "security_review": {
-          "findings": "array - security-related findings",
-          "count": "integer",
-          "risk_level": "string - critical|high|medium|low",
-          "requires_immediate_action": "boolean",
-          "actions": "array - security review tickets"
-        },
-        "documentation": {
-          "findings": "array - documentation-related findings",
-          "count": "integer",
-          "doc_types": "array - types of docs needed",
-          "total_effort": "string",
-          "actions": "array - doc update tasks"
-        },
-        "false_positives": {
-          "findings": "array - likely false positive findings",
-          "count": "integer",
-          "rule_updates_suggested": "integer",
-          "actions": "array - rule update suggestions"
-        }
-      },
-      "routing_summary": {
-        "total_routed": "integer - total findings processed",
-        "by_category": "object - count per category",
-        "by_severity": "object - count per severity level",
-        "automation_potential": {
-          "fully_automatable": "integer",
-          "partially_automatable": "integer",
-          "manual_only": "integer",
-          "automation_coverage": "string - percentage"
-        },
-        "effort_breakdown": {
-          "immediate": "string - auto + quick wins effort",
-          "short_term": "string - discussion resolution effort",
-          "long_term": "string - tech debt effort"
-        },
-        "recommended_workflow": "string - step-by-step processing guide"
-      },
-      "executive_summary": "string - one-paragraph summary",
-      "metadata": {
-        "categorization_version": "string",
-        "total_findings_processed": "integer",
-        "custom_rules_used": "boolean",
-        "timestamp": "string - ISO-8601"
-      }
-    }
+# NOTE (recipes-c6w): the `output:` block below is commented out, not
+# deleted. It documents the JSON shape the final step emits, but it was
+# never a recipe key: `output` is a STEP field, and the legacy engine's
+# `Recipe` model has no top-level `output` at all, so nothing has ever
+# read it. The v2 manifest parser enumerates its allowed top-level keys
+# and refuses the unknown one, so it is preserved here as prose.
+# output:
+#   format: "json"
+#   schema: |
+#     {
+#       "categorized": {
+#         "auto_fixable": {
+#           "findings": "array - findings that can be automatically fixed",
+#           "count": "integer",
+#           "estimated_time_saved": "string - e.g., '2 hours'",
+#           "automation_ready": "boolean",
+#           "actions": "array - automation commands/scripts"
+#         },
+#         "quick_wins": {
+#           "findings": "array - low effort, high impact findings",
+#           "count": "integer",
+#           "total_effort": "string - e.g., '4 hours'",
+#           "recommended_sprint": "boolean",
+#           "actions": "array - prioritized task list"
+#         },
+#         "tech_debt": {
+#           "findings": "array - important but not urgent findings",
+#           "count": "integer",
+#           "total_effort": "string - e.g., '3 days'",
+#           "backlog_priority": "string - high|medium|low",
+#           "actions": "array - backlog items"
+#         },
+#         "needs_discussion": {
+#           "findings": "array - findings requiring team decision",
+#           "count": "integer",
+#           "topics": "array - discussion topics",
+#           "stakeholders": "array - required participants",
+#           "actions": "array - agenda items"
+#         },
+#         "security_review": {
+#           "findings": "array - security-related findings",
+#           "count": "integer",
+#           "risk_level": "string - critical|high|medium|low",
+#           "requires_immediate_action": "boolean",
+#           "actions": "array - security review tickets"
+#         },
+#         "documentation": {
+#           "findings": "array - documentation-related findings",
+#           "count": "integer",
+#           "doc_types": "array - types of docs needed",
+#           "total_effort": "string",
+#           "actions": "array - doc update tasks"
+#         },
+#         "false_positives": {
+#           "findings": "array - likely false positive findings",
+#           "count": "integer",
+#           "rule_updates_suggested": "integer",
+#           "actions": "array - rule update suggestions"
+#         }
+#       },
+#       "routing_summary": {
+#         "total_routed": "integer - total findings processed",
+#         "by_category": "object - count per category",
+#         "by_severity": "object - count per severity level",
+#         "automation_potential": {
+#           "fully_automatable": "integer",
+#           "partially_automatable": "integer",
+#           "manual_only": "integer",
+#           "automation_coverage": "string - percentage"
+#         },
+#         "effort_breakdown": {
+#           "immediate": "string - auto + quick wins effort",
+#           "short_term": "string - discussion resolution effort",
+#           "long_term": "string - tech debt effort"
+#         },
+#         "recommended_workflow": "string - step-by-step processing guide"
+#       },
+#       "executive_summary": "string - one-paragraph summary",
+#       "metadata": {
+#         "categorization_version": "string",
+#         "total_findings_processed": "integer",
+#         "custom_rules_used": "boolean",
+#         "timestamp": "string - ISO-8601"
+#       }
+#     }

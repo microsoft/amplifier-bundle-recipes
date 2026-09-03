@@ -1,3 +1,21 @@
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it --
+# and so does a v2 orchestrator that reaches this file as a `type: recipe`
+# step, because `schema_version` is read per recipe, not inherited.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+# ---------------------------------------------------------------------------
+
 name: "progressive-iteration"
 description: "Multi-round refinement of findings through adversarial challenge using challenger/defender/adjudicator pattern"
 version: "1.0.0"
@@ -573,70 +591,76 @@ steps:
     output: "final_results"
     timeout: 120
 
-output:
-  format: "json"
-  schema: |
-    {
-      "verification_summary": {
-        "total_findings": "integer - total findings input",
-        "verified": "integer - findings confirmed as valid",
-        "rejected": "integer - findings determined to be false positives",
-        "uncertain": "integer - findings needing human review",
-        "confidence_upgraded": "integer - findings with increased confidence",
-        "confidence_downgraded": "integer - findings with decreased confidence",
-        "skipped_high_confidence": "integer - findings skipped due to high confidence",
-        "skipped_low_severity": "integer - findings skipped due to low severity"
-      },
-      "verified_findings": [
-        {
-          "original_finding": "object - the complete original finding",
-          "verification_status": "string - always 'verified'",
-          "final_confidence": "number - 0.0 to 1.0",
-          "confidence_change": "string - e.g., '+0.2', '-0.1', '0'",
-          "debate_summary": {
-            "rounds": "integer - number of debate rounds",
-            "challenger_points": "array of strings - key challenger arguments",
-            "defender_points": "array of strings - key defender arguments",
-            "adjudicator_reasoning": "string - why the verdict was reached"
-          }
-        }
-      ],
-      "rejected_findings": [
-        {
-          "original_finding": "object - the complete original finding",
-          "verification_status": "string - always 'rejected'",
-          "final_confidence": "number - 0.0 to 1.0",
-          "confidence_change": "string - e.g., '-0.3'",
-          "rejection_reason": "string - why this was rejected",
-          "debate_summary": "object - same structure as verified"
-        }
-      ],
-      "uncertain_findings": [
-        {
-          "original_finding": "object - the complete original finding",
-          "verification_status": "string - always 'uncertain'",
-          "final_confidence": "number - 0.0 to 1.0",
-          "confidence_change": "string",
-          "uncertainty_reason": "string - why uncertain",
-          "recommended_action": "string - what human should check",
-          "debate_summary": "object - same structure as verified"
-        }
-      ],
-      "skipped_findings": [
-        {
-          "original_finding": "object - the complete original finding",
-          "verification_status": "string - always 'skipped'",
-          "skip_reason": "string - 'high_confidence' or 'low_severity'",
-          "original_confidence": "number - 0.0 to 1.0"
-        }
-      ],
-      "metadata": {
-        "total_rounds_executed": "integer - sum of all debate rounds",
-        "average_rounds_per_finding": "number - average rounds per debated finding",
-        "verification_rate": "string - percentage of verified findings (e.g., '85%')",
-        "early_terminations": "integer - debates ended before max_rounds",
-        "max_rounds_setting": "integer - the max_rounds parameter used",
-        "confidence_threshold_setting": "number - the confidence_threshold used",
-        "focus_severities_setting": "array - the focus_severities used"
-      }
-    }
+# NOTE (recipes-c6w): the `output:` block below is commented out, not
+# deleted. It documents the JSON shape the final step emits, but it was
+# never a recipe key: `output` is a STEP field, and the legacy engine's
+# `Recipe` model has no top-level `output` at all, so nothing has ever
+# read it. The v2 manifest parser enumerates its allowed top-level keys
+# and refuses the unknown one, so it is preserved here as prose.
+# output:
+#   format: "json"
+#   schema: |
+#     {
+#       "verification_summary": {
+#         "total_findings": "integer - total findings input",
+#         "verified": "integer - findings confirmed as valid",
+#         "rejected": "integer - findings determined to be false positives",
+#         "uncertain": "integer - findings needing human review",
+#         "confidence_upgraded": "integer - findings with increased confidence",
+#         "confidence_downgraded": "integer - findings with decreased confidence",
+#         "skipped_high_confidence": "integer - findings skipped due to high confidence",
+#         "skipped_low_severity": "integer - findings skipped due to low severity"
+#       },
+#       "verified_findings": [
+#         {
+#           "original_finding": "object - the complete original finding",
+#           "verification_status": "string - always 'verified'",
+#           "final_confidence": "number - 0.0 to 1.0",
+#           "confidence_change": "string - e.g., '+0.2', '-0.1', '0'",
+#           "debate_summary": {
+#             "rounds": "integer - number of debate rounds",
+#             "challenger_points": "array of strings - key challenger arguments",
+#             "defender_points": "array of strings - key defender arguments",
+#             "adjudicator_reasoning": "string - why the verdict was reached"
+#           }
+#         }
+#       ],
+#       "rejected_findings": [
+#         {
+#           "original_finding": "object - the complete original finding",
+#           "verification_status": "string - always 'rejected'",
+#           "final_confidence": "number - 0.0 to 1.0",
+#           "confidence_change": "string - e.g., '-0.3'",
+#           "rejection_reason": "string - why this was rejected",
+#           "debate_summary": "object - same structure as verified"
+#         }
+#       ],
+#       "uncertain_findings": [
+#         {
+#           "original_finding": "object - the complete original finding",
+#           "verification_status": "string - always 'uncertain'",
+#           "final_confidence": "number - 0.0 to 1.0",
+#           "confidence_change": "string",
+#           "uncertainty_reason": "string - why uncertain",
+#           "recommended_action": "string - what human should check",
+#           "debate_summary": "object - same structure as verified"
+#         }
+#       ],
+#       "skipped_findings": [
+#         {
+#           "original_finding": "object - the complete original finding",
+#           "verification_status": "string - always 'skipped'",
+#           "skip_reason": "string - 'high_confidence' or 'low_severity'",
+#           "original_confidence": "number - 0.0 to 1.0"
+#         }
+#       ],
+#       "metadata": {
+#         "total_rounds_executed": "integer - sum of all debate rounds",
+#         "average_rounds_per_finding": "number - average rounds per debated finding",
+#         "verification_rate": "string - percentage of verified findings (e.g., '85%')",
+#         "early_terminations": "integer - debates ended before max_rounds",
+#         "max_rounds_setting": "integer - the max_rounds parameter used",
+#         "confidence_threshold_setting": "number - the confidence_threshold used",
+#         "focus_severities_setting": "array - the focus_severities used"
+#       }
+#     }
