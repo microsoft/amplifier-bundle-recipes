@@ -1,3 +1,34 @@
+# --- Why this recipe is still schema_version-less (recipes-c6w) -------------
+# Every other recipe under examples/context-intelligence/ carries a v2
+# dependency manifest. This one cannot yet, and the reason is structural
+# rather than an oversight.
+#
+# The recipe uses `agent: "self"` on six steps. `self` is a documented
+# pseudo-agent of the LEGACY engine -- validator.py names it explicitly, and
+# `collect_agent_references` excludes it -- but the recipe-runner library has
+# no notion of it anywhere: neither `planner._build_provenance` nor
+# `execution.AgentCatalog.resolve` special-cases it, so planning this file as
+# v2 fails preflight with
+#
+#   UndeclaredAgentError: Agent 'self' referenced by step 'validate_inputs'
+#   is not supplied by any declared dependency
+#
+# and no `dependencies:` block can satisfy it, because `self` names the
+# CURRENT agent rather than a bundle-supplied one. Giving `self` a meaning
+# inside a closed world -- where the recipe owns its session and the calling
+# agent is deliberately out of reach -- is a semantic decision for the
+# manifest contract, not something a migration may invent. Tracked as
+# recipes-80q;
+# this file stays honestly labelled legacy until it is settled.
+#
+# What DID change here: the `lsp-python:python-code-intel` references were
+# corrected to `python-dev:code-intel`. `amplifier-bundle-lsp-python` is a
+# DEPRECATED forwarding shell (bundle v2.0.0) that ships no `agents/`
+# directory at all and merely includes `amplifier-bundle-python-dev`, where
+# the agent actually lives -- renamed away from `python-code-intel`. The old
+# reference could never have resolved from any bundle.
+# ---------------------------------------------------------------------------
+
 # Adversarial Deep Dive Investigation Recipe v2.2
 #
 # IMPROVEMENTS OVER v2.1:
@@ -305,7 +336,7 @@ context:
         Find entry points, key files, data flow, and dependencies.
         Map the complete flow from trigger to completion.
     - name: "lsp"
-      agent: "lsp-python:python-code-intel"
+      agent: "python-dev:code-intel"
       focus: "precise call chains, types, and line numbers"
       weight: 1.0
       mission: |
@@ -325,7 +356,7 @@ context:
   # NOTE: In continuation mode, completeness_verifier weight is reduced dynamically
   verification_agents:
     - name: "lsp_verifier"
-      agent: "lsp-python:python-code-intel"
+      agent: "python-dev:code-intel"
       focus: "code accuracy and call chains"
       weight: 1.0
       is_factual: true  # v2.2: Mark as factual verifier
@@ -783,7 +814,7 @@ stages:
           
           ### Investigation Agents
           - explorer (foundation:explorer)
-          - lsp (lsp-python:python-code-intel)
+          - lsp (python-dev:code-intel)
           - architect (foundation:zen-architect)
           - Additional: {{additional_agents}}
           

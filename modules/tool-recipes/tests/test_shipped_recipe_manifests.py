@@ -26,10 +26,22 @@ The *shipped, top-level* recipe surface -- ``examples/*.yaml``,
 ``templates/*.yaml``, ``recipes/*.yaml``. These are the files a user is
 pointed at by name.
 
-Subdirectories are deliberately NOT in scope, and that exclusion is not
-silent: :func:`test_unmigrated_subdirectory_recipes_are_pinned` pins the exact
-set still on legacy, so one cannot be added or removed without this test
-saying so.
+Subdirectories were deliberately NOT in scope for recipes-l46, and that
+exclusion was never silent: :func:`test_unmigrated_subdirectory_recipes_are_pinned`
+pins the exact set still on legacy, so one cannot be added or removed without
+this test saying so. recipes-c6w then migrated 28 of the 29 that were pinned,
+leaving only the entries whose reasons are spelled out on
+``_KNOWN_UNMIGRATED_SUBDIR_RECIPES`` itself.
+
+A migrated subdirectory recipe is held to the same parser-level standard as a
+top-level one (:func:`test_migrated_subdirectory_recipe_parses_as_v2_manifest`).
+That check is not redundant with the pin above: the pin reads
+``dependencies:`` straight off the YAML, so a block that looks right to the eye
+but the shipped parser rejects -- an unknown top-level key is the real,
+observed case -- would satisfy the pin and still fail at run time. Seven
+context-intelligence recipes carried exactly that defect (a dead top-level
+``output:`` key, a STEP field the ``Recipe`` model has never had) and only the
+real parser caught it.
 """
 
 from __future__ import annotations
@@ -226,40 +238,42 @@ def test_shipped_surface_is_not_empty() -> None:
 # ---------------------------------------------------------------------------
 
 #: Recipes below a shipped dir that still reference agents without declaring
-#: them. Out of scope for recipes-l46, tracked as its own item. Pinned as an
-#: exact set so drift in EITHER direction is reported: a new legacy recipe
-#: fails here, and so does a migration that forgets to shrink this list.
+#: them. Pinned as an exact set so drift in EITHER direction is reported: a
+#: new legacy recipe fails here, and so does a migration that forgets to
+#: shrink this list.
+#:
+#: recipes-c6w migrated the 28 that could be migrated -- ``examples/attractor``
+#: (2) and ``examples/context-intelligence`` (26) -- each verified against the
+#: shipped planner with a real ``FoundationResolver`` and no caller agents.
+#: What remains is deliberate, and each entry states why. This is the whole
+#: list, not a sample: an entry with no reason below is a bug in this comment.
+#:
+#: ``recipes/tests/fixtures/*.yaml`` -- validator FIXTURES, not shipped
+#:     recipes. They exist to be fed to ``validate_recipe`` and produce a known
+#:     verdict; ``broken-recipe.yaml`` is required to be invalid. They are
+#:     never executed and are skipped by ``validate-recipes``' own Phase 1
+#:     discovery (``recipes/tests/test_phase1_recipe_discovery.py`` asserts
+#:     that skip). Migrating them would change what they test.
+#:
+#: ``examples/context-intelligence/verification/adversarial-verification.yaml``
+#:     -- blocked on a real gap, not an oversight. Six of its steps use
+#:     ``agent: "self"``. ``self`` is a documented pseudo-agent of the legacy
+#:     engine (``validator.py`` names it; ``collect_agent_references`` excludes
+#:     it) but the recipe-runner library has no notion of it anywhere, so
+#:     planning the file as v2 fails preflight with ``UndeclaredAgentError:
+#:     Agent 'self' referenced by step 'validate_inputs' is not supplied by any
+#:     declared dependency`` -- and no ``dependencies:`` block can satisfy it,
+#:     because ``self`` names the CURRENT agent rather than a bundle-supplied
+#:     one. What ``self`` should mean inside a closed world, where the recipe
+#:     owns its session and the calling agent is deliberately out of reach, is
+#:     a decision for the manifest contract; a migration may not invent it.
+#:     Tracked as recipes-80q.
+#:     The file's stale ``lsp-python:python-code-intel`` references WERE
+#:     corrected to ``python-dev:code-intel`` (recipes-c6w), which is right
+#:     whatever schema version it ends up on.
 _KNOWN_UNMIGRATED_SUBDIR_RECIPES = frozenset(
     {
-        "examples/attractor/attractor.yaml",
-        "examples/attractor/factory-iteration.yaml",
-        "examples/context-intelligence/compression/aggregate-findings.yaml",
-        "examples/context-intelligence/compression/compress-file-findings.yaml",
-        "examples/context-intelligence/foundation/context-loader.yaml",
-        "examples/context-intelligence/foundation/file-discovery.yaml",
-        "examples/context-intelligence/orchestrators/repo-analysis-orchestrator.yaml",
-        "examples/context-intelligence/shared/file-discovery.yaml",
-        "examples/context-intelligence/synthesis/action-executor.yaml",
-        "examples/context-intelligence/synthesis/categorize-findings.yaml",
-        "examples/context-intelligence/synthesis/synthesize-findings.yaml",
-        "examples/context-intelligence/test/test-bash-feature.yaml",
-        "examples/context-intelligence/test/test-foreach.yaml",
-        "examples/context-intelligence/tier1/comment-code-conflict.yaml",
-        "examples/context-intelligence/tier1/dead-code-analysis.yaml",
-        "examples/context-intelligence/tier1/internal-consistency.yaml",
-        "examples/context-intelligence/tier1/naming-semantic-mismatch.yaml",
-        "examples/context-intelligence/tier1/single-file-orchestrator.yaml",
-        "examples/context-intelligence/tier2/cross-doc-contradiction.yaml",
-        "examples/context-intelligence/tier2/doc-code-accuracy.yaml",
-        "examples/context-intelligence/tier2/semantic-duplicate.yaml",
-        "examples/context-intelligence/tier3/architectural-consistency.yaml",
-        "examples/context-intelligence/tier3/dry-violation-analysis.yaml",
         "examples/context-intelligence/verification/adversarial-verification.yaml",
-        "examples/context-intelligence/verification/claim-verification.yaml",
-        "examples/context-intelligence/verification/progressive-iteration.yaml",
-        "examples/context-intelligence/verification/verification-retry.yaml",
-        "examples/context-intelligence/workflows/full-analysis-workflow.yaml",
-        "examples/context-intelligence/workflows/incremental-analysis.yaml",
         "recipes/tests/fixtures/broken-recipe.yaml",
         "recipes/tests/fixtures/valid-recipe.yaml",
         "recipes/tests/fixtures/warnings-recipe.yaml",
@@ -271,6 +285,52 @@ def test_out_of_scope_subdirs_still_exist() -> None:
     """A renamed directory must not turn the exclusion into a silent pass."""
     for rel in _OUT_OF_SCOPE_SUBDIRS:
         assert (_REPO_ROOT / rel).is_dir(), f"{rel} no longer exists"
+
+
+def _migrated_subdirectory_recipes() -> list[Path]:
+    """Subdirectory recipes that are NOT on the legacy pin list."""
+    return [p for p in _subdirectory_recipes() if _rel(p) not in _KNOWN_UNMIGRATED_SUBDIR_RECIPES]
+
+
+@pytest.mark.parametrize("recipe_path", _migrated_subdirectory_recipes(), ids=_rel)
+def test_migrated_subdirectory_recipe_parses_as_v2_manifest(recipe_path: Path) -> None:
+    """A migrated subdirectory recipe satisfies the REAL parser, not the eye.
+
+    ``test_unmigrated_subdirectory_recipes_are_pinned`` reads ``dependencies:``
+    straight off the YAML, which cannot see a manifest the shipped parser
+    refuses. That gap is not hypothetical: seven of these files carried a
+    top-level ``output:`` key -- a STEP field that ``Recipe`` has never had at
+    the top level, so nothing ever read it -- and the parser rejected every one
+    of them as an unknown key while the YAML-level check was perfectly happy.
+    """
+    if not runner_available():
+        pytest.skip("amplifier_recipe_runner not importable")
+
+    from amplifier_recipe_runner.manifest import LegacyRecipe  # noqa: PLC0415
+    from amplifier_recipe_runner.manifest import parse_manifest  # noqa: PLC0415
+
+    data = yaml.safe_load(recipe_path.read_text(encoding="utf-8")) or {}
+    referenced = collect_agent_references(Recipe.from_yaml(recipe_path))
+    if not referenced:
+        # No agent steps: legacy is a legitimate, deliberate choice.
+        return
+
+    manifest = parse_manifest(data, source=_rel(recipe_path))
+    assert not isinstance(manifest, LegacyRecipe), (
+        f"{_rel(recipe_path)} references {sorted(referenced)} but the shipped "
+        f"manifest parser reads it as a legacy recipe: {manifest.reason}"
+    )
+    declared = {a for dep in manifest.dependencies for a in dep.required_agents}
+    assert referenced <= declared, (
+        f"{_rel(recipe_path)} references {sorted(referenced - declared)} which "
+        f"the parsed manifest does not supply"
+    )
+
+
+def test_the_migrated_subdirectory_surface_is_not_empty() -> None:
+    """Guards the check above against becoming vacuous if the glob breaks."""
+    migrated = _migrated_subdirectory_recipes()
+    assert len(migrated) >= 28, f"only found {len(migrated)} migrated subdir recipes"
 
 
 def test_unmigrated_subdirectory_recipes_are_pinned() -> None:

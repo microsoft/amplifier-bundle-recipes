@@ -25,6 +25,21 @@ reached (recipe-dependency-manifest.v1 Core 3/4). What each test here defends:
   parent's scope -- closures are not inherited or intersected,
 * a closure that cannot be resolved fails the step loudly; there is no
   fallback to the caller-bound path.
+
+recipes-c6w extended this to the case the shipped ``examples/context-
+intelligence`` tree actually runs: a v2 orchestrator invoking v2
+sub-recipes. Two more facts are pinned here, both measured rather than
+assumed:
+
+* the sub-recipe's own FILE is planned when the parent is v2 -- the parent's
+  manifest is not reused for it (``test_the_sub_recipe_is_planned_from_its_
+  own_file``),
+* a LEGACY sub-recipe of a v2 parent is NOT planned at all, and its agent
+  steps run inside the parent's closure, so an agent the parent never
+  declared is refused loudly rather than borrowed from the host
+  (:class:`TestV2ParentLegacySubRecipe`). That is why a v2 orchestrator's
+  sub-recipes must be migrated with it: leaving one legacy silently
+  narrows it to whatever the parent happened to declare.
 """
 
 from __future__ import annotations
@@ -561,6 +576,97 @@ class TestV2ParentV2SubRecipe:
         assert spawn.agent_names == ["parent:planner", "foundation:zen-architect"]
         assert set(spawn.calls[0]["agent_configs"]) == {"parent:planner"}
         assert set(spawn.calls[1]["agent_configs"]) == {"foundation:zen-architect"}
+
+    @pytest.mark.asyncio
+    async def test_the_sub_recipe_is_planned_from_its_own_file(
+        self, tmp_path: Path, stub_plan
+    ):
+        """recipes-c6w: the sub-recipe's OWN manifest is read, parent or not.
+
+        The assertion above shows the sub-recipe ended up with the right
+        agents; this one shows *why* -- the library's ``plan()`` was asked
+        about ``sub.yaml`` in its own right. Were the parent's already-resolved
+        manifest reused for the whole tree, only ``parent.yaml`` would ever be
+        planned, and a ``schema_version: 2`` header on the sub-recipe would be
+        decoration. The shipped ``examples/context-intelligence`` orchestrators
+        are exactly this shape, so this is the fact they depend on.
+        """
+        sub_agent = write_agent(
+            tmp_path, "foundation", "zen-architect", DECLARED_AGENT_FILE
+        )
+        parent_agent = write_agent(tmp_path, "parent", "planner", PARENT_AGENT_FILE)
+        stub = stub_plan(
+            {
+                "parent.yaml": make_plan(
+                    "parent:planner", parent_agent, step_ids=("plan", "audit")
+                ),
+                "sub.yaml": make_plan(
+                    "foundation:zen-architect", sub_agent, step_ids=("review",)
+                ),
+            }
+        )
+        write(tmp_path, "sub.yaml", V2_SUB)
+        parent = write(tmp_path, "parent.yaml", V2_PARENT)
+
+        await ra.run_v2_recipe_in_session(
+            HostCoordinator(HostSpawn()),
+            FakeSessionManager(tmp_path),
+            parent,
+            {"subject": "the repo"},
+            tmp_path,
+        )
+
+        assert stub.requested == ["parent.yaml", "sub.yaml"]
+
+
+@requires_runner
+class TestV2ParentLegacySubRecipe:
+    """A legacy sub-recipe of a v2 parent inherits the parent's closure.
+
+    Measured, not assumed (recipes-c6w). ``schema_version`` decides per
+    recipe, so a legacy sub-recipe is never planned -- but under a v2 parent
+    "the calling session's agent map" IS the parent's closed-world scope, not
+    the host's map. The consequence is worth stating plainly: migrating an
+    orchestrator to v2 while leaving its sub-recipes legacy does not leave
+    them as they were, it narrows them to the parent's declared closure.
+    """
+
+    @pytest.mark.asyncio
+    async def test_it_is_not_planned_and_is_refused_loudly(
+        self, tmp_path: Path, stub_plan
+    ):
+        parent_agent = write_agent(tmp_path, "parent", "planner", PARENT_AGENT_FILE)
+        stub = stub_plan(
+            {
+                "parent.yaml": make_plan(
+                    "parent:planner", parent_agent, step_ids=("plan", "audit")
+                )
+            }
+        )
+        write(tmp_path, "sub.yaml", LEGACY_SUB)
+        parent = write(tmp_path, "parent.yaml", V2_PARENT)
+
+        spawn = HostSpawn()
+        coordinator = HostCoordinator(spawn)
+        # The HOST does carry `caller-only`; only the parent's closure does not.
+        assert "caller-only" in coordinator.config["agents"]
+
+        result = await ra.run_v2_recipe_in_session(
+            coordinator,
+            FakeSessionManager(tmp_path),
+            parent,
+            {"subject": "the repo"},
+            tmp_path,
+        )
+
+        from amplifier_recipe_runner.api import RunStatus
+
+        # Never planned: `schema_version` is still read per recipe.
+        assert stub.requested == ["parent.yaml"]
+        # Refused, not silently borrowed from the host that has it.
+        assert result.status is RunStatus.FAILED
+        assert "caller-only" in str(result.error)
+        assert spawn.agent_names == ["parent:planner"]
 
 
 @requires_runner
