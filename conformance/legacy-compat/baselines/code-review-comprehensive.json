@@ -358,7 +358,7 @@
     "recipe": {
       "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
       "name": "code-review-comprehensive",
-      "path": "<REPO>/examples/code-review-recipe.yaml",
+      "path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml",
       "version": "1.2.0"
     },
     "session": {
@@ -448,7 +448,7 @@
           "agent_name": "foundation:zen-architect",
           "model_role": null,
           "recipe_name": "code-review-comprehensive",
-          "recipe_path": "<REPO>/examples/code-review-recipe.yaml",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml",
           "recipe_step": "analyze-structure",
           "recipe_step_index": 0
         },
@@ -475,7 +475,7 @@
           "agent_name": "foundation:zen-architect",
           "model_role": null,
           "recipe_name": "code-review-comprehensive",
-          "recipe_path": "<REPO>/examples/code-review-recipe.yaml",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml",
           "recipe_step": "identify-issues",
           "recipe_step_index": 1
         },
@@ -502,7 +502,7 @@
           "agent_name": "foundation:zen-architect",
           "model_role": null,
           "recipe_name": "code-review-comprehensive",
-          "recipe_path": "<REPO>/examples/code-review-recipe.yaml",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml",
           "recipe_step": "assess-severity",
           "recipe_step_index": 2
         },
@@ -529,7 +529,7 @@
           "agent_name": "foundation:zen-architect",
           "model_role": null,
           "recipe_name": "code-review-comprehensive",
-          "recipe_path": "<REPO>/examples/code-review-recipe.yaml",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml",
           "recipe_step": "suggest-improvements",
           "recipe_step_index": 3
         },
@@ -556,7 +556,7 @@
           "agent_name": "foundation:zen-architect",
           "model_role": null,
           "recipe_name": "code-review-comprehensive",
-          "recipe_path": "<REPO>/examples/code-review-recipe.yaml",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml",
           "recipe_step": "validate-suggestions",
           "recipe_step_index": 4
         },
@@ -571,7 +571,7 @@
       "validate-suggestions": "foundation:zen-architect"
     }
   },
-  "recipe": "examples/code-review-recipe.yaml",
+  "recipe": "conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml",
   "recipe_sha256": "45f7bd021d58915c961dcee15fb0b1afcc71aa9691935a0684bb0eb28c821891",
   "tool_calls": [
     {
@@ -581,7 +581,7 @@
           "file_path": "src/example.py"
         },
         "operation": "execute",
-        "recipe_path": "<REPO>/examples/code-review-recipe.yaml"
+        "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml"
       },
       "output": {
         "recipe": "code-review-comprehensive",
@@ -604,7 +604,7 @@
           "recipe_metadata": {
             "description": "Multi-stage code review with conditional execution and model selection for cost/capability optimization",
             "name": "code-review-comprehensive",
-            "path": "<REPO>/examples/code-review-recipe.yaml",
+            "path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml",
             "version": "1.2.0"
           },
           "session": {

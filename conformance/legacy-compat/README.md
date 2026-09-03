@@ -48,6 +48,39 @@ particular developer happens to have installed.
 
 ---
 
+## Why four cases read from `fixtures/legacy-recipes/`
+
+The harness originally pointed at five shipped `examples/*.yaml` files. That
+coupled two things with opposite requirements:
+
+| | wants |
+|---|---|
+| a shipped example | to be **portable** — declare its own agents, so it runs from any bundle |
+| a legacy-compat case | to stay **legacy forever**, so legacy resolution stays observable |
+
+Four of those five shipped examples referenced `foundation:*` agents, so under
+a caller that lacked them they could not run at all — including
+`dependency-upgrade-staged-recipe.yaml`, the repo's only staged/approval
+example, which died in stage 1 before reaching a single gate (recipes-l46).
+They were migrated to `schema_version: 2`.
+
+`fixtures/legacy-recipes/` holds **byte-identical frozen copies** of those four
+as they stood before migration, and `cases.yaml` points at the copies. Nothing
+about the recorded behavior changed: each copy's bytes are pinned by the
+`recipe_sha256` its baseline already carried, so the four baselines differ from
+their pre-move form **only in path strings** — every outcome, tool call,
+context key, spawn provenance, event and progress line is byte-identical.
+
+`bash-step-example` was left pointing at the shipped example. It has no agent
+steps, so it never needed migrating, and it is the control: its baseline is
+untouched, byte for byte, across this move.
+
+Because the copies are read by the harness, they are not inert. Editing one is
+drift, and `--assert` reports it exactly as it would report an engine
+regression.
+
+---
+
 ## How a run works
 
 Each case runs through the **real caller-facing path**, not a private shortcut:

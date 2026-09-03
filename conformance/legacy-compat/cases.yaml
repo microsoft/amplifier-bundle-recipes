@@ -5,6 +5,25 @@
 # reproducible, so its outcome and agent provenance can be frozen as a golden
 # baseline and re-asserted later.
 #
+# WHERE THE RECIPES LIVE
+#
+# Four cases point at `fixtures/legacy-recipes/`, which holds FROZEN, byte-
+# identical copies of shipped examples as they stood before they were migrated
+# to `schema_version: 2` (recipes-l46). The shipped originals had to become
+# portable -- a legacy recipe resolves `agent:` from the caller, so under a
+# bundle without `foundation:*` they could not run at all. This harness needs
+# the opposite: recipes that stay legacy forever, so legacy behavior remains
+# observable. Coupling the two meant one of them had to lose.
+#
+# The copies are the fixture; the examples are the product. Each copy's bytes
+# are pinned by the `recipe_sha256` already recorded in its baseline, so a
+# drive-by edit to a "fixture" is caught by the same --assert that catches an
+# engine regression.
+#
+# `bash-step-example` still points at the shipped example: it has no agent
+# steps, so it never needed migrating, and it stays the one case that proves
+# this move changed nothing (its baseline is untouched, byte for byte).
+#
 # Fields:
 #   name              baseline file stem (baselines/<name>.json)
 #   recipe            path relative to the repo root
@@ -47,7 +66,7 @@ cases:
       (substitution, env, cwd, exit codes, conditions) is unchanged.
 
   - name: test-parse-json
-    recipe: examples/test-parse-json.yaml
+    recipe: conformance/legacy-compat/fixtures/legacy-recipes/test-parse-json.yaml
     covers:
       - parse_json opt-in (aggressive extraction from prose)
       - parse_json default (prose preserved verbatim)
@@ -75,7 +94,7 @@ cases:
       dict out of surrounding prose, the default must leave markdown untouched.
 
   - name: repo-activity-analysis
-    recipe: examples/repo-activity-analysis.yaml
+    recipe: conformance/legacy-compat/fixtures/legacy-recipes/repo-activity-analysis.yaml
     covers:
       - bash steps AND parse_json in one recipe
       - parse_json on bash step output (7 steps)
@@ -129,7 +148,7 @@ cases:
       bash, jq, dotted-path substitution and JSON extraction all run for real.
 
   - name: code-review-comprehensive
-    recipe: examples/code-review-recipe.yaml
+    recipe: conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml
     covers:
       - multiple agent steps (6)
       - conditional routing on a step output
@@ -150,7 +169,7 @@ cases:
       both the taken and the skipped paths.
 
   - name: dependency-upgrade-staged
-    recipe: examples/dependency-upgrade-staged-recipe.yaml
+    recipe: conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml
     covers:
       - staged recipe
       - approval gates (4), driven THROUGH the gates
