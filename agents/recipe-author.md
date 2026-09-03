@@ -133,7 +133,7 @@ The agent understands:
 - Timeout and retry configuration
 - Testing and validation approaches
 - **Model selection strategy: matching model capabilities to task complexity**
-  - Use fast/cheap models (claude-haiku) for simple classification, formatting, summaries
+  - Use fast/cheap models (claude-haiku-*) for simple classification, formatting, summaries
   - Use balanced models (claude-sonnet-*) for code implementation, analysis, exploration
   - Use powerful models (claude-opus-*) for architecture, security, strategic decisions
   - Use glob patterns to auto-select latest model versions

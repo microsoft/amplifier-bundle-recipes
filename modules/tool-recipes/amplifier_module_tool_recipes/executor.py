@@ -23,12 +23,14 @@ from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
 from amplifier_foundation import ProviderPreference
 from amplifier_foundation import resolve_model_pattern
+from amplifier_foundation import sanitize_for_json
 from .models import BackoffConfig
 from .models import OrchestratorConfig
 from .models import RateLimitingConfig
 from .models import Recipe
 from .models import RecursionConfig
 from .models import Step
+from .models import coerce_timeout
 from .session import ApprovalStatus
 from .session import SessionManager
 
@@ -43,6 +45,72 @@ _WINDOWS_PROGRAM_ROOT_VARS = (
     "ProgramFiles",
     "ProgramFiles(x86)",
 )
+
+
+def _model_role_label(role: Any) -> str | None:
+    """Normalize a model_role config value to a flat string for telemetry.
+
+    Agent-level model_role accepts an ordered fallback list as well as a
+    plain string (the model_role_resolver contract is str | list[str]).
+    Session metadata must stay a flat scalar — downstream cost reports use
+    it as a grouping key — so lists become a comma-joined label.
+    """
+    if not role:
+        return None
+    if isinstance(role, str):
+        return role
+    if isinstance(role, (list, tuple)):
+        parts = [str(r) for r in role if r]
+        return ",".join(parts) if parts else None
+    return str(role)
+
+
+def _model_after_pattern_resolution(resolution: Any, provider_name: str) -> str:
+    """The model a step should spawn with, honouring the documented fallback.
+
+    ``resolve_model_pattern`` reports "nothing matched" in one of two shapes,
+    depending on which ``amplifier-foundation`` build is installed: older ones
+    hand the glob back *unchanged*, newer ones return ``resolved_model=None``.
+    The first is the dangerous one -- the pattern goes to the provider verbatim,
+    and no provider has a model literally named ``claude-haiku-*``, so the spawn
+    dies with a 404 (``not_found_error``) instead of running. The documented
+    contract is the opposite: "if model pattern has no matches -> uses
+    provider's default model" (``context/recipe-instructions.md``,
+    ``docs/BEST_PRACTICES.md``). An empty model is how this executor already
+    spells "use the provider's default" (see the ``step.provider``-only branch),
+    so that is what an unmatched pattern collapses to under either shape,
+    loudly. ``None`` in particular must never reach a provider as the string
+    ``"None"``.
+
+    The fallback fires only on POSITIVE evidence of no match: a pattern was
+    resolved, a non-empty catalogue came back from the provider, and nothing in
+    it matched. "Could not enumerate this provider's models" is a different
+    fact -- there the pattern rides through untouched for the host to resolve
+    against the instance it finally picks (see ``pin_preferences_to_instances``),
+    because discarding the author's pattern on no evidence would silently
+    downgrade a step that would otherwise have resolved fine.
+    """
+    resolved_model = str(getattr(resolution, "resolved_model", "") or "")
+    pattern = getattr(resolution, "pattern", None)
+    available_models = getattr(resolution, "available_models", None)
+    matched_models = getattr(resolution, "matched_models", None)
+
+    if not pattern or not available_models or matched_models:
+        return resolved_model
+
+    logger.warning(
+        "model pattern %r matched none of the %d model(s) provider %r offers - "
+        "falling back to that provider's default model, as documented. "
+        "Passing the pattern through would 404 (no model is literally named "
+        "%r). Available: %s",
+        pattern,
+        len(available_models),
+        provider_name or "(unnamed)",
+        pattern,
+        ", ".join(str(m) for m in list(available_models)[:10])
+        + ("..." if len(available_models) > 10 else ""),
+    )
+    return ""
 
 
 def _is_wsl_bash(path: str) -> bool:
@@ -187,6 +255,41 @@ _FOREACH_PROGRESS_WARN_BYTES: int = 10_000_000  # 10 MB
 # lifetime regardless of how many steps declare depends_on or how many times
 # the recipe is executed or resumed.
 _warned_depends_on_recipes: set[str] = set()
+
+
+def _sanitize_for_json_default(obj: Any) -> Any:
+    """``json.dumps`` *default* hook: convert a non-serializable object.
+
+    ``sanitize_for_json`` returns ``None`` for anything it cannot structurally
+    convert (no ``__dict__``, no ``model_dump``, not natively serialisable --
+    e.g. ``Path``, ``datetime``, ``set``).  Returning ``None`` from a *default*
+    hook would silently turn the value into ``null`` on disk, so an opaque
+    value falls back to a readable placeholder string instead.  A checkpoint
+    should never lose the fact that *something* was there.
+    """
+    result = sanitize_for_json(obj)
+    if result is None:
+        return f"[non-serializable: {type(obj).__name__}]"
+    return result
+
+
+def _json_safe(value: Any) -> Any:
+    """Deep-convert ``value`` into something ``json.dump`` cannot choke on.
+
+    Applied to anything headed for a checkpoint file.  The conversion goes
+    *through* ``json.dumps`` with the sanitizing ``default`` hook rather than
+    calling ``sanitize_for_json`` directly, because the latter drops dict keys
+    and list entries whose value sanitizes to ``None`` -- which would silently
+    delete a key from a checkpoint, or shift the indices of a collected
+    foreach result list.  The hook only fires on the leaf the encoder actually
+    cannot handle, so structure, ``None`` entries and ordering all survive.
+    """
+    try:
+        return json.loads(json.dumps(value, default=_sanitize_for_json_default))
+    except (TypeError, ValueError, RecursionError):
+        # Shapes the default= hook cannot reach: a non-string dict key, a
+        # reference cycle. A checkpoint write must never crash the run.
+        return f"[non-serializable: {type(value).__name__}]"
 
 
 @dataclass
@@ -1138,6 +1241,11 @@ class RecipeExecutor:
                 "name": recipe.name,
                 "version": recipe.version,
                 "description": recipe.description,
+                "path": (
+                    str(Path(recipe_path).expanduser().resolve())
+                    if recipe_path
+                    else None
+                ),
             }
             context["session"] = {
                 "id": session_id,
@@ -1243,6 +1351,11 @@ class RecipeExecutor:
             "name": recipe.name,
             "version": recipe.version,
             "description": recipe.description,
+            "path": (
+                str(Path(recipe_path).expanduser().resolve())
+                if recipe_path
+                else None
+            ),
         }
         context["session"] = {
             "id": session_id,
@@ -2081,7 +2194,7 @@ class RecipeExecutor:
                     try:
                         s2_decoder = json.JSONDecoder()
                         parsed_s2, _ = s2_decoder.raw_decode(fenced_content)
-                        if parsed_s2 not in ({}, []):
+                        if parsed_s2 != {} and parsed_s2 != []:
                             return parsed_s2
                         # Trivial structure ({} / []) — fall through to
                         # Strategy 3 in case something richer comes later.
@@ -2109,7 +2222,7 @@ class RecipeExecutor:
                 if first_parsed is None:
                     first_parsed = parsed
                 # Return first non-trivial JSON found
-                if parsed not in ({}, []):
+                if parsed != {} and parsed != []:
                     return parsed
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -2158,9 +2271,12 @@ class RecipeExecutor:
                 else:
                     trimmed[key] = value
             except (TypeError, ValueError):
-                # Value is not JSON-serialisable — keep as-is so save_state can
-                # surface the error naturally rather than silently dropping data.
-                trimmed[key] = value
+                # Value is not JSON-serialisable — sanitize it into a JSON-safe
+                # representation rather than passing the raw object through to
+                # crash ``save_state``'s ``json.dump`` at write time (which also
+                # leaves a truncated state.json behind).  Structured objects keep
+                # their fields; an opaque one round-trips as a placeholder string.
+                trimmed[key] = _json_safe(value)
         return trimmed
 
     def _process_step_result(self, result: Any, step: Step) -> Any:
@@ -2288,6 +2404,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
         # Build provider preferences from step configuration
         provider_preferences = None
+        # The model_role that actually drove provider selection (step-level or
+        # agent-level), recorded in session_metadata for cost attribution.
+        used_model_role: str | None = None
 
         # Resolve model_role via the model_role_resolver capability (takes priority
         # over legacy fields, but provider_preferences on the step is more
@@ -2312,6 +2431,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 resolved = await resolver.resolve(step.model_role)
                 if resolved:
                     provider_preferences = list(resolved)
+                    used_model_role = _model_role_label(step.model_role)
 
         if step.provider_preferences:
             # New: Use explicit provider_preferences list with fallback order
@@ -2349,7 +2469,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         provider_name=pref.provider,
                         coordinator=self.coordinator,
                     )
-                    resolved_model = model_resolution.resolved_model
+                    resolved_model = _model_after_pattern_resolution(
+                        model_resolution, pref.provider
+                    )
                 provider_preferences.append(
                     ProviderPreference(provider=pref.provider, model=resolved_model)
                 )
@@ -2361,7 +2483,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 provider_name=step.provider,
                 coordinator=self.coordinator,
             )
-            resolved_model = model_resolution.resolved_model
+            resolved_model = _model_after_pattern_resolution(
+                model_resolution, step.provider
+            )
             provider_preferences = [
                 ProviderPreference(provider=step.provider, model=resolved_model)
             ]
@@ -2385,6 +2509,15 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 provider_preferences = [
                     ProviderPreference.from_dict(p) for p in agent_default_prefs
                 ]
+                # Record the DECLARED agent role, if any. Routing hooks
+                # (e.g. hooks-routing) resolve an agent's model_role into
+                # provider_preferences at session:start and leave the role in
+                # the config, so a role-routed agent is indistinguishable here
+                # from one with hand-pinned preferences plus a role. Telemetry
+                # therefore records the declared role for both shapes — for
+                # hand-pinned preferences it is a label, not proof the role
+                # selected the provider.
+                used_model_role = _model_role_label(agent_cfg.get("model_role"))
 
         # Fallback 2: if agent has model_role but neither step-level config nor
         # agent-level provider_preferences resolved, ask the model_role_resolver
@@ -2409,6 +2542,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     resolved = await resolver.resolve(agent_model_role)
                     if resolved:
                         provider_preferences = list(resolved)
+                        used_model_role = _model_role_label(agent_model_role)
 
         # Whatever produced the chain above -- step, agent config, or the
         # routing matrix behind the resolver -- it names provider MODULES, and
@@ -2421,6 +2555,14 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             provider_preferences,
             host_config.get("providers") if isinstance(host_config, dict) else None,
         )
+
+        # Pinning can drop the entire chain (`pin_preferences_to_instances`
+        # returns None when nothing survives), in which case the spawn goes out
+        # with the PARENT's provider ordering and the role selected nothing.
+        # Attributing a role to that call would be a telemetry lie, so the
+        # attribution is withdrawn with the chain it described.
+        if provider_preferences is None:
+            used_model_role = None
 
         # ...and the overlay this spawn carries declares that same chain, so
         # the child's own routing re-assert reads instance ids rather than the
@@ -2435,13 +2577,26 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         session_metadata: dict[str, Any] = {
             "agent_name": step.agent,
             "recipe_name": recipe_info.get("name", ""),
+            "recipe_path": recipe_info.get("path"),
             "recipe_step": step.id,
             "recipe_step_index": step_info.get("index"),
+            # Always present, None when no role drove provider selection: a
+            # telemetry grouping key that is sometimes absent forces every
+            # consumer to distinguish "no role" from "old executor", and the
+            # two are not the same fact. `recipe_path` above is unconditional
+            # for the same reason.
+            "model_role": used_model_role,
         }
         # Include parallel_group_id if this spawn is part of a parallel batch
         parallel_group_id = context.get("_parallel_group_id")
         if parallel_group_id:
             session_metadata["parallel_group_id"] = parallel_group_id
+
+        # Resolve the step timeout before spawning: a templated value must be a
+        # number by the time asyncio.wait_for sees it, and failing here (rather
+        # than after the spawn) means an unresolvable template never burns an
+        # agent invocation.
+        effective_timeout = self._resolve_step_timeout(step, context)
 
         # Spawn sub-session with agent via capability (with step timeout)
         spawn_coro = spawn_fn(
@@ -2456,10 +2611,10 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             use_subprocess=step.spawn_mode == "subprocess",
         )
         try:
-            result = await asyncio.wait_for(spawn_coro, timeout=step.timeout)
+            result = await asyncio.wait_for(spawn_coro, timeout=effective_timeout)
         except asyncio.TimeoutError:
             raise ValueError(
-                f"Step '{step.id}': agent '{step.agent}' timed out after {step.timeout}s"
+                f"Step '{step.id}': agent '{step.agent}' timed out after {effective_timeout}s"
             ) from None
 
         # Give the cyclic GC a chance to reclaim PyO3 / Rust-backed objects and
@@ -2765,8 +2920,10 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         total_items,
                     )
             except (TypeError, ValueError):
-                pass  # Non-serializable results — save_state will surface the error
-        state["foreach_progress"] = progress
+                pass  # Non-serializable results — sanitized below before saving
+        # Collected results may hold non-serializable objects; sanitize before
+        # storing so save_state never sees a raw object.
+        state["foreach_progress"] = _json_safe(progress)
         # Update context snapshot so a resumed run has the latest variable state
         state["context"] = self._trim_context_for_checkpoint(context)
         self.session_manager.save_state(session_id, project_path, state)
@@ -3229,6 +3386,66 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         elif step.output and results:
             context[step.output] = results[-1]
 
+    async def _engine_for_sub_recipe(
+        self,
+        sub_recipe_path: Path,
+        sub_context: dict[str, Any],
+        project_path: Path,
+        *,
+        parent_session_id: str | None = None,
+    ) -> "RecipeExecutor":
+        """The executor a sub-recipe must run on -- ``self``, or a scoped twin.
+
+        ``schema_version`` is a property of the recipe, not of how the recipe
+        was reached. A v2 sub-recipe therefore resolves its ``agent:``
+        references from its own declared closure whether it is invoked
+        directly or as a ``type: recipe`` step of some other recipe
+        (recipe-dependency-manifest.v1 Core 3/4).
+
+        Before this, a sub-recipe simply ran on ``self`` -- the parent's
+        executor, bound to the parent's coordinator. Under a *legacy* parent
+        that meant the caller's agent map: ``repo-audit.yaml`` (v2, declaring
+        ``foundation:zen-architect``) ran fine invoked directly and died with
+        "Agent 'foundation:zen-architect' not found in configuration" when
+        reached through ``ecosystem-audit-batch.yaml`` (legacy) under a bundle
+        without that agent -- same recipe, same host, two different agent maps
+        (recipes-ykj).
+
+        Returns:
+            ``self`` for a legacy sub-recipe -- unchanged, caller-bound, the
+            behaviour ``conformance/legacy-compat`` pins. For a v2 sub-recipe,
+            a twin executor bound to that recipe's own closed-world
+            coordinator. The twin shares this executor's session manager, so
+            the sub-recipe's session, checkpointing and approval gates behave
+            exactly as they always have.
+
+        Raises:
+            Whatever resolving the closure raises -- an unavailable runner
+            library, an undeclared agent, an unresolvable dependency. There is
+            deliberately no fallback to the caller-bound path: running a v2
+            recipe against the parent's map would resolve a *different* agent
+            catalog while reporting success.
+        """
+        from .closed_world import host_coordinator_of  # noqa: PLC0415 -- lazy
+        from .runner_adapter import build_sub_recipe_scope  # noqa: PLC0415
+        from .runner_adapter import is_v2_recipe  # noqa: PLC0415
+
+        if not is_v2_recipe(sub_recipe_path):
+            return self
+
+        scoped = await build_sub_recipe_scope(
+            # The HOST's coordinator, never an outer recipe's scope: each
+            # recipe's closure is its own, not the intersection with its
+            # parent's. See `closed_world.host_coordinator_of`.
+            host_coordinator_of(self.coordinator),
+            self.session_manager,
+            sub_recipe_path,
+            sub_context,
+            project_path,
+            session_id=parent_session_id,
+        )
+        return type(self)(scoped, self.session_manager)
+
     async def _execute_recipe_step(
         self,
         step: Step,
@@ -3304,11 +3521,20 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         child_session_key = f"_child_session_{step.id}"
         saved_child_session_id = context.get(child_session_key)
 
+        # A sub-recipe that declares `schema_version` runs closed-world against
+        # ITS OWN declared closure, whatever the parent is (recipes-ykj).
+        engine = await self._engine_for_sub_recipe(
+            sub_recipe_path,
+            sub_context,
+            project_path,
+            parent_session_id=parent_session_id,
+        )
+
         # Execute sub-recipe recursively
         # Note: rate_limiter and orchestrator_config are inherited from parent (sub-recipes cannot override)
         # parent_session_id is passed so sub-recipes can check for cancellation
         try:
-            result = await self.execute_recipe(
+            result = await engine.execute_recipe(
                 recipe=sub_recipe,
                 context_vars=sub_context,
                 project_path=project_path,
@@ -3516,7 +3742,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 if isinstance(value, bool):
                     return "true" if value else "false"
                 if isinstance(value, (dict, list)):
-                    return json.dumps(value)
+                    return json.dumps(value, default=_sanitize_for_json_default)
                 return str(value)
 
             # Handle direct references
@@ -3531,10 +3757,48 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             if isinstance(value, bool):
                 return "true" if value else "false"
             if isinstance(value, (dict, list)):
-                return json.dumps(value)
+                return json.dumps(value, default=_sanitize_for_json_default)
             return str(value)
 
         return re.sub(pattern, replace, template)
+
+    def _resolve_step_timeout(self, step: Step, context: dict[str, Any]) -> int | float:
+        """Resolve a step's ``timeout:`` to a number of seconds.
+
+        ``asyncio.wait_for`` silently accepts a string and then compares it
+        against a float, so a template that reached it unresolved would blow up
+        deep inside the event loop with a TypeError naming neither the step nor
+        the field. This resolves it once, up front, and fails with a message
+        that names both.
+
+        A literal number -- the overwhelmingly common case -- is returned
+        untouched without going anywhere near the substitution machinery, so
+        existing recipes keep their exact prior behavior.
+        """
+        raw = step.timeout
+        literal = coerce_timeout(raw)
+        if literal is not None and not isinstance(raw, str):
+            return literal
+
+        try:
+            rendered = self.substitute_variables(str(raw), context)
+        except ValueError as exc:
+            raise ValueError(
+                f"Step '{step.id}': timeout template {raw!r} could not be resolved: {exc}"
+            ) from None
+
+        resolved = coerce_timeout(rendered)
+        if resolved is None:
+            raise ValueError(
+                f"Step '{step.id}': timeout template {raw!r} resolved to {rendered!r}, "
+                "which is not a number of seconds"
+            )
+        if resolved <= 0:
+            raise ValueError(
+                f"Step '{step.id}': timeout template {raw!r} resolved to {resolved}, "
+                "but timeout must be positive"
+            )
+        return resolved
 
     async def _execute_bash_step(
         self,
@@ -3588,6 +3852,10 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 # Substitute variables in env values
                 env[key] = self.substitute_variables(str(value), context)
 
+        # Resolve the step timeout before spawning the subprocess, so an
+        # unresolvable template fails before any command runs.
+        effective_timeout = self._resolve_step_timeout(step, context)
+
         # Execute command with timeout.
         # Spawn a resolved bash explicitly rather than the platform default
         # shell: recipe bash steps may use bash-specific features like
@@ -3608,14 +3876,14 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=step.timeout,
+                    timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
                 # Kill the process on timeout
                 process.kill()
                 await process.wait()
                 raise ValueError(
-                    f"Step '{step.id}': command timed out after {step.timeout}s"
+                    f"Step '{step.id}': command timed out after {effective_timeout}s"
                 ) from None
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")

@@ -157,6 +157,7 @@
     "recipe": {
       "description": "Test recipe to verify parse_json functionality",
       "name": "test-parse-json",
+      "path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/test-parse-json.yaml",
       "version": "1.0.0"
     },
     "session": {
@@ -221,7 +222,9 @@
         "recipe_step": "prose-step",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "test-parse-json",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/test-parse-json.yaml",
           "recipe_step": "prose-step",
           "recipe_step_index": 0
         },
@@ -239,7 +242,9 @@
         "recipe_step": "json-step",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "test-parse-json",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/test-parse-json.yaml",
           "recipe_step": "json-step",
           "recipe_step_index": 1
         },
@@ -257,7 +262,9 @@
         "recipe_step": "verify",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "test-parse-json",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/test-parse-json.yaml",
           "recipe_step": "verify",
           "recipe_step_index": 2
         },
@@ -270,7 +277,7 @@
       "verify": "foundation:zen-architect"
     }
   },
-  "recipe": "examples/test-parse-json.yaml",
+  "recipe": "conformance/legacy-compat/fixtures/legacy-recipes/test-parse-json.yaml",
   "recipe_sha256": "18599d6887cae9ae5f639cec56e5734faf1d0f0349fe6cf8376b247398473a21",
   "tool_calls": [
     {
@@ -280,7 +287,7 @@
           "test_data": "example"
         },
         "operation": "execute",
-        "recipe_path": "<REPO>/examples/test-parse-json.yaml"
+        "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/test-parse-json.yaml"
       },
       "output": {
         "recipe": "test-parse-json",
@@ -303,6 +310,7 @@
           "recipe_metadata": {
             "description": "Test recipe to verify parse_json functionality",
             "name": "test-parse-json",
+            "path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/test-parse-json.yaml",
             "version": "1.0.0"
           },
           "session": {

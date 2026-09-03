@@ -384,6 +384,14 @@ approval:
    amplifier run "resume recipe session <session-id>"
    ```
 
+**One session id, the whole way through.** The `session_id` in the
+`paused_for_approval` result is the id `approve`, `deny`, `approvals` and
+`resume` all accept and all report back. A `schema_version: 2` run executes on
+a step engine in a session of its own, and its gate physically lives there --
+so `approve`/`deny` additionally report `gate_session_id`. That is where the
+approval was written, not a second id to resume with; `resume` takes the run's
+own id (recipes-3f6).
+
 **List pending approvals:**
 ```bash
 amplifier run "list pending approvals"
@@ -536,7 +544,7 @@ Each step represents one unit of work in the workflow. Steps can be agent invoca
   while_steps: list             # Optional - Multi-step loop body (list of step definitions, requires while_condition)
   output: string                # Optional - Variable name for step result
   agent_config: dict            # Optional - Override agent configuration
-  timeout: integer              # Optional - Max execution time (seconds)
+  timeout: integer|string       # Optional - Max execution time (seconds), or a template resolving to one
   retry: dict                   # Optional - Retry configuration
   on_error: string              # Optional - Error handling strategy
   depends_on: list[string]      # Optional - Step IDs that must complete first
@@ -837,7 +845,14 @@ model: "gpt-5.?"                # gpt-5.0, gpt-5.1, gpt-5.2, etc.
 **Resolution behavior:**
 - Pattern matches are sorted descending alphabetically
 - This means dated versions (e.g., `20250514`) sort newest-first
-- If no matches found, the pattern string is used as-is (provider will error if invalid)
+- If the provider's model list came back and **nothing matched**, the step falls back to
+  that provider's **default model** and logs a WARNING naming the dropped pattern. The
+  pattern itself is never handed to the provider: no model is literally named
+  `claude-haiku-*`, so passing it through would guarantee a `not_found_error` (404).
+- If the provider's model list **could not be read** (no provider configured, no
+  `list_models` support, query failed), the pattern is left as-is for the host to resolve
+  against whichever provider instance it finally selects. "Could not enumerate" is not
+  evidence of "no match", so the author's pattern is not discarded on it.
 - Resolution details are logged at DEBUG level
 
 **Validation:**
@@ -1368,7 +1383,7 @@ Existing recipes without `parse_json` continue working:
 
 #### `timeout` (optional)
 
-**Type:** integer (seconds)
+**Type:** integer (seconds), or a template string resolving to one
 **Default:** 600 (10 minutes)
 **Purpose:** Prevent hanging on unresponsive steps.
 
@@ -1376,12 +1391,45 @@ Existing recipes without `parse_json` continue working:
 ```yaml
 - timeout: 300   # 5 minutes
 - timeout: 1800  # 30 minutes for long-running analysis
+- timeout: "{{step_timeout}}"   # resolved from context at execution time
 ```
 
 **Behavior:**
 - If step exceeds timeout, execution cancelled
 - Error logged with clear timeout message
 - Recipe can resume from checkpoint (step retries)
+- Applies to both `agent` steps (the sub-session spawn) and `bash` steps
+
+**Templated timeouts:**
+
+A `timeout:` may be a `{{template}}` so one recipe can be run with different
+limits — a short budget in CI, a long one for an overnight run:
+
+```yaml
+context:
+  step_timeout: 1800   # overridable at run time
+
+steps:
+  - id: "deep-analysis"
+    agent: "analyzer"
+    prompt: "Analyze the codebase"
+    timeout: "{{step_timeout}}"
+```
+
+The template is resolved once, immediately before the timeout is applied, and
+must yield a positive number of seconds. Resolution failures are loud and
+name the step, the template, and what it resolved to:
+
+- an undefined variable — `Step 'deep-analysis': timeout template
+  '{{step_timeout}}' could not be resolved: Undefined variable: ...`
+- a non-numeric value — `... resolved to 'soon', which is not a number of seconds`
+- a non-positive value — `... resolved to 0, but timeout must be positive`
+
+Each of these fails *before* the agent is spawned or the command is run, so an
+unusable timeout never burns an invocation. A non-templated string that is not
+a number (`timeout: "soon"`) is rejected earlier still, at recipe validation.
+
+Literal numbers are unaffected — they never touch the substitution machinery.
 
 #### `retry` (optional)
 
@@ -2117,9 +2165,17 @@ Bash steps respect the `timeout` field (default: 600 seconds):
   type: "bash"
   command: "test -d node_modules"
   timeout: 10  # 10 seconds
+
+- id: "configurable"
+  type: "bash"
+  command: "./run-suite.sh"
+  timeout: "{{suite_timeout}}"  # resolved from context at execution time
 ```
 
-If the command exceeds the timeout, it's killed and the step fails.
+If the command exceeds the timeout, it's killed and the step fails. Templated
+timeouts resolve before the command is spawned — see
+[`timeout` (optional)](#timeout-optional) for the resolution rules and error
+messages.
 
 ### Complete Example
 
@@ -2218,9 +2274,40 @@ Recipe composition allows recipes to invoke other recipes as sub-workflows. This
 1. **Parent recipe** encounters a `type: "recipe"` step
 2. **Context is prepared** - Only explicitly passed variables are included
 3. **Sub-recipe loads** - Recipe file is parsed and validated
-4. **Sub-recipe executes** - Runs with isolated context
-5. **Results return** - Sub-recipe's final context becomes the step's output
-6. **Parent continues** - Output available via `output` variable
+4. **Agents are scoped** - see [Agent Isolation](#agent-isolation) below
+5. **Sub-recipe executes** - Runs with isolated context
+6. **Results return** - Sub-recipe's final context becomes the step's output
+7. **Parent continues** - Output available via `output` variable
+
+### Agent Isolation
+
+**A sub-recipe's `schema_version` is its own.** A sub-recipe that declares
+`schema_version: 2` resolves every `agent:` reference from its own
+`dependencies:` closure, exactly as it would if you invoked it directly —
+whether the parent is `schema_version: 2` or a legacy recipe with no
+`schema_version` at all.
+
+```yaml
+# parent.yaml — legacy, no schema_version: its OWN agent steps are caller-bound
+steps:
+  - id: "audit"
+    type: "recipe"
+    recipe: "repo-audit.yaml"   # schema_version: 2 → resolves from ITS OWN closure
+```
+
+Consequences worth knowing:
+
+- **A v2 sub-recipe is portable through a legacy parent.** It runs under a
+  bundle that carries none of the agents it names, because it brings its own.
+- **Closures are not inherited or intersected.** A v2 sub-recipe of a v2
+  parent gets its own catalog, not the parent's and not the overlap; each
+  recipe declares what it needs.
+- **There is no fallback.** If a v2 sub-recipe's closure cannot be resolved
+  (unreachable dependency, undeclared agent, runner library unavailable), the
+  step fails. It never silently reverts to the caller's agent map — that
+  would resolve a *different* agent while reporting success.
+- **A legacy sub-recipe is unchanged**: caller-bound, resolving from whatever
+  coordinator the parent is running against.
 
 ### Context Isolation
 

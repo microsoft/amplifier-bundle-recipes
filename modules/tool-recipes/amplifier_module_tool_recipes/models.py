@@ -7,6 +7,32 @@ from typing import Any, Literal
 import yaml
 
 
+def coerce_timeout(value: Any) -> int | float | None:
+    """Coerce a step ``timeout:`` value to a number, or return None.
+
+    Accepts real numbers and plain numeric strings (``"900"``, ``"1.5"``).
+    Returns None for anything that is not a number -- including booleans,
+    which are ints in Python but are never a meaningful number of seconds,
+    and template strings like ``"{{step_timeout}}"`` whose value is not
+    known until execution time.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
+
+
 @dataclass
 class RecursionConfig:
     """Recursion protection configuration for recipe composition."""
@@ -287,9 +313,14 @@ class Step:
     as_var: str | None = None  # Maps to 'as' in YAML (as is Python reserved)
     collect: str | None = None
     parallel: bool | int = False  # False=sequential, True=unbounded, int=max concurrent
-    checkpoint_iterations: bool = False  # Save progress after each foreach iteration for resumability
+    checkpoint_iterations: bool = False  # Save progress after each foreach iteration for resumability.
+    # Each checkpoint writes the full session state to disk — avoid on sub-second iterations.
     max_iterations: int = 100
-    timeout: int = 600
+    # Number of seconds, or a template string resolved against the run context
+    # at execution time (e.g. "{{step_timeout}}"). Templates are resolved once,
+    # immediately before the timeout is applied -- see
+    # RecipeExecutor._resolve_step_timeout.
+    timeout: int | float | str = 600
     retry: dict[str, Any] | None = None
     on_error: str = "fail"
     depends_on: list[str] = field(default_factory=list)
@@ -451,9 +482,21 @@ class Step:
                 f"Step '{self.id}': type must be 'agent', 'recipe', or 'bash', got '{self.type}'"
             )
 
-        # Field constraints (common to both types)
-        if self.timeout <= 0:
-            errors.append(f"Step '{self.id}': timeout must be positive")
+        # Field constraints (common to both types).
+        # A template string cannot be checked here -- its value only exists once
+        # the run context does -- so it is deferred to execution time, where an
+        # unresolvable or non-numeric result fails loudly. Everything else must
+        # be a positive number right now.
+        timeout_value = coerce_timeout(self.timeout)
+        if timeout_value is not None:
+            if timeout_value <= 0:
+                errors.append(f"Step '{self.id}': timeout must be positive")
+        elif not (isinstance(self.timeout, str) and "{{" in self.timeout):
+            errors.append(
+                f"Step '{self.id}': timeout must be a positive number of seconds "
+                f"or a template string resolving to one (e.g. '{{{{step_timeout}}}}'), "
+                f"got {self.timeout!r}"
+            )
 
         if self.on_error not in ("fail", "continue", "skip_remaining"):
             errors.append(
@@ -703,6 +746,18 @@ class Recipe:
                     else:
                         parsed_prefs.append(p)
                 step_data_copy["provider_preferences"] = parsed_prefs
+
+        # Normalize timeout: a plain numeric string ("900") becomes a number so
+        # it behaves identically to a YAML int; a template string is preserved
+        # verbatim for execution-time resolution. Literal numbers -- the common
+        # case by far -- are left untouched.
+        if "timeout" in step_data_copy:
+            raw_timeout = step_data_copy["timeout"]
+            if isinstance(raw_timeout, str) and "{{" not in raw_timeout:
+                coerced = coerce_timeout(raw_timeout)
+                if coerced is not None:
+                    step_data_copy["timeout"] = coerced
+                # Otherwise leave it alone -- Step.validate() reports it by name.
 
         # Validate retry field type (must be dict if present)
         retry = step_data_copy.get("retry")

@@ -215,6 +215,49 @@ Error: Agent not found: custom-analyzer
    amplifier profile show
    ```
 
+### Error: "This legacy recipe references agent(s) ... which the calling bundle ... does not mount"
+
+**Symptom:**
+```
+This legacy recipe references agent(s) 'foundation:zen-architect' which the
+calling bundle 'anchors' does not mount. ...
+```
+
+The recipe does not start — this is a plan-time refusal, before any step runs.
+
+**Cause:** The recipe declares no `schema_version`, so it is a **legacy**
+recipe: its `agent:` references resolve from the *calling session's* agent map,
+not from anything the recipe itself declares. The same recipe works fine from a
+bundle that mounts those agents and fails from one that does not.
+
+**Solution — pick either:**
+
+1. **Run it from a bundle that has the agents:**
+   ```bash
+   amplifier tool invoke -b foundation recipes \
+     --operation execute --recipe-path ./my-recipe.yaml
+   ```
+
+2. **Migrate the recipe so it carries its own agents** (portable — recommended):
+   ```yaml
+   schema_version: 2
+
+   dependencies:
+     bundles:
+       - foundation
+
+   steps:
+     - id: review
+       agent: "foundation:zen-architect"
+       prompt: "Review it"
+       output: review_result
+   ```
+   See [RECIPE_SCHEMA.md](RECIPE_SCHEMA.md), "Recipe schema v2".
+
+**Note:** the check is skipped (never guessed) when the host exposes no
+readable agent registry, so it can only refuse a run that was going to fail at
+its first agent step anyway.
+
 ### Error: "Step timeout after [N] seconds"
 
 **Symptom:**

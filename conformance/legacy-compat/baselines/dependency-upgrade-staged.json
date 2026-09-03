@@ -248,6 +248,7 @@
     "recipe": {
       "description": "Systematic dependency upgrade with approval gates between phases",
       "name": "dependency-upgrade-staged",
+      "path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml",
       "version": "2.0.0"
     },
     "session": {
@@ -343,7 +344,9 @@
         "recipe_step": "audit-dependencies",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "audit-dependencies",
           "recipe_step_index": 0
         },
@@ -363,7 +366,9 @@
         "recipe_step": "plan-upgrade-strategy",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "plan-upgrade-strategy",
           "recipe_step_index": 1
         },
@@ -383,7 +388,9 @@
         "recipe_step": "validate-compatibility",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "validate-compatibility",
           "recipe_step_index": 0
         },
@@ -403,7 +410,9 @@
         "recipe_step": "generate-phase1-commands",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "generate-phase1-commands",
           "recipe_step_index": 0
         },
@@ -423,7 +432,9 @@
         "recipe_step": "generate-phase2-commands",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "generate-phase2-commands",
           "recipe_step_index": 0
         },
@@ -443,7 +454,9 @@
         "recipe_step": "generate-phase3-commands",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "generate-phase3-commands",
           "recipe_step_index": 0
         },
@@ -459,7 +472,7 @@
       "validate-compatibility": "foundation:integration-specialist"
     }
   },
-  "recipe": "examples/dependency-upgrade-staged-recipe.yaml",
+  "recipe": "conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml",
   "recipe_sha256": "5ad171a6510c3e1d930950f8fd7dca7309714d8124b7b46ad2e5c8b505d039c1",
   "tool_calls": [
     {
@@ -470,7 +483,7 @@
           "project_path": "."
         },
         "operation": "execute",
-        "recipe_path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml"
+        "recipe_path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml"
       },
       "output": {
         "approval_prompt": "DEPENDENCY AUDIT AND UPGRADE PLAN COMPLETE\n\nReview the assessment before proceeding:\n- Audit: STUB AGENT OUTPUT (step=audit-dependencies, agent=foundation:integration-specialist)\n- Plan: STUB AGENT OUTPUT (step=plan-upgrade-strategy, agent=foundation:zen-architect)\n\nApprove to validate compatibility and generate upgrade commands.\nDeny to stop and review the plan manually.\n",
@@ -634,6 +647,7 @@
           "recipe_metadata": {
             "description": "Systematic dependency upgrade with approval gates between phases",
             "name": "dependency-upgrade-staged",
+            "path": "<REPO>/conformance/legacy-compat/fixtures/legacy-recipes/dependency-upgrade-staged-recipe.yaml",
             "version": "2.0.0"
           },
           "session": {

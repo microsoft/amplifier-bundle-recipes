@@ -62,6 +62,7 @@ __all__ = [
     "LEGACY_DEPRECATION_REMEDY",
     "LEGACY_EXECUTION_MODE",
     "REJECTED_CONFIG_KEYS",
+    "SELF_AGENT",
     "RUNNER_DISTRIBUTION",
     "RUNNER_IMPORT_NAME",
     "V2_EXECUTION_MODE",
@@ -74,6 +75,7 @@ __all__ = [
     "CallerAgentLeakError",
     "CoordinatorEventSink",
     "CoordinatorProviderAccess",
+    "EngineSessionRecorder",
     "RecipeRunnerUnavailableError",
     "SessionApprovalCallback",
     "ModelRoleUnavailableError",
@@ -83,7 +85,9 @@ __all__ = [
     "build_run_request",
     "build_validate_request",
     "check_adapter_config",
+    "check_legacy_agents_available",
     "check_model_roles",
+    "collect_agent_references",
     "declared_model_roles",
     "declared_schema_version",
     "execution_mode_of",
@@ -92,6 +96,7 @@ __all__ = [
     "issue_for",
     "label_execution_mode",
     "legacy_deprecation_message",
+    "legacy_missing_agents_message",
     "library_resume",
     "load_runner",
     "manifest_header",
@@ -470,6 +475,153 @@ def warn_legacy_recipe(recipe_path: Path | str) -> str:
     warnings.warn(message, DeprecationWarning, stacklevel=3)
     logger.warning("%s", message)
     return message
+
+
+# ---------------------------------------------------------------------------
+# Legacy plan-time agent preflight
+# ---------------------------------------------------------------------------
+
+#: Pseudo-agent meaning "spawn the current agent". It is never looked up in an
+#: agent registry, so the preflight exempts it (same rule the availability
+#: warning already applies).
+SELF_AGENT = "self"
+
+
+def collect_agent_references(recipe: Any) -> set[str]:
+    """Every ``agent:`` a legacy recipe would resolve, ``self`` excluded.
+
+    Covers flat and staged steps (via ``Recipe.get_all_steps``) *and* the
+    nested bodies of compound steps. A ``foreach``/``while`` body is stored as
+    ``while_steps`` -- a list of **raw dicts** parsed on the fly by the
+    executor, so it never appears in ``get_all_steps()`` and its ``agent:``
+    references would otherwise be invisible to any plan-time check. Bodies
+    nest, so the walk recurses.
+
+    Deliberately out of scope: ``type: recipe`` sub-recipes. Their agent
+    references live in a *different* file resolved at execution time; reading
+    them here would mean resolving sub-recipe paths at plan time, which is a
+    behavior change of its own rather than a diagnostic.
+    """
+    references: set[str] = set()
+
+    def _add(agent: Any) -> None:
+        if isinstance(agent, str) and agent and agent != SELF_AGENT:
+            references.add(agent)
+
+    def _walk_raw(bodies: Any) -> None:
+        if not isinstance(bodies, (list, tuple)):
+            return
+        for entry in bodies:
+            if not isinstance(entry, Mapping):
+                continue
+            _add(entry.get("agent"))
+            # Raw YAML uses `steps` for a nested body; the parsed model renames
+            # it to `while_steps`. A raw dict can carry either.
+            _walk_raw(entry.get("steps"))
+            _walk_raw(entry.get("while_steps"))
+
+    try:
+        steps = recipe.get_all_steps()
+    except Exception:  # pragma: no cover - defensive; models always provide it
+        return references
+
+    for step in steps:
+        _add(getattr(step, "agent", None))
+        _walk_raw(getattr(step, "while_steps", None))
+
+    return references
+
+
+def _caller_bundle_name(coordinator: Any) -> str | None:
+    """Best-effort name of the bundle whose agent map a legacy recipe binds to.
+
+    The CLI writes ``bundle_name`` into the session config, which is the same
+    mapping the coordinator exposes as ``config``. Returns ``None`` when the
+    host does not publish it, so the message can say less rather than guess.
+    """
+    for holder in (coordinator, getattr(coordinator, "session", None)):
+        try:
+            config = getattr(holder, "config", None)
+            if isinstance(config, Mapping):
+                name = config.get("bundle_name")
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+        except Exception:
+            continue
+    return None
+
+
+def _example_bundle(missing: Sequence[str]) -> str:
+    """A concrete ``-b`` value for the remedy, taken from a missing reference.
+
+    ``foundation:zen-architect`` names its bundle already; a bare ``reviewer``
+    does not, so the example falls back to a placeholder rather than inventing
+    a bundle that may not exist.
+    """
+    for agent in missing:
+        namespace, sep, _ = agent.partition(":")
+        if sep and namespace:
+            return namespace
+    return "<bundle>"
+
+
+def legacy_missing_agents_message(
+    missing: Sequence[str], bundle_name: str | None = None
+) -> str:
+    """The plan-time diagnostic for a legacy recipe the caller cannot serve.
+
+    Names the agents, the bundle, and **both** remedies. Without this the run
+    reaches its first agent step and dies on a bare "agent not found", which
+    says nothing about why the recipe worked elsewhere or what to do next.
+    """
+    agents = ", ".join(f"'{agent}'" for agent in missing)
+    bundle_clause = (
+        f"the calling bundle '{bundle_name}'" if bundle_name else "the calling bundle"
+    )
+    return (
+        f"This legacy recipe references agent(s) {agents} which {bundle_clause} "
+        f"does not mount. A legacy recipe resolves `agent:` from the calling "
+        f"session's agent map, so this run would fail at its first agent step. "
+        f"Remedy 1: run it from a bundle that includes them (e.g. "
+        f"`amplifier tool invoke -b {_example_bundle(missing)} recipes ...`). "
+        f"Remedy 2: migrate the recipe to `schema_version: 2` with a "
+        f"`dependencies:` block so it carries its own agents "
+        f"(see docs/RECIPE_SCHEMA.md, 'Recipe schema v2')."
+    )
+
+
+def check_legacy_agents_available(
+    recipe: Any, coordinator: Any
+) -> tuple[list[str], str] | None:
+    """Plan-time preflight for the legacy path: can the caller serve this recipe?
+
+    Returns ``None`` when the run may proceed, or ``(missing, message)`` when it
+    cannot. Enumeration is best-effort and *skips* -- returning ``None`` -- when
+    the host exposes no readable agent registry, exactly as
+    :func:`~amplifier_module_tool_recipes.validator.check_agent_availability`
+    does. Refusing a runnable recipe because we could not read a registry would
+    be strictly worse than the mid-run failure this replaces.
+
+    This only fires where the run was already doomed: every agent the recipe
+    names is missing from the map the executor would resolve against. Recipes
+    whose agents ARE present are unaffected, which is what keeps
+    ``conformance/legacy-compat`` byte-identical.
+    """
+    from .validator import _enumerate_available_agents
+
+    available = _enumerate_available_agents(coordinator)
+    if available is None:
+        return None
+
+    missing = sorted(
+        agent for agent in collect_agent_references(recipe) if agent not in available
+    )
+    if not missing:
+        return None
+
+    return missing, legacy_missing_agents_message(
+        missing, _caller_bundle_name(coordinator)
+    )
 
 
 def label_execution_mode(result: Any, mode: str) -> Any:
@@ -1147,6 +1299,118 @@ async def run_v2_recipe(
     return await (run or runner.run)(request)
 
 
+class EngineSessionRecorder:
+    """A session-manager view that remembers the FIRST session the engine makes.
+
+    The step engine creates its own session inside ``execute_recipe``. *That*
+    session -- not the one the tool bound around the run -- is where the
+    approval gate, the checkpoint and the completed-step list live. Nothing
+    else reports it: a run that stops at a gate raises from inside the engine,
+    and a run that fails may not reach a context at all.
+
+    Capturing it is what makes a later ``resume`` able to re-enter the run that
+    was actually interrupted instead of starting a second one beside it.
+
+    Only the first creation is kept. Sub-recipe steps create their own child
+    sessions later; the top-level one is the run's identity.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.session_id: str | None = None
+
+    def create_session(self, *args: Any, **kwargs: Any) -> str:
+        created = self._inner.create_session(*args, **kwargs)
+        if self.session_id is None:
+            self.session_id = created
+        return created
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def closed_world_scope(
+    resolved_plan: Any, coordinator: Any, recipe_path: Path | str
+) -> Any:
+    """The coordinator view a schema-v2 recipe executes against, labelled.
+
+    One home for the three things that turn a resolved plan into a runnable
+    scope: build the catalog from the plan's closure, wrap the caller's
+    coordinator in it, and say so at INFO with the ``execution_mode`` label.
+    Both v2 entry points -- a top-level run (:func:`run_v2_recipe_in_session`)
+    and a v2 sub-recipe reached from another recipe
+    (:func:`build_sub_recipe_scope`) -- go through here, so neither can
+    silently acquire a different catalog or wear a different label.
+
+    ``coordinator`` must be the *host's* coordinator, never an already-scoped
+    view -- see :func:`~.closed_world.host_coordinator_of`.
+    """
+    from .closed_world import ClosedWorldCoordinator  # noqa: PLC0415 -- lazy
+    from .closed_world import build_catalog  # noqa: PLC0415
+
+    catalog = build_catalog(resolved_plan)
+    scoped = ClosedWorldCoordinator(coordinator, catalog)
+    logger.info(
+        "Executing %s on the legacy step engine with the plan's closed-world "
+        "catalog (%d agent(s): %s) [execution_mode=%s]",
+        recipe_path,
+        len(catalog),
+        ", ".join(catalog.names) or "none",
+        V2_LEGACY_ENGINE_EXECUTION_MODE,
+    )
+    return scoped
+
+
+async def build_sub_recipe_scope(
+    coordinator: Any,
+    session_manager: Any,
+    recipe_path: Path,
+    context_vars: Mapping[str, Any] | None,
+    project_path: Path,
+    *,
+    session_id: str | None = None,
+    plan: Callable[..., Awaitable[Any]] | None = None,
+) -> Any:
+    """The closed-world coordinator for a schema-v2 recipe reached as a *step*.
+
+    A recipe's ``schema_version`` is a property of the recipe, not of how it
+    was reached (manifest.v1 Core 3/4). Invoked directly, ``repo-audit.yaml``
+    resolves ``foundation:zen-architect`` from its own declared closure;
+    invoked as a ``type: recipe`` step of a legacy parent it used to inherit
+    the parent's caller-bound coordinator and die on "Agent
+    'foundation:zen-architect' not found in configuration" -- the *same*
+    recipe, the same host, two different agent maps (recipes-ykj).
+
+    This resolves the sub-recipe exactly as a direct invocation would: the
+    library's ``plan()`` over the sub-recipe's own manifest, then the same
+    catalog and the same label via :func:`closed_world_scope`.
+
+    Unlike :func:`run_v2_recipe_in_session`, a refusal here **raises** rather
+    than becoming a ``RunResult``: the caller is a step of another recipe, and
+    a step reports failure by failing. There is deliberately no fallback to
+    the caller-bound path -- running a v2 sub-recipe against the parent's map
+    would resolve a different agent catalog while reporting success.
+
+    Args:
+        coordinator: the *host's* coordinator. Unwrapping an already-scoped
+            parent view is the caller's job (:func:`build_sub_recipe_scope`
+            is handed one by the executor, which unwraps first).
+        plan: injection seam for tests; defaults to the library's ``plan``.
+
+    Raises:
+        RecipeRunnerUnavailableError: the runner library is not importable, so
+            the declared closure cannot be resolved at all.
+    """
+    runner = load_runner()
+    services = await build_host_services(
+        coordinator, session_manager, project_path, session_id=session_id
+    )
+    check_model_roles(recipe_path, services.provider_access)
+    request = build_run_request(recipe_path, context_vars, services, coordinator)
+    resolved = await (plan or runner.plan)(request)
+    return closed_world_scope(resolved, coordinator, recipe_path)
+
+
 async def run_v2_recipe_in_session(
     coordinator: Any,
     session_manager: Any,
@@ -1155,6 +1419,9 @@ async def run_v2_recipe_in_session(
     project_path: Path,
     *,
     session_id: str | None = None,
+    run_id: str | None = None,
+    resume_engine_session_id: str | None = None,
+    on_engine_session: Callable[[str | None], None] | None = None,
     plan: Callable[..., Awaitable[Any]] | None = None,
     engine: Callable[..., Awaitable[Any]] | None = None,
 ) -> Any:
@@ -1181,9 +1448,22 @@ async def run_v2_recipe_in_session(
     obtained providers, and why an in-session v2 agent step does real model
     work rather than reporting "No providers available" (recipes-30w).
 
+    Resuming uses this same function, and that is the point: a run that
+    stopped at an approval gate, mid-``foreach`` or mid-sub-recipe must
+    continue on the engine that ran it, not on a second one that never saw
+    those step shapes (recipes-5c6). ``resume_engine_session_id`` names the
+    engine session to re-enter; the engine skips what it checkpointed there.
+
     Args:
+        run_id: the recorded run id to continue under, when resuming.
+        resume_engine_session_id: re-enter this engine session instead of
+            creating one. Its own checkpoint decides what is skipped.
+        on_engine_session: called once with the engine session id (or None if
+            no session was ever created), whatever the outcome. This is the
+            only report of it -- see :class:`EngineSessionRecorder`.
         plan/engine: injection seams for tests. ``engine`` receives
-            ``(scoped_coordinator, recipe_path, context, project_path)``.
+            ``(scoped_coordinator, recipe_path, context, project_path,
+            session_manager)`` plus a keyword ``session_id``.
 
     Returns:
         The library's ``RunResult``, so every caller translates one shape. A
@@ -1191,38 +1471,44 @@ async def run_v2_recipe_in_session(
         reported as themselves; nothing reports SUCCEEDED that did not succeed.
     """
     runner = load_runner()
-    from .closed_world import ClosedWorldCoordinator  # noqa: PLC0415 -- lazy
-    from .closed_world import build_catalog  # noqa: PLC0415
 
     services = await build_host_services(
         coordinator, session_manager, project_path, session_id=session_id
     )
     check_model_roles(recipe_path, services.provider_access)
-    request = build_run_request(recipe_path, context_vars, services, coordinator)
+    request = build_run_request(
+        recipe_path, context_vars, services, coordinator, run_id=run_id
+    )
     run_id = request.run_id or f"run-{uuid.uuid4().hex[:12]}"
+
+    recorder = EngineSessionRecorder(session_manager)
+
+    def report_engine_session() -> str | None:
+        engine_session_id = resume_engine_session_id or recorder.session_id
+        if on_engine_session is not None:
+            on_engine_session(engine_session_id)
+        return engine_session_id
 
     try:
         resolved = await (plan or runner.plan)(request)
     except Exception as exc:  # noqa: BLE001 -- preflight refusals are results
+        report_engine_session()
         return runner.RunResult(run_id=run_id, status=runner.RunStatus.FAILED, error=exc)
 
-    catalog = build_catalog(resolved)
-    scoped = ClosedWorldCoordinator(coordinator, catalog)
-    logger.info(
-        "Executing %s on the legacy step engine with the plan's closed-world "
-        "catalog (%d agent(s): %s) [execution_mode=%s]",
-        recipe_path,
-        len(catalog),
-        ", ".join(catalog.names) or "none",
-        V2_LEGACY_ENGINE_EXECUTION_MODE,
-    )
+    scoped = closed_world_scope(resolved, coordinator, recipe_path)
 
     execute = engine or _legacy_engine_run
     try:
         final_context = await execute(
-            scoped, recipe_path, dict(context_vars or {}), project_path, session_manager
+            scoped,
+            recipe_path,
+            dict(context_vars or {}),
+            project_path,
+            recorder,
+            session_id=resume_engine_session_id,
         )
     except Exception as exc:  # noqa: BLE001 -- one place turns any failure into a result
+        engine_session_id = report_engine_session()
         stage = getattr(exc, "stage_name", None)
         if stage is not None and type(exc).__name__ == "ApprovalGatePausedError":
             return runner.RunResult(
@@ -1230,7 +1516,9 @@ async def run_v2_recipe_in_session(
                 status=runner.RunStatus.PAUSED,
                 plan=resolved,
                 completed_steps=_engine_completed_steps(
-                    session_manager, getattr(exc, "session_id", None), project_path
+                    session_manager,
+                    getattr(exc, "session_id", None) or engine_session_id,
+                    project_path,
                 ),
                 pending_approval=stage,
             )
@@ -1239,9 +1527,15 @@ async def run_v2_recipe_in_session(
             run_id=run_id,
             status=runner.RunStatus.FAILED,
             plan=resolved,
+            # What the engine checkpointed before it died -- never assumed
+            # empty, or a resume would redo every step that did run.
+            completed_steps=_engine_completed_steps(
+                session_manager, engine_session_id, project_path
+            ),
             error=exc,
         )
 
+    engine_session_id = report_engine_session()
     engine_session = (final_context or {}).get("session") or {}
     return runner.RunResult(
         run_id=run_id,
@@ -1249,7 +1543,7 @@ async def run_v2_recipe_in_session(
         plan=resolved,
         outputs=dict(final_context or {}),
         completed_steps=_engine_completed_steps(
-            session_manager, engine_session.get("id"), project_path
+            session_manager, engine_session.get("id") or engine_session_id, project_path
         ),
     )
 
@@ -1260,8 +1554,14 @@ async def _legacy_engine_run(
     context_vars: Mapping[str, Any],
     project_path: Path,
     session_manager: Any,
+    *,
+    session_id: str | None = None,
 ) -> Mapping[str, Any]:
     """Run the recipe on the legacy step engine, against the scoped coordinator.
+
+    ``session_id`` re-enters an existing engine session -- the engine's own
+    resumption path, which skips what that session checkpointed. Left None,
+    the engine creates a fresh session, which is what a first run wants.
 
     Imported lazily so this module keeps importing without the engine's own
     dependencies, exactly as the library import is lazy.
@@ -1272,7 +1572,11 @@ async def _legacy_engine_run(
     recipe = Recipe.from_yaml(recipe_path)
     executor = RecipeExecutor(scoped_coordinator, session_manager)
     return await executor.execute_recipe(
-        recipe, dict(context_vars), project_path, recipe_path=recipe_path
+        recipe,
+        dict(context_vars),
+        project_path,
+        session_id=session_id,
+        recipe_path=recipe_path,
     )
 
 
