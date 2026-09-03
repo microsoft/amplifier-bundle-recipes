@@ -157,6 +157,7 @@
     "recipe": {
       "description": "Test recipe to verify parse_json functionality",
       "name": "test-parse-json",
+      "path": "<REPO>/examples/test-parse-json.yaml",
       "version": "1.0.0"
     },
     "session": {
@@ -221,7 +222,9 @@
         "recipe_step": "prose-step",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "test-parse-json",
+          "recipe_path": "<REPO>/examples/test-parse-json.yaml",
           "recipe_step": "prose-step",
           "recipe_step_index": 0
         },
@@ -239,7 +242,9 @@
         "recipe_step": "json-step",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "test-parse-json",
+          "recipe_path": "<REPO>/examples/test-parse-json.yaml",
           "recipe_step": "json-step",
           "recipe_step_index": 1
         },
@@ -257,7 +262,9 @@
         "recipe_step": "verify",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "test-parse-json",
+          "recipe_path": "<REPO>/examples/test-parse-json.yaml",
           "recipe_step": "verify",
           "recipe_step_index": 2
         },
@@ -303,6 +310,7 @@
           "recipe_metadata": {
             "description": "Test recipe to verify parse_json functionality",
             "name": "test-parse-json",
+            "path": "<REPO>/examples/test-parse-json.yaml",
             "version": "1.0.0"
           },
           "session": {

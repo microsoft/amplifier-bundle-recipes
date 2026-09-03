@@ -248,6 +248,7 @@
     "recipe": {
       "description": "Systematic dependency upgrade with approval gates between phases",
       "name": "dependency-upgrade-staged",
+      "path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml",
       "version": "2.0.0"
     },
     "session": {
@@ -343,7 +344,9 @@
         "recipe_step": "audit-dependencies",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "audit-dependencies",
           "recipe_step_index": 0
         },
@@ -363,7 +366,9 @@
         "recipe_step": "plan-upgrade-strategy",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "plan-upgrade-strategy",
           "recipe_step_index": 1
         },
@@ -383,7 +388,9 @@
         "recipe_step": "validate-compatibility",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "validate-compatibility",
           "recipe_step_index": 0
         },
@@ -403,7 +410,9 @@
         "recipe_step": "generate-phase1-commands",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "generate-phase1-commands",
           "recipe_step_index": 0
         },
@@ -423,7 +432,9 @@
         "recipe_step": "generate-phase2-commands",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "generate-phase2-commands",
           "recipe_step_index": 0
         },
@@ -443,7 +454,9 @@
         "recipe_step": "generate-phase3-commands",
         "session_metadata": {
           "agent_name": "foundation:integration-specialist",
+          "model_role": null,
           "recipe_name": "dependency-upgrade-staged",
+          "recipe_path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml",
           "recipe_step": "generate-phase3-commands",
           "recipe_step_index": 0
         },
@@ -634,6 +647,7 @@
           "recipe_metadata": {
             "description": "Systematic dependency upgrade with approval gates between phases",
             "name": "dependency-upgrade-staged",
+            "path": "<REPO>/examples/dependency-upgrade-staged-recipe.yaml",
             "version": "2.0.0"
           },
           "session": {

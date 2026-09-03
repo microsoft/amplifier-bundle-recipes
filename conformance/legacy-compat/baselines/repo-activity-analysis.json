@@ -1180,6 +1180,7 @@
     "recipe": {
       "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
       "name": "repo-activity-analysis",
+      "path": "<REPO>/examples/repo-activity-analysis.yaml",
       "version": "1.4.0"
     },
     "repo_info": {
@@ -1342,7 +1343,9 @@
         "recipe_step": "analyze-commits",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "repo-activity-analysis",
+          "recipe_path": "<REPO>/examples/repo-activity-analysis.yaml",
           "recipe_step": "analyze-commits",
           "recipe_step_index": 7
         },
@@ -1362,7 +1365,9 @@
         "recipe_step": "deep-dive-unclear-commits",
         "session_metadata": {
           "agent_name": "foundation:explorer",
+          "model_role": null,
           "recipe_name": "repo-activity-analysis",
+          "recipe_path": "<REPO>/examples/repo-activity-analysis.yaml",
           "recipe_step": "deep-dive-unclear-commits",
           "recipe_step_index": 8
         },
@@ -1382,7 +1387,9 @@
         "recipe_step": "analyze-prs",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "repo-activity-analysis",
+          "recipe_path": "<REPO>/examples/repo-activity-analysis.yaml",
           "recipe_step": "analyze-prs",
           "recipe_step_index": 9
         },
@@ -1402,7 +1409,9 @@
         "recipe_step": "synthesize-repo-findings",
         "session_metadata": {
           "agent_name": "foundation:zen-architect",
+          "model_role": null,
           "recipe_name": "repo-activity-analysis",
+          "recipe_path": "<REPO>/examples/repo-activity-analysis.yaml",
           "recipe_step": "synthesize-repo-findings",
           "recipe_step_index": 10
         },
@@ -1474,6 +1483,7 @@
           "recipe_metadata": {
             "description": "Analyze a GitHub repository for commits and PRs in a date range. Defaults to current repo since yesterday.",
             "name": "repo-activity-analysis",
+            "path": "<REPO>/examples/repo-activity-analysis.yaml",
             "version": "1.4.0"
           },
           "session": {

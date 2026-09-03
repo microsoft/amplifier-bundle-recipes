@@ -445,6 +445,7 @@
     "recipe": {
       "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
       "name": "bash-step-example",
+      "path": "<REPO>/examples/bash-step-example.yaml",
       "version": "1.0.0"
     },
     "session": {
@@ -559,6 +560,7 @@
           "recipe_metadata": {
             "description": "Demonstrates bash step capabilities - direct shell execution without LLM overhead",
             "name": "bash-step-example",
+            "path": "<REPO>/examples/bash-step-example.yaml",
             "version": "1.0.0"
           },
           "session": {
