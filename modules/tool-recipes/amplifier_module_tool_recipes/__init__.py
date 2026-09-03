@@ -14,10 +14,18 @@ recipe's own manifest (``recipe-dependency-manifest.v1`` Core 1):
 
 The split is per *operation*, not just per run: ``execute``, ``validate`` and
 ``resume`` each route on the manifest. A v2 recipe is validated by the
-library's plan preflight and resumed through the library, never by the legacy
-validator or the legacy executor -- both of which would answer while knowing
-nothing about the ``dependencies`` block that decides what the recipe actually
-resolves to.
+library's plan preflight, never by the legacy validator -- which would answer
+while knowing nothing about the ``dependencies`` block that decides what the
+recipe actually resolves to.
+
+``resume`` routes further, on what the interrupted run *recorded*: a v2 run
+continues on the engine that ran it. In practice that is the closed-world step
+engine ``execute`` used (``execution_mode: v2-closed-world-legacy-engine``) --
+the same engine, re-entering the same engine session, with the same
+plan-resolved catalog in place of the caller's agent map. It is never the
+caller-bound legacy path (that would re-bind its agents to this session,
+manifest.v1 Core 3), and never an engine that does not understand the step
+shapes the run already executed past (recipes-5c6).
 
 See ``runner_adapter.py`` for the port mapping, the ``resume`` seam, and why
 the label rides beside the result payload rather than inside it.
@@ -579,6 +587,10 @@ Example:
                 exc,
             )
 
+        # Where the engine's own session lands, so `resume` can re-enter THIS
+        # run rather than start a second one beside it (recipes-5c6).
+        engine_session: dict[str, str | None] = {"id": None}
+
         try:
             result = await run_v2_recipe_in_session(
                 self.coordinator,
@@ -587,6 +599,7 @@ Example:
                 context_vars,
                 project_path,
                 session_id=session_id,
+                on_engine_session=lambda sid: engine_session.__setitem__("id", sid),
             )
         except Exception as exc:
             logger.error("v2 recipe execution failed: %s", exc, exc_info=True)
@@ -602,6 +615,7 @@ Example:
                 completed_steps=None,
                 step_ids=None,
                 execution_mode=V2_LEGACY_ENGINE_EXECUTION_MODE,
+                engine_session_id=engine_session["id"],
             )
             return label_execution_mode(
                 ToolResult(
@@ -624,6 +638,7 @@ Example:
             completed_steps=list(result.completed_steps),
             step_ids=list(plan.step_ids) if plan is not None else None,
             execution_mode=V2_LEGACY_ENGINE_EXECUTION_MODE,
+            engine_session_id=engine_session["id"],
             provenance=(
                 agent_provenance_record(plan, run_id=result.run_id) if plan is not None else None
             ),
@@ -652,6 +667,7 @@ Example:
         completed_steps: list[str] | None,
         step_ids: list[str] | None,
         execution_mode: str = V2_EXECUTION_MODE,
+        engine_session_id: str | None = None,
         provenance: dict[str, Any] | None = None,
     ) -> None:
         """Record what a v2 run reported, into the bound Amplifier session.
@@ -663,12 +679,20 @@ Example:
         :data:`V2_RUN_STATE_KEY` so it cannot collide with the legacy
         executor's own ``completed_steps`` bookkeeping.
 
+        ``engine_session_id`` is recorded alongside, because on the
+        closed-world path the engine ran in a session of its own making --
+        the one holding the approval gate and the checkpoint. Without that
+        back-reference a ``resume`` could only start a *second* run beside
+        the interrupted one (recipes-5c6).
+
+        The record is written to BOTH sessions when they differ, so a resume
+        addressed at either id finds it. A caller who was handed one of the
+        two should not have to know which.
+
         Never raises: a bookkeeping failure must not fail a run that already
         happened. It is logged loudly instead, and its absence is what makes
         ``resume`` refuse rather than assume (see ``_resume_v2_recipe``).
         """
-        if session_id is None:
-            return
         record = {
             "execution_mode": execution_mode,
             "recipe_path": str(recipe_path),
@@ -677,25 +701,29 @@ Example:
             "status": status,
             "completed_steps": completed_steps,
             "step_ids": step_ids,
+            "session_id": session_id,
+            "engine_session_id": engine_session_id,
         }
-        try:
-            state = self.session_manager.load_state(session_id, project_path)
-            state[V2_RUN_STATE_KEY] = record
-            # Cross-surface identity (lib.v1 Core 7): the plan's dependency
-            # identity and per-agent provenance, persisted verbatim so this
-            # run is comparable against `recipe-runner plan --json`.
-            if provenance is not None:
-                state[V2_PROVENANCE_STATE_KEY] = provenance
-            state["recipe_path"] = str(recipe_path)
-            self.session_manager.save_state(session_id, project_path, state)
-        except Exception as exc:
-            logger.error(
-                "Could not record the v2 run outcome for session %s (%s); a later "
-                "`resume` of it will refuse rather than guess which steps completed.",
-                session_id,
-                exc,
-                exc_info=True,
-            )
+        targets = [sid for sid in (session_id, engine_session_id) if sid]
+        for target in dict.fromkeys(targets):
+            try:
+                state = self.session_manager.load_state(target, project_path)
+                state[V2_RUN_STATE_KEY] = record
+                # Cross-surface identity (lib.v1 Core 7): the plan's dependency
+                # identity and per-agent provenance, persisted verbatim so this
+                # run is comparable against `recipe-runner plan --json`.
+                if provenance is not None:
+                    state[V2_PROVENANCE_STATE_KEY] = provenance
+                state["recipe_path"] = str(recipe_path)
+                self.session_manager.save_state(target, project_path, state)
+            except Exception as exc:
+                logger.error(
+                    "Could not record the v2 run outcome for session %s (%s); a later "
+                    "`resume` of it will refuse rather than guess which steps completed.",
+                    target,
+                    exc,
+                    exc_info=True,
+                )
 
     def _v2_tool_result(
         self,
@@ -872,11 +900,12 @@ Example:
         """Resume an interrupted recipe session, on the engine that ran it.
 
         The recipe recorded in the session decides, exactly as it does for
-        ``execute``: a session holding a ``schema_version`` recipe resumes
-        through the runner library (``_resume_v2_recipe``), one holding a
-        legacy recipe resumes on the legacy caller-bound path. A v2 session is
-        never resumed on the legacy path -- that would re-bind its agents to
-        this caller (``recipe-dependency-manifest.v1`` Core 3).
+        ``execute``: a session holding a ``schema_version`` recipe resumes on
+        the v2 path (``_resume_v2_recipe``, which routes to whichever engine
+        the run recorded), one holding a legacy recipe resumes on the legacy
+        caller-bound path. A v2 session is never resumed caller-bound -- that
+        would re-bind its agents to this caller
+        (``recipe-dependency-manifest.v1`` Core 3).
         """
         session_id = input.get("session_id")
         if not session_id:
@@ -995,17 +1024,22 @@ Example:
         original_recipe_path: Path | None,
         state: dict[str, Any],
     ) -> ToolResult:
-        """Resume a schema-v2 run, through the runner library and only it.
+        """Resume a schema-v2 run, on the engine the run itself recorded.
 
-        Resuming a v2 recipe on the legacy path would re-bind its agents to
-        *this* session instead of its declared dependencies
+        Resuming a v2 recipe caller-bound would re-bind its agents to *this*
+        session instead of its declared dependencies
         (``recipe-dependency-manifest.v1`` Core 3), so that never happens here:
-        every outcome below is either a library call or a refusal.
+        every outcome below is a closed-world engine call, a library call, or
+        a refusal.
 
         What the recorded run reported decides which:
 
         * it finished -- nothing to resume, and saying so is the right answer,
           not a failure;
+        * it ran on the closed-world step engine (``execution_mode``) -- it
+          continues there, in that engine's own session
+          (:meth:`_resume_v2_on_legacy_engine`). This is the ordinary case:
+          every in-session v2 run records that engine;
         * nothing completed -- resuming *is* running from the start, which is
           one library call against the recorded ``run_id``;
         * some steps completed -- skipping them needs the library's ``resume``
@@ -1049,6 +1083,10 @@ Example:
         completed_steps = record.get("completed_steps")
         step_ids = record.get("step_ids") or []
 
+        # The engine the run recorded, so "nothing to resume" and the refusals
+        # below are labeled with the engine that actually ran it.
+        recorded_mode = record.get("execution_mode") or V2_EXECUTION_MODE
+
         if record.get("status") == "succeeded":
             return label_execution_mode(
                 ToolResult(
@@ -1056,7 +1094,7 @@ Example:
                     output={
                         "status": "nothing_to_resume",
                         "recipe": recipe_display_name(recipe_file),
-                        "execution_mode": V2_EXECUTION_MODE,
+                        "execution_mode": recorded_mode,
                         "schema_version": schema_version,
                         "session_id": session_id,
                         "run_id": run_id,
@@ -1067,7 +1105,21 @@ Example:
                         ),
                     },
                 ),
-                V2_EXECUTION_MODE,
+                recorded_mode,
+            )
+
+        # The engine that ran it resumes it. A run executed on the closed-world
+        # legacy step engine handled `foreach`, `type: recipe`, `bash` and
+        # staged approval gates; handing its remainder to the library's
+        # sequential executor made it die on the first such step it met --
+        # a step the very same run had already executed past (recipes-5c6).
+        if record.get("execution_mode") == V2_LEGACY_ENGINE_EXECUTION_MODE:
+            return await self._resume_v2_on_legacy_engine(
+                session_id,
+                project_path,
+                recipe_file,
+                record,
+                original_recipe_path,
             )
 
         if completed_steps is None:
@@ -1088,14 +1140,7 @@ Example:
                 V2_EXECUTION_MODE,
             )
 
-        # Prefer the recipe the run actually recorded: a library `resume` checks
-        # recorded provenance against a fresh plan of it, and handing over the
-        # session's frozen copy instead would make that check unable to ever
-        # detect an edited recipe (Core 8).
-        recorded_path = record.get("recipe_path")
-        resume_path = Path(recorded_path) if recorded_path else original_recipe_path
-        if resume_path is None or not resume_path.exists():
-            resume_path = recipe_file
+        resume_path = self._v2_resume_path(record, original_recipe_path, recipe_file)
 
         try:
             result = await resume_v2_recipe(
@@ -1157,6 +1202,158 @@ Example:
             ),
             V2_EXECUTION_MODE,
         )
+
+    async def _resume_v2_on_legacy_engine(
+        self,
+        session_id: str,
+        project_path: Path,
+        recipe_file: Path,
+        record: dict[str, Any],
+        original_recipe_path: Path | None,
+    ) -> ToolResult:
+        """Continue a v2 run on the engine that ran it: the closed-world one.
+
+        ``execute`` runs a v2 recipe on the legacy step engine bound to the
+        plan's closed-world catalog (``run_v2_recipe_in_session``). Resume goes
+        back to exactly that -- same engine, same catalog, same step shapes --
+        because the alternative was observed to fail: the library's sequential
+        executor refused a ``foreach`` / ``type: recipe`` step that this very
+        run had already executed past on the other engine (recipes-5c6).
+
+        What it re-enters is the *engine's own* session, whose checkpoint says
+        which steps finished. That is the honest source: this tool's recorded
+        ``completed_steps`` is a copy, and re-entering without the engine
+        session would start a second run beside the interrupted one.
+        """
+        engine_session_id = record.get("engine_session_id")
+        completed_steps = record.get("completed_steps")
+        run_id = record.get("run_id")
+        resume_path = self._v2_resume_path(record, original_recipe_path, recipe_file)
+
+        if engine_session_id and not self.session_manager.session_exists(
+            engine_session_id, project_path
+        ):
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": (
+                            f"Session {session_id} names engine session "
+                            f"{engine_session_id} as where its steps ran, but that "
+                            "session no longer exists, so which steps completed "
+                            "cannot be read back. It was NOT resumed: re-entering "
+                            "without it would re-run steps that already ran. Re-run "
+                            "the recipe with the `execute` operation to start a "
+                            "fresh run."
+                        ),
+                        "type": "V2EngineSessionMissing",
+                    },
+                ),
+                V2_LEGACY_ENGINE_EXECUTION_MODE,
+            )
+
+        if not engine_session_id and completed_steps:
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": (
+                            f"Run {run_id or '(unrecorded)'} in session {session_id} "
+                            f"completed {len(completed_steps)} step(s) "
+                            f"({', '.join(completed_steps)}) on the step engine but "
+                            "recorded no engine session, so there is nothing to "
+                            "re-enter and the completed steps cannot be skipped. It "
+                            "was NOT resumed. Re-run the recipe with the `execute` "
+                            "operation to start a fresh run."
+                        ),
+                        "type": "V2EngineSessionUnknown",
+                        "completed_steps": list(completed_steps),
+                    },
+                ),
+                V2_LEGACY_ENGINE_EXECUTION_MODE,
+            )
+
+        # No engine session and nothing completed: the run never reached a
+        # step, so resuming it *is* running it -- re-running nothing.
+        resumed_engine_session: dict[str, str | None] = {"id": engine_session_id}
+
+        try:
+            result = await run_v2_recipe_in_session(
+                self.coordinator,
+                self.session_manager,
+                resume_path,
+                {},
+                project_path,
+                session_id=session_id,
+                run_id=run_id,
+                resume_engine_session_id=engine_session_id,
+                on_engine_session=lambda sid: resumed_engine_session.__setitem__(
+                    "id", sid
+                ),
+            )
+        except Exception as exc:
+            logger.error("v2 recipe resume failed: %s", exc, exc_info=True)
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": f"Failed to resume recipe: {exc}",
+                        "type": type(exc).__name__,
+                    },
+                ),
+                V2_LEGACY_ENGINE_EXECUTION_MODE,
+            )
+
+        plan = result.plan
+        self._record_v2_run(
+            session_id,
+            project_path,
+            resume_path,
+            run_id=result.run_id,
+            status=getattr(result.status, "name", str(result.status)).lower(),
+            completed_steps=list(result.completed_steps),
+            step_ids=(
+                list(plan.step_ids) if plan is not None else record.get("step_ids")
+            ),
+            execution_mode=V2_LEGACY_ENGINE_EXECUTION_MODE,
+            engine_session_id=resumed_engine_session["id"],
+            provenance=(
+                agent_provenance_record(plan, run_id=result.run_id)
+                if plan is not None
+                else None
+            ),
+        )
+
+        return label_execution_mode(
+            self._v2_tool_result(
+                result,
+                load_runner(),
+                resume_path,
+                recipe_display_name(recipe_file),
+                session_id,
+                execution_mode=V2_LEGACY_ENGINE_EXECUTION_MODE,
+            ),
+            V2_LEGACY_ENGINE_EXECUTION_MODE,
+        )
+
+    @staticmethod
+    def _v2_resume_path(
+        record: dict[str, Any],
+        original_recipe_path: Path | None,
+        recipe_file: Path,
+    ) -> Path:
+        """The recipe a resume re-plans from.
+
+        Prefer the one the run actually recorded: a resume re-plans and checks
+        recorded provenance against that plan, and handing over the session's
+        frozen copy instead would make the check unable to ever detect an
+        edited recipe (Core 8).
+        """
+        recorded_path = record.get("recipe_path")
+        resume_path = Path(recorded_path) if recorded_path else original_recipe_path
+        if resume_path is None or not resume_path.exists():
+            return recipe_file
+        return resume_path
 
     async def _list_sessions(self, input: dict[str, Any]) -> ToolResult:
         """List active recipe sessions."""
@@ -1319,6 +1516,48 @@ Example:
                 error={"message": f"Failed to list approvals: {str(e)}"},
             )
 
+    def _gate_session(self, session_id: str, project_path: Path) -> str:
+        """The session actually holding the approval gate for this run.
+
+        A v2 run executes on the step engine in a session of the engine's own
+        making, while the caller was handed the id the *run* reported. The
+        pending approval lives in the engine's session, so approving the id
+        the caller has would otherwise fail with "no pending approval" for a
+        recipe that is visibly waiting for one (recipes-5c6).
+
+        Only ever retargets when the addressed session has no gate of its own
+        and the engine session it recorded does. Anything else is left exactly
+        where the caller aimed it.
+        """
+        try:
+            if self.session_manager.get_pending_approval(session_id, project_path):
+                return session_id
+            state = self.session_manager.load_state(session_id, project_path)
+        except Exception:  # noqa: BLE001 - an unreadable session is not retargeted
+            return session_id
+
+        record = state.get(V2_RUN_STATE_KEY)
+        if not isinstance(record, dict):
+            return session_id
+        engine_session_id = record.get("engine_session_id")
+        if not engine_session_id or engine_session_id == session_id:
+            return session_id
+
+        try:
+            if self.session_manager.get_pending_approval(
+                engine_session_id, project_path
+            ):
+                logger.info(
+                    "Approval for session %s retargeted to engine session %s, which "
+                    "holds the pending gate.",
+                    session_id,
+                    engine_session_id,
+                )
+                return str(engine_session_id)
+        except Exception:  # noqa: BLE001 - fall back to what the caller named
+            return session_id
+        return session_id
+
     async def _approve_stage(self, input: dict[str, Any]) -> ToolResult:
         """Approve a stage to continue execution."""
         session_id = input.get("session_id")
@@ -1344,6 +1583,9 @@ Example:
                 success=False,
                 error={"message": f"Session not found: {session_id}"},
             )
+
+        # The gate may live in the engine's own session (see _gate_session).
+        session_id = self._gate_session(session_id, project_path)
 
         # Check if there's a pending approval for this stage
         pending = self.session_manager.get_pending_approval(session_id, project_path)
@@ -1426,6 +1668,9 @@ Example:
                 success=False,
                 error={"message": f"Session not found: {session_id}"},
             )
+
+        # The gate may live in the engine's own session (see _gate_session).
+        session_id = self._gate_session(session_id, project_path)
 
         # Check if there's a pending approval for this stage
         pending = self.session_manager.get_pending_approval(session_id, project_path)
