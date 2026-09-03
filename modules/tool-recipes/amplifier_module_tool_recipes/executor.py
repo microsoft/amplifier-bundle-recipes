@@ -11,6 +11,7 @@ import re
 import shutil
 import sys
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -627,6 +628,134 @@ def pin_preferences_to_instances(
         )
         return None
     return pinned
+
+
+# ---------------------------------------------------------------------------
+# The spawned agent's OWN overlay must say the same thing
+# ---------------------------------------------------------------------------
+#
+# Pinning the `provider_preferences` ARGUMENT is only half a spawn.  A spawn
+# also carries the agent's overlay, and an agent definition file may declare
+# `provider_preferences` of its own (``foundation:zen-architect`` does).  The
+# host merges that overlay straight into the child's session config
+# (``session_spawner.spawn_sub_session`` -> ``agent_config.merge_configs``,
+# where a list value simply overrides), and NOTHING downstream rewrites it:
+# ``apply_provider_preferences_with_resolution`` edits only the mount plan's
+# ``providers``.  So the child starts up declaring the *untranslated* chain.
+#
+# That declaration is live, not decorative.  Two consumers read it back:
+#
+#   * the child's own routing re-assert, ``hooks-routing``'s
+#     ``role_pin._declared_pins`` (role_pin.py:266), reads exactly this
+#     session-level key at ``session:start`` and re-pins priority from it --
+#     against MOUNTED providers, keyed by instance id.  Measured on the fixed
+#     engine (child session ...a0a049acf77d43c7): the spawn argument correctly
+#     promoted `opus` to priority 0, then the child read its own config's
+#     "anthropic"/"openai" (matching no instance), hit "gemini" (an instance id
+#     that happens to equal a module's short name), promoted gemini to 0 and
+#     demoted opus to 1.  The agent ran on gemini-3.1-flash-image-preview and
+#     took the same 65,536-token 400 as before the pin existed.
+#   * ``resume_sub_session`` rebuilds the promotion from the persisted agent
+#     overlay, then the persisted config (session_spawner.py:1500-1508), so an
+#     untranslated overlay also mis-promotes every resumed leg.
+#
+# Hence: whatever chain the engine emits as the argument, the overlay it emits
+# alongside declares the same chain -- by instance id, so both matchers agree.
+# When the engine emits no chain at all, the overlay's own unservable one is
+# removed rather than left behind, because "inherit the parent's ordering" and
+# "let the child re-pin itself onto a name collision" are not the same thing.
+#
+# `model_role` is deliberately still forwarded.  It is what the declaration
+# MEANS, and on this host it is inert at session level: `role_pin` reads only
+# `provider_preferences`, the routing hook resolves `model_role` only for
+# entries under `config["agents"]` (children this session may spawn, not the
+# session itself), and the spawner never re-derives preferences from it
+# (`model_role` reaches `session_spawner` only as an explicit resume argument).
+# Dropping it would delete the provenance of a pin without changing a byte of
+# behaviour -- see tests/test_provider_instance_pinning.py, which asserts that
+# inertness rather than assuming it.
+
+
+def _preference_as_dict(pref: Any) -> dict[str, Any] | None:
+    """One preference in the dict form a config/overlay carries."""
+    to_dict = getattr(pref, "to_dict", None)
+    if callable(to_dict):
+        value = to_dict()
+        return value if isinstance(value, dict) else None
+    if isinstance(pref, Mapping):
+        return dict(pref)
+    provider = getattr(pref, "provider", None)
+    if not isinstance(provider, str) or not provider:
+        return None
+    entry: dict[str, Any] = {"provider": provider, "model": getattr(pref, "model", "")}
+    config = getattr(pref, "config", None)
+    if isinstance(config, dict) and config:
+        entry["config"] = dict(config)
+    return entry
+
+
+def align_overlay_preferences(
+    agent_configs: Any, agent_name: str, preferences: list[Any] | None
+) -> Any:
+    """Make ``agent_name``'s overlay declare exactly the chain being promoted.
+
+    Returns the mapping to hand ``session.spawn``. The caller's mapping is
+    never mutated: a changed overlay is written into a fresh copy, so a host
+    agent map (or a catalog reused by the next step) cannot be edited from
+    here.
+
+    When ``preferences`` is empty/``None`` the overlay's own
+    ``provider_preferences`` is *removed*, so the child inherits the parent's
+    provider ordering rather than re-pinning itself from a chain this session
+    already found it could not serve.
+
+    When nothing needs changing -- no such agent, or the overlay already says
+    precisely this -- the caller's own object is returned unchanged, so a
+    recipe with no provider intent produces a byte-identical spawn.
+    """
+    if not isinstance(agent_configs, Mapping):
+        return agent_configs
+    overlay = agent_configs.get(agent_name)
+    if not isinstance(overlay, Mapping):
+        return agent_configs
+
+    declared: list[dict[str, Any]] | None = None
+    if preferences:
+        entries = [_preference_as_dict(pref) for pref in preferences]
+        declared = [entry for entry in entries if entry is not None] or None
+
+    current = overlay.get("provider_preferences")
+    if declared is None:
+        if "provider_preferences" not in overlay:
+            return agent_configs
+        logger.debug(
+            "agent %r declares provider_preferences this session cannot pin to "
+            "a mounted instance; dropping them from its spawn overlay so the "
+            "child inherits the parent's provider ordering",
+            agent_name,
+        )
+    elif current == declared:
+        return agent_configs
+
+    aligned_overlay = dict(overlay)
+    if declared is None:
+        aligned_overlay.pop("provider_preferences", None)
+    else:
+        aligned_overlay["provider_preferences"] = declared
+        logger.debug(
+            "agent %r spawn overlay now declares the pinned chain %s (was %s)",
+            agent_name,
+            [entry["provider"] for entry in declared],
+            [
+                entry.get("provider")
+                for entry in (current if isinstance(current, list) else [])
+            ]
+            or "nothing",
+        )
+
+    aligned = dict(agent_configs)
+    aligned[agent_name] = aligned_overlay
+    return aligned
 
 
 class RecipeExecutor:
@@ -2192,6 +2321,13 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             provider_preferences,
             host_config.get("providers") if isinstance(host_config, dict) else None,
         )
+
+        # ...and the overlay this spawn carries declares that same chain, so
+        # the child's own routing re-assert reads instance ids rather than the
+        # module names its definition file was written with (see
+        # `align_overlay_preferences`). Without this the argument's promotion
+        # is undone by the child at session:start.
+        agents = align_overlay_preferences(agents, step.agent, provider_preferences)
 
         # Build session metadata for child session tracking (navigation graph support)
         recipe_info = context.get("recipe", {})

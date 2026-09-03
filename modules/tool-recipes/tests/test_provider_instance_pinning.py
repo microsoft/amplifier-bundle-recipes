@@ -35,6 +35,32 @@ parent's priority ordering and resolved ``opus``.
 
 So the engine must hand ``session.spawn`` preferences naming provider instance
 ids that both matchers agree on -- or nothing at all.
+
+Second half: the ARGUMENT is not the only thing a spawn carries
+---------------------------------------------------------------
+
+Re-tested live on the fixed engine (child session
+``0000000000000000-a0a049acf77d43c7_foundation-zen-architect``), the pinned
+ARGUMENT worked -- ``session:fork`` shows ``opus`` at priority 0, where the
+first capture showed ``fable``. The child still ran on
+``gemini-3.1-flash-image-preview`` and still took the 400.
+
+Because a spawn also carries the agent's OVERLAY, and
+``foundation:zen-architect``'s definition file declares its own
+``provider_preferences`` in module names. The host merges that overlay into the
+child's session config (``session_spawner.spawn_sub_session`` ->
+``agent_config.merge_configs``; a list value simply overrides) and nothing
+downstream rewrites it -- ``apply_provider_preferences_with_resolution`` edits
+only the mount plan's ``providers``. So the child booted *declaring* the
+untranslated chain, and ``hooks-routing``'s ``role_pin._declared_pins``
+(``role_pin.py:266``) read that declaration back at ``session:start``,
+re-matched "gemini" against the mounted instance ids and undid the promotion:
+``session:config`` shows gemini 0, opus demoted 1.
+
+Hence the tests below simulate the child-side re-pin against what the engine
+hands to spawn as a WHOLE -- preferences argument *and* overlay -- not against
+the argument alone, which is the modelling error that let the first fix pass
+its tests and still fail in the field.
 """
 
 from __future__ import annotations
@@ -199,6 +225,178 @@ def child_role_pin_promotes(
 
 
 # ---------------------------------------------------------------------------
+# The whole child boot, mirrored: overlay -> child config -> re-pin
+# ---------------------------------------------------------------------------
+#
+# `child_role_pin_promotes` above answers "what would the re-assert do with
+# THESE preferences" -- but the re-assert never sees the spawn's preferences
+# argument. It reads the CHILD SESSION CONFIG's own `provider_preferences`
+# (`role_pin._declared_pins`, role_pin.py:251-289), which the host built by
+# merging the agent overlay over the parent's config. Simulating the argument
+# alone is what made the first fix look correct while the field run still went
+# to gemini, so the simulation below starts from the overlay.
+
+
+def child_config_preferences(
+    parent_config: dict[str, Any], overlay: Any
+) -> list[dict[str, Any]] | None:
+    """The ``provider_preferences`` the child session boots up declaring.
+
+    Mirrors the slice of ``amplifier_app_cli.agent_config.merge_configs`` that
+    decides this key: a list value in the overlay overrides the parent's, an
+    absent one inherits it. (Verified against the installed
+    ``merge_configs``; the child's ``session:fork`` record in the capture is
+    byte-identical to the agent file's own block.)
+    """
+    if isinstance(overlay, dict) and "provider_preferences" in overlay:
+        return overlay["provider_preferences"]
+    return parent_config.get("provider_preferences")
+
+
+def child_mount_plan(
+    providers: list[dict[str, Any]], preferences: Any
+) -> dict[str, dict[str, Any]]:
+    """The child's provider priorities after the SPAWN applied its argument.
+
+    Mirrors ``spawn_utils._apply_single_override`` (spawn_utils.py:756-812):
+    the matched instance goes to priority 0 with the preference's model, and
+    every other instance at or below 0 is demoted to 1.
+    """
+    plan = {
+        entry["id"]: {
+            "priority": entry["config"]["priority"],
+            "default_model": entry["config"]["default_model"],
+        }
+        for entry in providers
+    }
+    target = host_spawn_promotes(providers, preferences)
+    if target is None:
+        return plan
+    model = next(
+        (pref.model for pref in preferences if host_spawn_promotes(providers, [pref])),
+        "",
+    )
+    plan[target]["priority"] = 0
+    if model:
+        plan[target]["default_model"] = model
+    for name, state in plan.items():
+        if name != target and state["priority"] <= 0:
+            state["priority"] = 1
+    return plan
+
+
+def child_role_pin_reassert(
+    plan: dict[str, dict[str, Any]], declared: Any
+) -> dict[str, Any]:
+    """``role_pin.reassert_own_role_pin``, mirrored field for field.
+
+    Mirrors, in order: ``_declared_pins`` (session-level key; entries without a
+    provider name dropped), ``_name_variants``/``_match_mounted`` (mounted keys
+    are INSTANCE IDS; exact hit first, then variant intersection; an ambiguous
+    name aborts the whole re-assert rather than guessing),
+    ``_select_preference`` (the FIRST pin that matches a mounted key wins), and
+    the apply block (target -> priority 0; every other provider at or below 0
+    -> 1; a non-glob pinned model written to the target's ``default_model``).
+
+    Returns ``{"winner", "priorities", "reasserted", "target"}``.
+    """
+
+    def variants(name: str) -> set[str]:
+        short = name.replace("provider-", "")
+        return {name, short, f"provider-{short}"}
+
+    def winner_of(state: dict[str, dict[str, Any]]) -> str:
+        return min(state.items(), key=lambda kv: (kv[1]["priority"], kv[0]))[0]
+
+    pins: list[dict[str, Any]] = []
+    for entry in declared or ():
+        provider = (
+            entry.get("provider")
+            if isinstance(entry, dict)
+            else getattr(entry, "provider", None)
+        )
+        model = (
+            entry.get("model")
+            if isinstance(entry, dict)
+            else getattr(entry, "model", None)
+        )
+        if isinstance(provider, str) and provider:
+            pins.append({"provider": provider, "model": model or None})
+
+    result = {
+        "winner": winner_of(plan),
+        "priorities": {name: state["priority"] for name, state in plan.items()},
+        "models": {name: state["default_model"] for name, state in plan.items()},
+        "reasserted": False,
+        "target": None,
+    }
+    if not pins:
+        return result
+
+    target: str | None = None
+    pinned_model: str | None = None
+    for pin in pins:
+        if pin["provider"] in plan:
+            target, pinned_model = pin["provider"], pin["model"]
+            break
+        matches = [key for key in plan if variants(pin["provider"]) & variants(key)]
+        if len(matches) == 1:
+            target, pinned_model = matches[0], pin["model"]
+            break
+        if matches:
+            return result  # ambiguous: refused, ordering untouched
+    if target is None:
+        return result  # nothing mounted answers to this chain
+
+    drifted = winner_of(plan) != target
+    model_drifted = bool(
+        pinned_model
+        and not any(c in pinned_model for c in "*?[")
+        and plan[target]["default_model"] != pinned_model
+    )
+    if not (drifted or model_drifted):
+        result["target"] = target
+        return result
+
+    if drifted:
+        plan[target]["priority"] = 0
+        for name, state in plan.items():
+            if name != target and state["priority"] <= 0:
+                state["priority"] = 1
+    if model_drifted:
+        plan[target]["default_model"] = pinned_model
+
+    return {
+        "winner": winner_of(plan),
+        "priorities": {name: state["priority"] for name, state in plan.items()},
+        "models": {name: state["default_model"] for name, state in plan.items()},
+        "reasserted": True,
+        "target": target,
+    }
+
+
+def child_boot(
+    spawn_call: dict[str, Any],
+    agent: str,
+    *,
+    providers: list[dict[str, Any]] | None = None,
+    parent_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """What the child session resolves, from ONE recorded ``session.spawn`` call.
+
+    The whole hop the field defect lives in: the spawn's preferences argument
+    promotes an instance, the spawn's agent overlay becomes the child's own
+    declared chain, and the child's routing re-assert then runs on both.
+    """
+    providers = providers if providers is not None else HOST_PROVIDERS
+    preferences = spawn_call.get("provider_preferences")
+    overlay = (spawn_call.get("agent_configs") or {}).get(agent)
+    plan = child_mount_plan(providers, preferences)
+    declared = child_config_preferences(parent_config or {}, overlay)
+    return child_role_pin_reassert(plan, declared)
+
+
+# ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
 
@@ -264,6 +462,32 @@ model_role:
 You are the declared architect.
 """
 
+#: ``foundation:zen-architect`` as actually shipped: BOTH a ``model_role`` and
+#: its own module-named ``provider_preferences`` block. The second key is what
+#: the closed-world catalog carried into the child's session config verbatim,
+#: and what the child's routing re-assert then re-pinned itself from -- so a
+#: fixture with only ``model_role`` cannot reproduce the field defect.
+AGENT_FILE_AS_SHIPPED = (
+    """\
+---
+meta:
+  name: zen-architect
+  description: The reasoning-heavy architect the RECIPE declared
+model_role:
+  - reasoning
+  - general
+provider_preferences:
+"""
+    + "".join(
+        f"  - provider: {provider}\n    model: {model!r}\n"
+        for provider, model in MATRIX_REASONING_GENERAL
+    )
+    + """\
+---
+You are the declared architect.
+"""
+)
+
 V2_RECIPE = """\
 schema_version: 2
 name: architect-recipe
@@ -288,11 +512,11 @@ async def _resolved(plan: Any) -> Any:
     return plan
 
 
-def write_agent(tmp_path: Path) -> Path:
+def write_agent(tmp_path: Path, content: str = AGENT_FILE) -> Path:
     agents_dir = tmp_path / "supplier" / "agents"
-    agents_dir.mkdir(parents=True)
+    agents_dir.mkdir(parents=True, exist_ok=True)
     path = agents_dir / "zen-architect.md"
-    path.write_text(AGENT_FILE, encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
     return path
 
 
@@ -333,6 +557,46 @@ class TestTheDefectPremise:
         # In the child, "anthropic"/"openai" match no mounted instance at all;
         # "gemini" matches literally, because an instance is named that.
         assert child_role_pin_promotes(HOST_PROVIDERS, raw) == "gemini"
+
+    def test_a_pinned_argument_with_an_untranslated_overlay_still_goes_to_gemini(
+        self,
+    ):
+        """The re-test capture, reproduced: right argument, wrong overlay.
+
+        This is the shape the engine emitted after the argument-only fix --
+        preferences pinned to ``opus``, overlay still carrying the agent
+        file's own module-named chain. The child promoted ``opus`` at fork and
+        then re-pinned itself onto ``gemini`` at ``session:start``, exactly as
+        session ``...a0a049acf77d43c7`` recorded.
+        """
+        pre_fix_call = {
+            "provider_preferences": [
+                ProviderPreference(provider="opus", model="claude-opus-5")
+            ],
+            "agent_configs": {
+                "foundation:zen-architect": {
+                    "model_role": ["reasoning", "general"],
+                    "provider_preferences": [
+                        {"provider": provider, "model": model}
+                        for provider, model in MATRIX_REASONING_GENERAL
+                    ],
+                }
+            },
+        }
+
+        # The spawn argument really did promote opus...
+        plan = child_mount_plan(
+            HOST_PROVIDERS, pre_fix_call["provider_preferences"]
+        )
+        assert min(plan, key=lambda name: plan[name]["priority"]) == "opus"
+
+        # ...and the child's own declaration took it straight back.
+        child = child_boot(pre_fix_call, "foundation:zen-architect")
+        assert child["reasserted"] is True
+        assert child["winner"] == "gemini"
+        assert child["priorities"]["gemini"] == 0
+        assert child["priorities"]["opus"] == 1
+        assert child["models"]["gemini"] == "gemini-3.1-flash-image-preview"
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +789,200 @@ class TestInstancePinning:
 
 
 # ---------------------------------------------------------------------------
+# The overlay half: what the child boots up DECLARING
+# ---------------------------------------------------------------------------
+
+
+SHIPPED_AGENT_OVERLAY: dict[str, Any] = {
+    "description": "the reasoning-heavy architect",
+    "model_role": ["reasoning", "general"],
+    "provider_preferences": [
+        {"provider": provider, "model": model}
+        for provider, model in MATRIX_REASONING_GENERAL
+    ],
+}
+
+
+class TestOverlaySurvivesTheChildsRePin:
+    """The spawn's overlay declares the same instances its argument promotes."""
+
+    @pytest.mark.asyncio
+    async def test_the_overlay_declares_the_pinned_chain(
+        self, mock_session_manager, temp_dir
+    ):
+        spawn = FakeSpawn()
+        coordinator = HostCoordinator(
+            spawn,
+            agents={"foundation:zen-architect": dict(SHIPPED_AGENT_OVERLAY)},
+            providers=HOST_PROVIDERS,
+        )
+
+        executor = RecipeExecutor(coordinator, mock_session_manager)
+        await executor.execute_recipe(one_step_recipe(), {}, temp_dir)
+
+        call = spawn.calls[0]
+        overlay = call["agent_configs"]["foundation:zen-architect"]
+        mounted = {entry["id"] for entry in HOST_PROVIDERS}
+
+        assert overlay["provider_preferences"][0] == {
+            "provider": "opus",
+            "model": "claude-opus-5",
+        }
+        assert {p["provider"] for p in overlay["provider_preferences"]} <= mounted, (
+            "the overlay still names provider modules; that is the declaration "
+            "the child re-pins itself from"
+        )
+        # Argument and overlay say the same thing, in the same order.
+        assert [p["provider"] for p in overlay["provider_preferences"]] == [
+            pref.provider for pref in call["provider_preferences"]
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_child_re_pin_finds_nothing_to_correct(
+        self, mock_session_manager, temp_dir
+    ):
+        """The whole point: opus survives ``session:start``, gemini is untouched."""
+        spawn = FakeSpawn()
+        coordinator = HostCoordinator(
+            spawn,
+            agents={"foundation:zen-architect": dict(SHIPPED_AGENT_OVERLAY)},
+            providers=HOST_PROVIDERS,
+        )
+
+        executor = RecipeExecutor(coordinator, mock_session_manager)
+        await executor.execute_recipe(one_step_recipe(), {}, temp_dir)
+
+        child = child_boot(spawn.calls[0], "foundation:zen-architect")
+        assert child["winner"] == "opus"
+        assert child["reasserted"] is False, (
+            "a re-assert here means the child disagreed with the spawn again"
+        )
+        assert child["models"]["opus"] == "claude-opus-5"
+        assert child["priorities"]["opus"] == 0
+        assert child["priorities"]["gemini"] == 7, (
+            "gemini must be left exactly where the host declared it"
+        )
+
+    @pytest.mark.asyncio
+    async def test_model_role_is_still_forwarded_and_is_inert(
+        self, mock_session_manager, temp_dir
+    ):
+        """``model_role`` rides along; it is the pinned chain that decides.
+
+        Determined against the installed host rather than assumed:
+        ``role_pin._declared_pins`` reads ``config["provider_preferences"]``
+        only (role_pin.py:266); the routing hook resolves ``model_role``
+        exclusively for entries under ``config["agents"]``
+        (hooks-routing ``__init__.py`` ``_resolve_one``, i.e. children this
+        session may spawn); and ``session_spawner`` never re-derives
+        preferences from it -- ``model_role`` reaches it only as an explicit
+        resume argument. So forwarding it costs nothing and keeps the pin's
+        provenance in the child's own config.
+        """
+        spawn = FakeSpawn()
+        coordinator = HostCoordinator(
+            spawn,
+            agents={"foundation:zen-architect": dict(SHIPPED_AGENT_OVERLAY)},
+            providers=HOST_PROVIDERS,
+        )
+
+        executor = RecipeExecutor(coordinator, mock_session_manager)
+        await executor.execute_recipe(one_step_recipe(), {}, temp_dir)
+
+        overlay = spawn.calls[0]["agent_configs"]["foundation:zen-architect"]
+        assert overlay["model_role"] == ["reasoning", "general"]
+        assert child_boot(spawn.calls[0], "foundation:zen-architect")["winner"] == "opus"
+
+    @pytest.mark.asyncio
+    async def test_an_unservable_chain_leaves_no_declaration_behind(
+        self, mock_session_manager, temp_dir
+    ):
+        """Nothing pinnable -> the overlay's chain goes too, not just the argument.
+
+        Otherwise "inherit the parent's ordering" (what the argument now says)
+        and "re-pin yourself onto whatever spelling collides" (what the stale
+        overlay would say) are the same spawn.
+        """
+        spawn = FakeSpawn()
+        coordinator = HostCoordinator(
+            spawn,
+            agents={
+                "foundation:zen-architect": {
+                    "model_role": ["reasoning"],
+                    "provider_preferences": [
+                        {"provider": "ollama", "model": "llama-*"},
+                        {"provider": "gemini", "model": "gemini-*-pro"},
+                    ],
+                }
+            },
+            providers=[
+                entry for entry in HOST_PROVIDERS if entry["id"] != "gemini"
+            ],
+        )
+
+        executor = RecipeExecutor(coordinator, mock_session_manager)
+        await executor.execute_recipe(one_step_recipe(), {}, temp_dir)
+
+        call = spawn.calls[0]
+        overlay = call["agent_configs"]["foundation:zen-architect"]
+        assert call["provider_preferences"] is None
+        assert "provider_preferences" not in overlay
+        assert overlay["model_role"] == ["reasoning"]
+
+        providers = [entry for entry in HOST_PROVIDERS if entry["id"] != "gemini"]
+        child = child_boot(call, "foundation:zen-architect", providers=providers)
+        assert child["reasserted"] is False
+        # Parent ordering, exactly as a `delegate` of the same agent gets.
+        assert child["winner"] == "opus"
+
+    @pytest.mark.asyncio
+    async def test_the_callers_agent_map_is_never_edited(
+        self, mock_session_manager, temp_dir
+    ):
+        """Alignment copies. A spawn must not rewrite the caller's live map.
+
+        The host's agent map is shared by every session in the process; editing
+        an entry here would pin some later, unrelated delegate to this step's
+        provider.
+        """
+        spawn = FakeSpawn()
+        host_map = {"foundation:zen-architect": dict(SHIPPED_AGENT_OVERLAY)}
+        coordinator = HostCoordinator(
+            spawn, agents=host_map, providers=HOST_PROVIDERS
+        )
+
+        executor = RecipeExecutor(coordinator, mock_session_manager)
+        await executor.execute_recipe(one_step_recipe(), {}, temp_dir)
+
+        assert host_map["foundation:zen-architect"]["provider_preferences"] == [
+            {"provider": provider, "model": model}
+            for provider, model in MATRIX_REASONING_GENERAL
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_recipe_with_no_provider_intent_hands_the_map_through(
+        self, mock_session_manager, temp_dir
+    ):
+        """No preferences anywhere -> the caller's own object, untouched.
+
+        The legacy identity path: nothing to align means nothing copied and
+        nothing rewritten, so a legacy recipe's spawn is byte-identical.
+        """
+        spawn = FakeSpawn()
+        coordinator = HostCoordinator(
+            spawn,
+            agents={"plain-agent": {"description": "no provider intent at all"}},
+            providers=HOST_PROVIDERS,
+        )
+
+        executor = RecipeExecutor(coordinator, mock_session_manager)
+        await executor.execute_recipe(one_step_recipe("plain-agent"), {}, temp_dir)
+
+        assert spawn.calls[0]["provider_preferences"] is None
+        assert spawn.calls[0]["agent_configs"] is coordinator.config["agents"]
+
+
+# ---------------------------------------------------------------------------
 # End to end, on the v2 path the field defect actually took
 # ---------------------------------------------------------------------------
 
@@ -571,3 +1029,96 @@ class TestV2InSessionRun:
         assert host_spawn_promotes(HOST_PROVIDERS, prefs) == "opus"
         assert child_role_pin_promotes(HOST_PROVIDERS, prefs) == "opus"
         assert "fable" not in {pref.provider for pref in prefs}
+
+    @pytest.mark.asyncio
+    async def test_a_v2_spawn_survives_the_childs_own_re_pin(self, tmp_path: Path):
+        """The whole spawn -- argument AND overlay -- lands on ``opus``.
+
+        The re-test that motivated this: the argument alone was already right
+        and the run still went to gemini, because the catalog handed the child
+        the agent file's own module-named chain to re-pin itself from.
+        """
+        from amplifier_recipe_runner.api import RunStatus
+
+        spawn = FakeSpawn()
+        coordinator = HostCoordinator(
+            spawn,
+            agents={"supplier:zen-architect": {"description": "the CALLER's impostor"}},
+            providers=HOST_PROVIDERS,
+            resolver=AnthropicMatrixResolver(),
+        )
+        sessions = FakeSessionManager(tmp_path)
+        plan = make_plan(
+            write_agent(tmp_path, AGENT_FILE_AS_SHIPPED),
+            reference="supplier:zen-architect",
+        )
+        recipe = tmp_path / "architect.yaml"
+        recipe.write_text(V2_RECIPE, encoding="utf-8")
+
+        result = await ra.run_v2_recipe_in_session(
+            coordinator,
+            sessions,
+            recipe,
+            {},
+            tmp_path,
+            plan=lambda request: _resolved(plan),
+        )
+
+        assert result.status is RunStatus.SUCCEEDED, result.error
+        call = spawn.calls[0]
+        overlay = call["agent_configs"]["supplier:zen-architect"]
+
+        # The overlay declares instance ids, not the module names the agent
+        # file was written with.
+        mounted = {entry["id"] for entry in HOST_PROVIDERS}
+        assert [p["provider"] for p in overlay["provider_preferences"]] == [
+            pref.provider for pref in call["provider_preferences"]
+        ]
+        assert {p["provider"] for p in overlay["provider_preferences"]} <= mounted
+
+        # ...so the child's own re-assert has nothing to correct.
+        child = child_boot(call, "supplier:zen-architect")
+        assert child["winner"] == "opus"
+        assert child["reasserted"] is False
+        assert child["models"]["opus"] == "claude-opus-5"
+        assert child["priorities"]["gemini"] == 7
+
+    @pytest.mark.asyncio
+    async def test_the_wrapper_aligns_what_it_sends_and_keeps_its_own_record(
+        self, tmp_path: Path
+    ):
+        """``ClosedWorldSpawn`` is the last hop that decides a v2 overlay.
+
+        It discards the engine's map by design (manifest Core 5), so the
+        alignment has to happen on the catalog copy it substitutes -- and it
+        must not edit the catalog itself, which is this run's record of what
+        each agent's definition file actually says.
+        """
+        from amplifier_module_tool_recipes.closed_world import ClosedWorldSpawn
+        from amplifier_module_tool_recipes.closed_world import build_catalog
+
+        catalog = build_catalog(
+            make_plan(
+                write_agent(tmp_path, AGENT_FILE_AS_SHIPPED),
+                reference="supplier:zen-architect",
+            )
+        )
+        spawn = FakeSpawn()
+        wrapper = ClosedWorldSpawn(spawn, catalog)
+        pinned = [ProviderPreference(provider="opus", model="claude-opus-5")]
+
+        await wrapper(
+            agent_name="supplier:zen-architect",
+            instruction="Review it",
+            provider_preferences=pinned,
+        )
+
+        sent = spawn.calls[0]["agent_configs"]["supplier:zen-architect"]
+        assert sent["provider_preferences"] == [
+            {"provider": "opus", "model": "claude-opus-5"}
+        ]
+        # ...and the catalog still reports the file as written.
+        kept = catalog.agent_configs()["supplier:zen-architect"]
+        assert [p["provider"] for p in kept["provider_preferences"]] == [
+            provider for provider, _ in MATRIX_REASONING_GENERAL
+        ]

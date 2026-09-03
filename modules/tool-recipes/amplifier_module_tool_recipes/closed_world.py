@@ -385,11 +385,28 @@ class ClosedWorldSpawn:
             self._ignored_host_agents.extend(str(name) for name in agent_configs)
             self._ignored_arguments.append("agent_configs")
 
+        # The catalog carries each agent's definition file verbatim -- including
+        # a `provider_preferences` block written in provider MODULE names, which
+        # the host merges into the child's session config and the child's own
+        # routing re-assert then re-pins priority from (hooks-routing
+        # `role_pin._declared_pins`). This wrapper is the last hop that decides
+        # the outgoing overlay in a v2 run -- the engine's own aligned map is
+        # discarded above, by design -- so the alignment is applied here too,
+        # against the preference chain this very spawn is promoting. See
+        # `executor.align_overlay_preferences` for the measured defect.
+        from .executor import align_overlay_preferences  # noqa: PLC0415 -- lazy by design
+
+        outgoing_agents = align_overlay_preferences(
+            self._catalog.agent_configs(),
+            agent_name,
+            host_arguments.get("provider_preferences"),
+        )
+
         return await self._host_spawn(
             agent_name=agent_name,
             instruction=instruction,
             parent_session=parent_session,
-            agent_configs=self._catalog.agent_configs(),
+            agent_configs=outgoing_agents,
             **host_arguments,
         )
 
