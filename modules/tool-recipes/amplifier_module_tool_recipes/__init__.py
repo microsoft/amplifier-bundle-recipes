@@ -1051,7 +1051,11 @@ Example:
         * some steps completed -- skipping them needs the library's ``resume``
           entry point (:func:`runner_adapter.library_resume`); without it the
           resume is refused, naming the missing seam;
-        * the run recorded nothing usable -- refused, because assuming "no
+        * *we* recorded nothing, but the step engine checkpointed its own
+          progress into this session -- what completed is then not unknown at
+          all, and it continues on that checkpoint
+          (:meth:`_record_from_engine_checkpoint`);
+        * nothing anywhere recorded what ran -- refused, because assuming "no
           step ran" would re-run steps that did.
         """
         try:
@@ -1067,6 +1071,10 @@ Example:
 
         schema_version = declared_schema_version(recipe_file)
         record = state.get(V2_RUN_STATE_KEY)
+        if not isinstance(record, dict):
+            # Our own record is missing -- but the step engine keeps its own,
+            # and where it left one, what completed is not unknown at all.
+            record = self._record_from_engine_checkpoint(session_id, state)
         if not isinstance(record, dict):
             return label_execution_mode(
                 ToolResult(
@@ -1208,6 +1216,69 @@ Example:
             ),
             V2_EXECUTION_MODE,
         )
+
+    @staticmethod
+    def _record_from_engine_checkpoint(
+        session_id: str, state: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Read the step engine's own checkpoint as a run record, or nothing.
+
+        ``resume`` refuses a v2 session that recorded no run outcome, because
+        assuming "no step ran" would re-run steps that did. That refusal is
+        right whenever what completed really is unknown -- and wrong when it
+        is written down in this very session: the engine checkpoints the
+        stage/step it reached and the steps it finished as it goes, which is
+        the same source :func:`runner_adapter._engine_completed_steps` reads on
+        the ordinary path.
+
+        A v2 run whose gate paused it therefore stayed unresumable only for
+        want of *our* bookkeeping -- while the engine's own bookkeeping, in the
+        session the caller was pointing at, said exactly which stage completed
+        (recipes-zyp / recipes-o4k facet a). This reads that back rather than
+        sending the caller away to start the run over.
+
+        Only a *positive* sign of progress counts. Every session is created
+        with ``current_step_index: 0`` and ``completed_steps: []``, so their
+        mere presence proves nothing; a stage index (staged runs), a non-empty
+        completed-step list, or a non-zero step index is the engine having
+        actually been here. Anything else returns ``None`` and the refusal
+        stands -- narrowed, not removed.
+
+        The record names this session as its own engine session, because that
+        is what it is: the checkpoint being read is the one the engine wrote.
+        """
+        completed = state.get("completed_steps")
+        completed = list(completed) if isinstance(completed, list) else None
+        stage_index = state.get("current_stage_index")
+        step_index = state.get("current_step_index")
+
+        progressed = (
+            bool(completed)
+            or isinstance(stage_index, int)
+            or (isinstance(step_index, int) and step_index > 0)
+        )
+        if not progressed:
+            return None
+
+        logger.info(
+            "Session %s carries no run record, but the step engine checkpointed "
+            "%d completed step(s) here; resuming on that checkpoint.",
+            session_id,
+            len(completed or []),
+        )
+        return {
+            "execution_mode": V2_LEGACY_ENGINE_EXECUTION_MODE,
+            "recipe_path": state.get("recipe_path"),
+            "run_id": None,
+            "status": "paused" if state.get("pending_approval_stage") else "interrupted",
+            "completed_steps": completed or [],
+            "step_ids": None,
+            "session_id": session_id,
+            "engine_session_id": session_id,
+            # Named, not hidden: this record was reconstructed from the
+            # engine's checkpoint, not written by a run that reported back.
+            "recovered_from_engine_checkpoint": True,
+        }
 
     async def _resume_v2_on_legacy_engine(
         self,

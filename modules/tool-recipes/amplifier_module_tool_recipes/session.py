@@ -393,7 +393,22 @@ class SessionManager:
         self.save_state(session_id, project_path, state)
 
     def list_pending_approvals(self, project_path: Path) -> list[dict[str, Any]]:
-        """List all sessions with pending approvals.
+        """List the gates still *waiting* on a decision.
+
+        A gate record deliberately outlives its own approval: the executor
+        consumes it on the next ``resume``, which is where the approval
+        message is injected into the recipe context and where a pending child
+        gate is released. ``approve`` therefore leaves the record in place --
+        but that made the listing keep reporting an already-approved stage as
+        pending, so a caller who followed the documented "approve ... then
+        resume" workflow saw their own approval apparently not take
+        (recipes-o4k facet b).
+
+        So a gate is listed by its recorded *status*, not by the mere presence
+        of its record. Only a positively decided status is dropped; a gate
+        whose status is pending -- or, in state written by an older build,
+        unrecorded -- is still listed, because hiding a gate nobody has
+        decided would strand the run with no visible way to release it.
 
         Args:
             project_path: Project directory
@@ -402,13 +417,20 @@ class SessionManager:
             List of pending approval info dicts
         """
         sessions = self.list_sessions(project_path)
+        decided = {ApprovalStatus.APPROVED, ApprovalStatus.DENIED, ApprovalStatus.TIMEOUT}
         pending = []
 
         for session_info in sessions:
             session_id = session_info["session_id"]
             approval_info = self.get_pending_approval(session_id, project_path)
-            if approval_info:
-                pending.append(approval_info)
+            if not approval_info:
+                continue
+            status = self.get_stage_approval_status(
+                session_id, project_path, approval_info["stage_name"]
+            )
+            if status in decided:
+                continue
+            pending.append(approval_info)
 
         return pending
 
