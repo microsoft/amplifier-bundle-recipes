@@ -431,10 +431,16 @@ class TestCostAttributionMetadata:
         assert metadata["model_role"] == "fast"
 
     @pytest.mark.asyncio
-    async def test_model_role_absent_when_no_role(
+    async def test_model_role_is_none_when_no_role(
         self, mock_coordinator, mock_session_manager, temp_dir
     ):
-        """Steps with no model_role produce session_metadata without the key."""
+        """No role anywhere still emits the key, set to None.
+
+        The key is unconditional (like ``recipe_path``): a grouping key that
+        is sometimes absent forces every telemetry consumer to distinguish
+        "this step used no role" from "this executor predates the field", and
+        those are different facts.
+        """
         mock_spawn = mock_coordinator.get_capability.return_value
         mock_spawn.return_value = "result"
 
@@ -450,7 +456,8 @@ class TestCostAttributionMetadata:
         await executor.execute_recipe(recipe, {}, temp_dir)
 
         metadata = mock_spawn.call_args.kwargs["session_metadata"]
-        assert "model_role" not in metadata
+        assert "model_role" in metadata
+        assert metadata["model_role"] is None
 
     @pytest.mark.asyncio
     async def test_model_role_recorded_when_agent_role_resolves(
@@ -627,3 +634,102 @@ class TestCostAttributionMetadata:
 
         metadata = mock_spawn.call_args.kwargs["session_metadata"]
         assert metadata["recipe_path"] == str(Path("recipes/staged.yaml").resolve())
+
+    @pytest.mark.asyncio
+    async def test_model_role_withdrawn_when_pinning_drops_the_chain(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """A role whose whole chain fails to pin is NOT attributed.
+
+        `pin_preferences_to_instances` (PR #86-#88) runs after role
+        resolution and returns None when no preference names a provider
+        instance this session mounted. The spawn then goes out with
+        `provider_preferences=None` -- the PARENT's ordering -- so the role
+        selected nothing. Recording it anyway would attribute the child's
+        cost to a role that never applied.
+        """
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+        mock_coordinator.config = {
+            "agents": {
+                "worker": {
+                    "model_role": "reasoning",
+                    # Names a provider module this host has NOT mounted.
+                    "provider_preferences": [
+                        {"provider": "anthropic", "model": "claude-opus-5"}
+                    ],
+                }
+            },
+            # The only mounted instance is an unrelated module, so the
+            # preference above is dropped and nothing survives pinning.
+            "providers": [
+                {
+                    "id": "sol",
+                    "instance_id": "sol",
+                    "module": "provider-openai",
+                    "config": {"priority": 1, "default_model": "gpt-5"},
+                }
+            ],
+        }
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="unpinnable-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="step", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+
+        await executor.execute_recipe(recipe, {}, temp_dir)
+
+        # The chain really was dropped -- otherwise this test proves nothing.
+        assert mock_spawn.call_args.kwargs["provider_preferences"] is None
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert metadata["model_role"] is None
+
+    @pytest.mark.asyncio
+    async def test_model_role_survives_pinning_when_the_chain_pins(
+        self, mock_coordinator, mock_session_manager, temp_dir
+    ):
+        """The companion case: a chain that DOES pin keeps its attribution.
+
+        Guards the withdrawal above from over-reaching -- pinning rewrites
+        the chain to instance ids, which must not look like a dropped chain.
+        """
+        mock_spawn = mock_coordinator.get_capability.return_value
+        mock_spawn.return_value = "result"
+        mock_coordinator.config = {
+            "agents": {
+                "worker": {
+                    "model_role": "reasoning",
+                    "provider_preferences": [
+                        {"provider": "anthropic", "model": "claude-opus-5"}
+                    ],
+                }
+            },
+            "providers": [
+                {
+                    "id": "opus",
+                    "instance_id": "opus",
+                    "module": "provider-anthropic",
+                    "config": {"priority": 1, "default_model": "claude-opus-5"},
+                }
+            ],
+        }
+
+        executor = RecipeExecutor(mock_coordinator, mock_session_manager)
+        recipe = Recipe(
+            name="pinnable-recipe",
+            description="test",
+            version="1.0.0",
+            steps=[Step(id="step", agent="worker", prompt="Go", output="r")],
+            context={},
+        )
+
+        await executor.execute_recipe(recipe, {}, temp_dir)
+
+        prefs = mock_spawn.call_args.kwargs["provider_preferences"]
+        assert prefs is not None and prefs[0].provider == "opus"
+        metadata = mock_spawn.call_args.kwargs["session_metadata"]
+        assert metadata["model_role"] == "reasoning"

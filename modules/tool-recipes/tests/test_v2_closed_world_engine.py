@@ -288,6 +288,37 @@ class TestCatalog:
         # The caller's session still supplies providers: parent_session rides through.
         assert spawn.calls[0]["parent_session"] is coordinator.session
 
+    @pytest.mark.asyncio
+    async def test_cost_attribution_metadata_rides_through_untouched(
+        self, tmp_path: Path
+    ):
+        """`session_metadata` reaches the host byte-for-byte as the engine built it.
+
+        The wrapper READS `session_metadata` (for `recipe_step`, to name the
+        step in an `UndeclaredAgentError`) and rebuilds the outgoing
+        `agent_configs`. Nothing it does may edit the metadata itself, or the
+        v2 path would attribute cost differently from the legacy path for the
+        same recipe.
+        """
+        spawn = FakeSpawn()
+        catalog = cw.build_catalog(make_plan(write_agent(tmp_path)))
+        wrapper = cw.ClosedWorldSpawn(spawn, catalog)
+
+        metadata = {
+            "agent_name": "supplier:reviewer",
+            "recipe_name": "mixed-step-recipe",
+            "recipe_path": "/recipes/mixed.yaml",
+            "recipe_step": "review",
+            "recipe_step_index": 1,
+            "model_role": "reasoning",
+        }
+
+        await wrapper(
+            "supplier:reviewer", "review it", session_metadata=dict(metadata)
+        )
+
+        assert spawn.calls[0]["session_metadata"] == metadata
+
 
 # ---------------------------------------------------------------------------
 # End-to-end, on the real step engine
@@ -326,6 +357,39 @@ class TestInSessionExecution:
         assert spawn.calls[0]["agent_configs"]["supplier:reviewer"]["description"] == (
             "The reviewer the RECIPE declared"
         )
+
+    @pytest.mark.asyncio
+    async def test_v2_spawn_carries_recipe_path_and_model_role(self, tmp_path: Path):
+        """The closed-world path attributes cost exactly as the legacy path does.
+
+        Both paths run the same step engine, so this is a regression guard on
+        the seam between them: `run_v2_recipe_in_session` must hand the
+        engine the recipe file it resolved (or the v2 path would record a
+        null `recipe_path` for every run), and `ClosedWorldSpawn` must let
+        the metadata through.
+        """
+        from amplifier_recipe_runner.api import RunStatus
+
+        spawn = FakeSpawn()
+        plan = make_plan(write_agent(tmp_path))
+        recipe = write_recipe(tmp_path)
+
+        result = await ra.run_v2_recipe_in_session(
+            FakeCoordinator(spawn),
+            FakeSessionManager(tmp_path),
+            recipe,
+            {},
+            tmp_path,
+            plan=lambda request: _resolved(plan),
+        )
+
+        assert result.status is RunStatus.SUCCEEDED, result.error
+        metadata = spawn.calls[0]["session_metadata"]
+        assert metadata["recipe_path"] == str(recipe.resolve())
+        assert metadata["recipe_name"] == "mixed-step-recipe"
+        # No role anywhere in this recipe -- present and None, never absent.
+        assert "model_role" in metadata
+        assert metadata["model_role"] is None
 
     @pytest.mark.asyncio
     async def test_a_step_naming_a_caller_only_agent_fails_the_run(self, tmp_path: Path):

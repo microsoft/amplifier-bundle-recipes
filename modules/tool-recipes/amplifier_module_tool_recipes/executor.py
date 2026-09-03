@@ -2464,6 +2464,14 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             host_config.get("providers") if isinstance(host_config, dict) else None,
         )
 
+        # Pinning can drop the entire chain (`pin_preferences_to_instances`
+        # returns None when nothing survives), in which case the spawn goes out
+        # with the PARENT's provider ordering and the role selected nothing.
+        # Attributing a role to that call would be a telemetry lie, so the
+        # attribution is withdrawn with the chain it described.
+        if provider_preferences is None:
+            used_model_role = None
+
         # ...and the overlay this spawn carries declares that same chain, so
         # the child's own routing re-assert reads instance ids rather than the
         # module names its definition file was written with (see
@@ -2480,9 +2488,13 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             "recipe_path": recipe_info.get("path"),
             "recipe_step": step.id,
             "recipe_step_index": step_info.get("index"),
+            # Always present, None when no role drove provider selection: a
+            # telemetry grouping key that is sometimes absent forces every
+            # consumer to distinguish "no role" from "old executor", and the
+            # two are not the same fact. `recipe_path` above is unconditional
+            # for the same reason.
+            "model_role": used_model_role,
         }
-        if used_model_role:
-            session_metadata["model_role"] = used_model_role
         # Include parallel_group_id if this spawn is part of a parallel batch
         parallel_group_id = context.get("_parallel_group_id")
         if parallel_group_id:
