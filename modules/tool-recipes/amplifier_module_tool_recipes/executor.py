@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime
+import fnmatch
 import gc
 import json
 import logging
@@ -10,6 +11,7 @@ import re
 import shutil
 import sys
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -440,6 +442,420 @@ def _warn_depends_on_unenforced(recipe: "Recipe") -> None:
         recipe.name,
         dep_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Provider-instance pinning for resolved model roles
+# ---------------------------------------------------------------------------
+#
+# A routing matrix declares its candidates by provider MODULE ("anthropic",
+# "openai", ...), because a matrix cannot know what any given host named its
+# instances.  A host, however, mounts provider *instances* -- `opus`, `sonnet`,
+# `haiku`, `fable` may all be `provider-anthropic` -- and the two consumers of
+# a spawn's `provider_preferences` disagree about what a bare module name means:
+#
+#   * `amplifier_foundation.spawn_utils._build_provider_lookup` (spawn_utils.py
+#     :649-674) indexes module ids, short names and instance ids into one flat
+#     dict by enumeration, so a module name resolves to the LAST declared
+#     instance of that module -- an arbitrary pick, and the reason a
+#     `reasoning` role landed on `fable` in the field.
+#   * the child session's own routing re-assert (hooks-routing `role_pin`)
+#     matches preferences against the MOUNTED providers, which are keyed by
+#     instance id only.  There, "anthropic" matches nothing at all -- while a
+#     module name that happens to equal an instance id ("gemini") matches
+#     literally, promoting an unrelated provider to priority 0.
+#
+# So the engine resolves the ambiguity here, once, before spawning: every
+# preference is rewritten to name the instance this session would actually
+# resolve for it.  A preference no installed instance can serve is dropped
+# rather than emitted as a name something else might answer to, and a chain
+# that ends up empty becomes `None` -- inherit the parent, exactly as a
+# `delegate` of the same agent does.
+#
+# "Name the instance" is only worth anything if BOTH matchers read that name as
+# the same instance, and an instance id is not the only thing a host mounts a
+# provider under.  An entry with no `id` is the module's DEFAULT instance and
+# mounts under the module's short name (`amplifier_core/_session_init.py`
+# :154-214) -- at most one per module, but perfectly legal alongside id'd ones.
+# Its mount name is exactly the name the spawner's flat lookup resolves to the
+# LAST declared instance of that module, so a chain naming it splits the two
+# matchers all over again: measured against the installed host with this
+# machine's own id-less 14th provider entry moved into `provider-openai`, the
+# spawn promoted `sol-max` while the child re-pinned to the id-less instance
+# mounted as `openai`.  `_nameable_candidates` below therefore keeps only the
+# instances whose mount name the spawner resolves back to that very entry.  It
+# is a no-op wherever every instance carries an id (this host's other 13) and
+# wherever a module has just one entry (every single-instance host), and it is
+# what stops the pin from quietly becoming the defect it exists to fix.
+
+
+def _provider_name_variants(name: str) -> set[str]:
+    """Every spelling the host's provider lookup indexes a module under.
+
+    Mirrors ``spawn_utils._build_provider_lookup``: the module id, that id with
+    a leading ``provider-`` stripped, and it with ``provider-`` prepended.
+    """
+    short = name.replace("provider-", "")
+    return {name, short, f"provider-{short}"}
+
+
+def _provider_instance_id(entry: dict[str, Any]) -> str:
+    """The instance id a mounted provider entry answers to, or ``""``."""
+    for key in ("instance_id", "id"):
+        value = entry.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _provider_mount_key(entry: dict[str, Any]) -> str:
+    """The name the KERNEL mounts this entry under; empty if it has none.
+
+    Mirrors ``amplifier_core._session_init`` (``_session_init.py:154-214``): an
+    entry carrying an instance id is remapped onto it, and an entry without one
+    is its module's default instance, keeping the module id with a leading
+    ``provider-`` stripped.  That default name is the key the child's routing
+    re-assert matches against, so it -- not the empty string the old code read
+    such an entry as -- is what the entry is actually called.
+    """
+    instance_id = _provider_instance_id(entry)
+    if instance_id:
+        return instance_id
+    module = str(entry.get("module", "") or "")
+    return module.removeprefix("provider-")
+
+
+def _spawn_provider_lookup(entries: list[dict[str, Any]]) -> dict[str, int]:
+    """The spawner's own name -> entry index map.
+
+    Mirrors ``spawn_utils._build_provider_lookup`` (spawn_utils.py:648-673)
+    field for field, INCLUDING that it reads ``id`` (never ``instance_id``) and
+    that it is built by enumeration, so a name several entries answer to keeps
+    the LAST of them.
+    """
+    lookup: dict[str, int] = {}
+    for index, entry in enumerate(entries):
+        module = str(entry.get("module", "") or "")
+        lookup[module] = index
+        short = module.replace("provider-", "")
+        if short != module:
+            lookup[short] = index
+        lookup[f"provider-{short}"] = index
+        instance_id = entry.get("id")
+        if isinstance(instance_id, str) and instance_id:
+            lookup[instance_id] = index
+    return lookup
+
+
+def _nameable_candidates(
+    candidates: list[tuple[int, dict[str, Any]]], lookup: dict[str, int]
+) -> list[tuple[int, dict[str, Any]]]:
+    """The candidates both consumers read as the same instance.
+
+    An entry is nameable when the name the kernel mounts it under is a name the
+    spawner's lookup resolves back to that same entry.  An entry that is not
+    cannot be pinned at all: whatever name the engine wrote, the spawn would
+    promote one provider and the child's re-assert would promote another --
+    which is the defect this module exists to close, not a smaller version of
+    it.
+    """
+    return [
+        (index, entry)
+        for index, entry in candidates
+        if _provider_mount_key(entry)
+        and lookup.get(_provider_mount_key(entry)) == index
+    ]
+
+
+def _provider_entry_config(entry: dict[str, Any]) -> dict[str, Any]:
+    config = entry.get("config")
+    return config if isinstance(config, dict) else {}
+
+
+def _provider_priority(entry: dict[str, Any]) -> float:
+    """A provider's declared priority; unranked sorts last. Lower wins."""
+    priority = _provider_entry_config(entry).get("priority")
+    if isinstance(priority, bool) or not isinstance(priority, (int, float)):
+        return float("inf")
+    return float(priority)
+
+
+def _pin_preference_to_instance(
+    pref: Any,
+    entries: list[dict[str, Any]],
+    instance_ids: set[str],
+    lookup: dict[str, int],
+) -> Any | None:
+    """One preference, rewritten to name a provider instance. ``None`` = drop.
+
+    Selection, in order:
+
+    1. A preference already naming a mounted instance id is returned untouched
+       -- an explicit pin is the caller's decision, not ours to re-pick.
+    2. Only instances the two consumers read the same way are candidates at all
+       (``_nameable_candidates``); an instance neither name can single out is
+       skipped in favour of the next one, because pinning to it would recreate
+       the spawn/child split this function exists to remove.
+    3. Instances of the named module whose configured ``default_model`` matches
+       the preference's model pattern are preferred, and the winner's own
+       default model replaces the pattern (a concrete name both consumers can
+       apply without re-globbing). A preference naming no model at all ("use
+       the provider's default") likewise gets the chosen instance's default
+       model, rather than an empty string the spawner would write over that
+       provider's configured model.
+    4. Failing that, every nameable instance of the module is a candidate and
+       the preference's model pattern rides through unchanged, for the host to
+       resolve against that instance's model list.
+    5. Among candidates the lowest priority number wins -- the instance this
+       session resolves for that module anyway -- ties broken by declaration
+       order.
+    6. No instance of the module is mounted, or none of them is nameable:
+       dropped.  A name this host cannot serve *unambiguously* must not be
+       handed on, because downstream it can still collide with an unrelated
+       instance that happens to share the spelling.
+    """
+    provider = getattr(pref, "provider", "") or ""
+    model = getattr(pref, "model", "") or ""
+    config = getattr(pref, "config", None)
+
+    if provider in instance_ids:
+        return pref
+
+    variants = _provider_name_variants(provider)
+    candidates = [
+        (index, entry)
+        for index, entry in enumerate(entries)
+        if variants & _provider_name_variants(str(entry.get("module", "")))
+    ]
+    if not candidates:
+        logger.warning(
+            "provider preference %r names a provider this session has not "
+            "mounted (mounted: %s) - dropping it rather than passing a name "
+            "another provider could answer to",
+            provider,
+            ", ".join(sorted(instance_ids)) or "none",
+        )
+        return None
+
+    nameable = _nameable_candidates(candidates, lookup)
+    if not nameable:
+        logger.warning(
+            "provider preference %r names %d mounted instance(s) this session "
+            "cannot pin unambiguously: the name each is mounted under (%s) "
+            "resolves elsewhere in the spawner's own provider lookup, so a "
+            "pin would promote one provider at spawn and a different one at "
+            "the child's session:start - dropping it instead",
+            provider,
+            len(candidates),
+            ", ".join(
+                sorted(
+                    _provider_mount_key(entry) or "(unnamed)" for _, entry in candidates
+                )
+            ),
+        )
+        return None
+
+    matching = [
+        (index, entry)
+        for index, entry in nameable
+        if model
+        and fnmatch.fnmatchcase(
+            str(_provider_entry_config(entry).get("default_model", "")), model
+        )
+    ]
+    pool = matching or nameable
+    _, chosen = min(pool, key=lambda item: _provider_priority(item[1]))
+    chosen_id = _provider_mount_key(chosen)
+
+    chosen_default = str(_provider_entry_config(chosen).get("default_model", ""))
+    chosen_model = chosen_default or model if (matching or not model) else model
+    if chosen_id != provider:
+        logger.debug(
+            "provider preference %r/%r pinned to instance %r (model %r): the "
+            "mounted instance of that module this session resolves first",
+            provider,
+            model,
+            chosen_id,
+            chosen_model,
+        )
+    return ProviderPreference(
+        provider=chosen_id,
+        model=chosen_model,
+        config=dict(config) if isinstance(config, dict) else {},
+    )
+
+
+def pin_preferences_to_instances(
+    preferences: list[Any] | None, providers: Any
+) -> list[Any] | None:
+    """Rewrite a preference chain to name mounted provider INSTANCES.
+
+    Returns ``None`` when nothing survives -- the child then inherits the
+    parent's provider ordering, which is what a ``delegate`` of the same agent
+    already does, rather than being pinned to a provider nobody chose.
+
+    ``providers`` that is not a non-empty list of mappings means this host
+    exposes no instance information, so there is nothing to translate against
+    and the chain is returned untouched.
+    """
+    if not preferences:
+        return preferences
+
+    entries = (
+        [entry for entry in providers if isinstance(entry, dict)]
+        if isinstance(providers, list)
+        else []
+    )
+    if not entries:
+        return preferences
+
+    instance_ids = {_provider_instance_id(entry) for entry in entries} - {""}
+    # Built once, from the same list, so every preference in this chain is
+    # judged against one snapshot of what the spawner would resolve.
+    lookup = _spawn_provider_lookup(entries)
+
+    pinned: list[Any] = []
+    for pref in preferences:
+        resolved = _pin_preference_to_instance(pref, entries, instance_ids, lookup)
+        if resolved is not None:
+            pinned.append(resolved)
+
+    if not pinned:
+        logger.warning(
+            "no provider preference could be pinned to a mounted provider "
+            "instance; spawning with the parent session's provider ordering "
+            "instead of an unrelated provider"
+        )
+        return None
+    return pinned
+
+
+# ---------------------------------------------------------------------------
+# The spawned agent's OWN overlay must say the same thing
+# ---------------------------------------------------------------------------
+#
+# Pinning the `provider_preferences` ARGUMENT is only half a spawn.  A spawn
+# also carries the agent's overlay, and an agent definition file may declare
+# `provider_preferences` of its own (``foundation:zen-architect`` does).  The
+# host merges that overlay straight into the child's session config
+# (``session_spawner.spawn_sub_session`` -> ``agent_config.merge_configs``,
+# where a list value simply overrides), and NOTHING downstream rewrites it:
+# ``apply_provider_preferences_with_resolution`` edits only the mount plan's
+# ``providers``.  So the child starts up declaring the *untranslated* chain.
+#
+# That declaration is live, not decorative.  Two consumers read it back:
+#
+#   * the child's own routing re-assert, ``hooks-routing``'s
+#     ``role_pin._declared_pins`` (role_pin.py:266), reads exactly this
+#     session-level key at ``session:start`` and re-pins priority from it --
+#     against MOUNTED providers, keyed by instance id.  Measured on the fixed
+#     engine (child session ...a0a049acf77d43c7): the spawn argument correctly
+#     promoted `opus` to priority 0, then the child read its own config's
+#     "anthropic"/"openai" (matching no instance), hit "gemini" (an instance id
+#     that happens to equal a module's short name), promoted gemini to 0 and
+#     demoted opus to 1.  The agent ran on gemini-3.1-flash-image-preview and
+#     took the same 65,536-token 400 as before the pin existed.
+#   * ``resume_sub_session`` rebuilds the promotion from the persisted agent
+#     overlay, then the persisted config (session_spawner.py:1500-1508), so an
+#     untranslated overlay also mis-promotes every resumed leg.
+#
+# Hence: whatever chain the engine emits as the argument, the overlay it emits
+# alongside declares the same chain -- by instance id, so both matchers agree.
+# When the engine emits no chain at all, the overlay's own unservable one is
+# removed rather than left behind, because "inherit the parent's ordering" and
+# "let the child re-pin itself onto a name collision" are not the same thing.
+#
+# `model_role` is deliberately still forwarded.  It is what the declaration
+# MEANS, and on this host it is inert at session level: `role_pin` reads only
+# `provider_preferences`, the routing hook resolves `model_role` only for
+# entries under `config["agents"]` (children this session may spawn, not the
+# session itself), and the spawner never re-derives preferences from it
+# (`model_role` reaches `session_spawner` only as an explicit resume argument).
+# Dropping it would delete the provenance of a pin without changing a byte of
+# behaviour -- see tests/test_provider_instance_pinning.py, which asserts that
+# inertness rather than assuming it.
+
+
+def _preference_as_dict(pref: Any) -> dict[str, Any] | None:
+    """One preference in the dict form a config/overlay carries."""
+    to_dict = getattr(pref, "to_dict", None)
+    if callable(to_dict):
+        value = to_dict()
+        return value if isinstance(value, dict) else None
+    if isinstance(pref, Mapping):
+        return dict(pref)
+    provider = getattr(pref, "provider", None)
+    if not isinstance(provider, str) or not provider:
+        return None
+    entry: dict[str, Any] = {"provider": provider, "model": getattr(pref, "model", "")}
+    config = getattr(pref, "config", None)
+    if isinstance(config, dict) and config:
+        entry["config"] = dict(config)
+    return entry
+
+
+def align_overlay_preferences(
+    agent_configs: Any, agent_name: str, preferences: list[Any] | None
+) -> Any:
+    """Make ``agent_name``'s overlay declare exactly the chain being promoted.
+
+    Returns the mapping to hand ``session.spawn``. The caller's mapping is
+    never mutated: a changed overlay is written into a fresh copy, so a host
+    agent map (or a catalog reused by the next step) cannot be edited from
+    here.
+
+    When ``preferences`` is empty/``None`` the overlay's own
+    ``provider_preferences`` is *removed*, so the child inherits the parent's
+    provider ordering rather than re-pinning itself from a chain this session
+    already found it could not serve.
+
+    When nothing needs changing -- no such agent, or the overlay already says
+    precisely this -- the caller's own object is returned unchanged, so a
+    recipe with no provider intent produces a byte-identical spawn.
+    """
+    if not isinstance(agent_configs, Mapping):
+        return agent_configs
+    overlay = agent_configs.get(agent_name)
+    if not isinstance(overlay, Mapping):
+        return agent_configs
+
+    declared: list[dict[str, Any]] | None = None
+    if preferences:
+        entries = [_preference_as_dict(pref) for pref in preferences]
+        declared = [entry for entry in entries if entry is not None] or None
+
+    current = overlay.get("provider_preferences")
+    if declared is None:
+        if "provider_preferences" not in overlay:
+            return agent_configs
+        logger.debug(
+            "agent %r declares provider_preferences this session cannot pin to "
+            "a mounted instance; dropping them from its spawn overlay so the "
+            "child inherits the parent's provider ordering",
+            agent_name,
+        )
+    elif current == declared:
+        return agent_configs
+
+    aligned_overlay = dict(overlay)
+    if declared is None:
+        aligned_overlay.pop("provider_preferences", None)
+    else:
+        aligned_overlay["provider_preferences"] = declared
+        logger.debug(
+            "agent %r spawn overlay now declares the pinned chain %s (was %s)",
+            agent_name,
+            [entry["provider"] for entry in declared],
+            [
+                entry.get("provider")
+                for entry in (current if isinstance(current, list) else [])
+            ]
+            or "nothing",
+        )
+
+    aligned = dict(agent_configs)
+    aligned[agent_name] = aligned_overlay
+    return aligned
 
 
 class RecipeExecutor:
@@ -1993,6 +2409,25 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     resolved = await resolver.resolve(agent_model_role)
                     if resolved:
                         provider_preferences = list(resolved)
+
+        # Whatever produced the chain above -- step, agent config, or the
+        # routing matrix behind the resolver -- it names provider MODULES, and
+        # this host mounts provider INSTANCES. Resolve that ambiguity here, so
+        # the spawner and the child's own routing re-assert both land on the
+        # same instance instead of each guessing differently (see
+        # `pin_preferences_to_instances`).
+        host_config = getattr(self.coordinator, "config", None)
+        provider_preferences = pin_preferences_to_instances(
+            provider_preferences,
+            host_config.get("providers") if isinstance(host_config, dict) else None,
+        )
+
+        # ...and the overlay this spawn carries declares that same chain, so
+        # the child's own routing re-assert reads instance ids rather than the
+        # module names its definition file was written with (see
+        # `align_overlay_preferences`). Without this the argument's promotion
+        # is undone by the child at session:start.
+        agents = align_overlay_preferences(agents, step.agent, provider_preferences)
 
         # Build session metadata for child session tracking (navigation graph support)
         recipe_info = context.get("recipe", {})

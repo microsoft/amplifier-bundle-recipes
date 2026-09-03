@@ -4,6 +4,14 @@
 # best practices, and semantic consistency.
 #
 # CHANGELOG:
+# v1.0.3 - Fix live-confirmed defect: enhance_diagrams: "false" crashed the run
+#        - dot-regen-enhance is conditional on enhance_diagrams, and
+#          dot-regen-write referenced its `collect: enhanced_dots` output
+#          unconditionally. With enhancement disabled (or an empty foreach),
+#          the variable was never defined -> "Undefined variable:
+#          {{enhanced_dots}}". Added set-default-enhanced-dots (echo '[]')
+#          ahead of the conditional step, the same defaults pattern
+#          validate-agents.yaml uses for its optional LLM-phase outputs.
 # v1.0.2 - Fix two live-confirmed defects (root-caused against engine source)
 #        - BUG 1 (CRITICAL FIX): engine validation was dead-on-arrival for ALL
 #          consumers in `full` mode. Structural-validation called
@@ -92,7 +100,7 @@ description: |
   - Deterministic quality classification with explicit PASS thresholds
   - Quick-approval path for clean repos (no unnecessary LLM analysis)
   - Configurable recipes directory and known agent patterns
-version: "1.0.2"
+version: "1.0.3"
 author: "Amplifier Recipes Collection"
 tags: ["recipes", "validation", "quality", "audit", "structure", "best-practices"]
 
@@ -2206,11 +2214,25 @@ steps:
     parse_json: true
     timeout: 60
 
+  # Default for the conditional step below. When enhance_diagrams is "false"
+  # (or the foreach has nothing to iterate) dot-regen-enhance never runs, so
+  # `enhanced_dots` would otherwise be undefined and dot-regen-write would fail
+  # with "Undefined variable: {{enhanced_dots}}" (live-confirmed v1.0.3 defect).
+  # Same pattern validate-agents.yaml uses for its optional LLM-phase outputs.
+  - id: "set-default-enhanced-dots"
+    type: "bash"
+    depends_on: ["dot-regen-structural"]
+    command: |
+      echo '[]'
+    output: "enhanced_dots"
+    parse_json: true
+    timeout: 10
+
   - id: "dot-regen-enhance"
     agent: "foundation:zen-architect"
     mode: "ARCHITECT"
     condition: "{{enhance_diagrams}} != 'false'"
-    depends_on: ["dot-regen-structural"]
+    depends_on: ["set-default-enhanced-dots"]
     foreach: "{{regen_targets.recipes}}"
     as: "recipe"
     parallel: 3
