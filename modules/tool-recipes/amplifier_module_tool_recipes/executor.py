@@ -23,6 +23,7 @@ from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
 from amplifier_foundation import ProviderPreference
 from amplifier_foundation import resolve_model_pattern
+from amplifier_foundation import sanitize_for_json
 from .models import BackoffConfig
 from .models import OrchestratorConfig
 from .models import RateLimitingConfig
@@ -206,6 +207,41 @@ _FOREACH_PROGRESS_WARN_BYTES: int = 10_000_000  # 10 MB
 # lifetime regardless of how many steps declare depends_on or how many times
 # the recipe is executed or resumed.
 _warned_depends_on_recipes: set[str] = set()
+
+
+def _sanitize_for_json_default(obj: Any) -> Any:
+    """``json.dumps`` *default* hook: convert a non-serializable object.
+
+    ``sanitize_for_json`` returns ``None`` for anything it cannot structurally
+    convert (no ``__dict__``, no ``model_dump``, not natively serialisable --
+    e.g. ``Path``, ``datetime``, ``set``).  Returning ``None`` from a *default*
+    hook would silently turn the value into ``null`` on disk, so an opaque
+    value falls back to a readable placeholder string instead.  A checkpoint
+    should never lose the fact that *something* was there.
+    """
+    result = sanitize_for_json(obj)
+    if result is None:
+        return f"[non-serializable: {type(obj).__name__}]"
+    return result
+
+
+def _json_safe(value: Any) -> Any:
+    """Deep-convert ``value`` into something ``json.dump`` cannot choke on.
+
+    Applied to anything headed for a checkpoint file.  The conversion goes
+    *through* ``json.dumps`` with the sanitizing ``default`` hook rather than
+    calling ``sanitize_for_json`` directly, because the latter drops dict keys
+    and list entries whose value sanitizes to ``None`` -- which would silently
+    delete a key from a checkpoint, or shift the indices of a collected
+    foreach result list.  The hook only fires on the leaf the encoder actually
+    cannot handle, so structure, ``None`` entries and ordering all survive.
+    """
+    try:
+        return json.loads(json.dumps(value, default=_sanitize_for_json_default))
+    except (TypeError, ValueError, RecursionError):
+        # Shapes the default= hook cannot reach: a non-string dict key, a
+        # reference cycle. A checkpoint write must never crash the run.
+        return f"[non-serializable: {type(value).__name__}]"
 
 
 @dataclass
@@ -2110,7 +2146,7 @@ class RecipeExecutor:
                     try:
                         s2_decoder = json.JSONDecoder()
                         parsed_s2, _ = s2_decoder.raw_decode(fenced_content)
-                        if parsed_s2 not in ({}, []):
+                        if parsed_s2 != {} and parsed_s2 != []:
                             return parsed_s2
                         # Trivial structure ({} / []) — fall through to
                         # Strategy 3 in case something richer comes later.
@@ -2138,7 +2174,7 @@ class RecipeExecutor:
                 if first_parsed is None:
                     first_parsed = parsed
                 # Return first non-trivial JSON found
-                if parsed not in ({}, []):
+                if parsed != {} and parsed != []:
                     return parsed
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -2187,9 +2223,12 @@ class RecipeExecutor:
                 else:
                     trimmed[key] = value
             except (TypeError, ValueError):
-                # Value is not JSON-serialisable — keep as-is so save_state can
-                # surface the error naturally rather than silently dropping data.
-                trimmed[key] = value
+                # Value is not JSON-serialisable — sanitize it into a JSON-safe
+                # representation rather than passing the raw object through to
+                # crash ``save_state``'s ``json.dump`` at write time (which also
+                # leaves a truncated state.json behind).  Structured objects keep
+                # their fields; an opaque one round-trips as a placeholder string.
+                trimmed[key] = _json_safe(value)
         return trimmed
 
     def _process_step_result(self, result: Any, step: Step) -> Any:
@@ -2829,8 +2868,10 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         total_items,
                     )
             except (TypeError, ValueError):
-                pass  # Non-serializable results — save_state will surface the error
-        state["foreach_progress"] = progress
+                pass  # Non-serializable results — sanitized below before saving
+        # Collected results may hold non-serializable objects; sanitize before
+        # storing so save_state never sees a raw object.
+        state["foreach_progress"] = _json_safe(progress)
         # Update context snapshot so a resumed run has the latest variable state
         state["context"] = self._trim_context_for_checkpoint(context)
         self.session_manager.save_state(session_id, project_path, state)
@@ -3580,7 +3621,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 if isinstance(value, bool):
                     return "true" if value else "false"
                 if isinstance(value, (dict, list)):
-                    return json.dumps(value)
+                    return json.dumps(value, default=_sanitize_for_json_default)
                 return str(value)
 
             # Handle direct references
@@ -3595,7 +3636,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             if isinstance(value, bool):
                 return "true" if value else "false"
             if isinstance(value, (dict, list)):
-                return json.dumps(value)
+                return json.dumps(value, default=_sanitize_for_json_default)
             return str(value)
 
         return re.sub(pattern, replace, template)

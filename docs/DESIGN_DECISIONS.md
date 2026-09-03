@@ -28,6 +28,21 @@ The Superpowers SDD `extract-status` step demonstrates the pattern: a bash step 
 
 ---
 
+## Notable Behavioral Semantics
+
+### Foreach with `on_error: continue` produces `None` in collected results
+
+When a foreach step has `on_error: continue`, a failed iteration appends `None` to
+the collect list at that index rather than raising. Downstream steps that access
+fields on collected items (e.g., `{{results[3].id}}`) will raise `TypeError` at
+the access point, not `ValueError` at the iteration boundary.
+
+Recipe authors using `on_error: continue` on foreach should either:
+- Use `{{item | default('...')}}` (not supported — see WONTFIX above), or
+- Filter None entries in a subsequent bash step before consumption
+
+---
+
 ## Meta
 
 This file is maintained alongside the engine. When a feature is considered and declined, add it here with the rationale. When a feature previously declined becomes actually needed, remove it from this file and implement it.
