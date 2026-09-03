@@ -837,7 +837,14 @@ model: "gpt-5.?"                # gpt-5.0, gpt-5.1, gpt-5.2, etc.
 **Resolution behavior:**
 - Pattern matches are sorted descending alphabetically
 - This means dated versions (e.g., `20250514`) sort newest-first
-- If no matches found, the pattern string is used as-is (provider will error if invalid)
+- If the provider's model list came back and **nothing matched**, the step falls back to
+  that provider's **default model** and logs a WARNING naming the dropped pattern. The
+  pattern itself is never handed to the provider: no model is literally named
+  `claude-haiku-*`, so passing it through would guarantee a `not_found_error` (404).
+- If the provider's model list **could not be read** (no provider configured, no
+  `list_models` support, query failed), the pattern is left as-is for the host to resolve
+  against whichever provider instance it finally selects. "Could not enumerate" is not
+  evidence of "no match", so the author's pattern is not discarded on it.
 - Resolution details are logged at DEBUG level
 
 **Validation:**

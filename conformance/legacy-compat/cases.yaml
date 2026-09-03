@@ -134,7 +134,7 @@ cases:
       - multiple agent steps (6)
       - conditional routing on a step output
       - legacy step-level provider + model fields
-      - model glob provenance (claude-sonnet-* / claude-opus-*)
+      - model glob provenance (claude-sonnet-* / claude-haiku-* / claude-opus-*)
     context:
       file_path: "src/example.py"
     caller_agents:
