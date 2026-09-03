@@ -3,23 +3,41 @@
 # dependency manifest. This one cannot yet, and the reason is structural
 # rather than an oversight.
 #
-# The recipe uses `agent: "self"` on six steps. `self` is a documented
-# pseudo-agent of the LEGACY engine -- validator.py names it explicitly, and
-# `collect_agent_references` excludes it -- but the recipe-runner library has
-# no notion of it anywhere: neither `planner._build_provenance` nor
-# `execution.AgentCatalog.resolve` special-cases it, so planning this file as
-# v2 fails preflight with
+# The recipe uses `agent: "self"` on six steps, and `self` cannot currently be
+# made safe under a v2 closed world. Read the whole reason before "fixing" it:
+# the obvious fix is the dangerous one.
+#
+# What happens today. `self` is a documented pseudo-agent of the LEGACY engine
+# -- validator.py names it explicitly, `collect_agent_references` excludes it
+# -- but neither `planner._build_provenance` nor `execution.AgentCatalog.
+# resolve` special-cases it, so planning this file as v2 fails preflight with
 #
 #   UndeclaredAgentError: Agent 'self' referenced by step 'validate_inputs'
 #   is not supplied by any declared dependency
 #
-# and no `dependencies:` block can satisfy it, because `self` names the
-# CURRENT agent rather than a bundle-supplied one. Giving `self` a meaning
-# inside a closed world -- where the recipe owns its session and the calling
-# agent is deliberately out of reach -- is a semantic decision for the
-# manifest contract, not something a migration may invent. Tracked as
-# recipes-80q;
-# this file stays honestly labelled legacy until it is settled.
+# and the remedy that error suggests cannot be followed: no `dependencies:`
+# block can supply `self`, because `self` does not name a bundle agent.
+#
+# Why the obvious exemption is WRONG. It is tempting to read the above as "the
+# planner just forgot to exempt `self`, like validator.py already does" and add
+# two lines. That would open a silent containment hole. `self` is NOT
+# undefined -- the host's spawner defines it precisely
+# (amplifier_app_cli/session_spawner.py, `if agent_name == "self"`): an EMPTY
+# overlay, i.e. `merge_configs(parent_session.config, {})` -- inherit the
+# parent session's config as-is. And in the closed-world path the parent
+# session is the CALLER's: executor.py passes
+# `parent_session = self.coordinator.session`, and ClosedWorldCoordinator
+# substitutes only the agent map and the spawn, never the session. So an
+# exempted `self` step would inherit the caller's entire config -- agent map
+# included -- silently restoring exactly the world that
+# recipe-dependency-manifest.v1 Core 3/5 exists to keep out. No error, no
+# warning: just the closed world quietly reopened for that step.
+#
+# What it would actually take: substituting a recipe-owned parent session at
+# the closed-world boundary, or redefining `self` against the plan rather than
+# against the parent session. Either is a design change with a safety property
+# attached, not something a migration may invent. Tracked as recipes-80q; this
+# file stays honestly labelled legacy until it is settled.
 #
 # What DID change here: the `lsp-python:python-code-intel` references were
 # corrected to `python-dev:code-intel`. `amplifier-bundle-lsp-python` is a

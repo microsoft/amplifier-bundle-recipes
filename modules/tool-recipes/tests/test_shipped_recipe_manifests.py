@@ -256,18 +256,26 @@ def test_shipped_surface_is_not_empty() -> None:
 #:     that skip). Migrating them would change what they test.
 #:
 #: ``examples/context-intelligence/verification/adversarial-verification.yaml``
-#:     -- blocked on a real gap, not an oversight. Six of its steps use
-#:     ``agent: "self"``. ``self`` is a documented pseudo-agent of the legacy
-#:     engine (``validator.py`` names it; ``collect_agent_references`` excludes
-#:     it) but the recipe-runner library has no notion of it anywhere, so
-#:     planning the file as v2 fails preflight with ``UndeclaredAgentError:
-#:     Agent 'self' referenced by step 'validate_inputs' is not supplied by any
-#:     declared dependency`` -- and no ``dependencies:`` block can satisfy it,
-#:     because ``self`` names the CURRENT agent rather than a bundle-supplied
-#:     one. What ``self`` should mean inside a closed world, where the recipe
-#:     owns its session and the calling agent is deliberately out of reach, is
-#:     a decision for the manifest contract; a migration may not invent it.
-#:     Tracked as recipes-80q.
+#:     -- blocked on a containment hazard, not an oversight, and NOT on a
+#:     missing exemption. Six of its steps use ``agent: "self"``, which the
+#:     planner refuses (``UndeclaredAgentError: Agent 'self' referenced by step
+#:     'validate_inputs' is not supplied by any declared dependency``) with a
+#:     remedy that cannot be followed, since no ``dependencies:`` block can
+#:     supply ``self``.
+#:
+#:     Do NOT "fix" this by exempting ``self`` in the planner the way
+#:     ``validator.py`` and ``collect_agent_references`` already do. ``self``
+#:     is not undefined: the host's spawner defines it as an EMPTY overlay --
+#:     ``merge_configs(parent_session.config, {})`` -- and in the closed-world
+#:     path that parent session is the CALLER's (``executor.py`` passes
+#:     ``parent_session = self.coordinator.session``; ClosedWorldCoordinator
+#:     replaces the agent map and the spawn, never the session). An exempted
+#:     ``self`` step would therefore inherit the caller's whole config, agent
+#:     map included -- silently reopening the closed world that manifest Core
+#:     3/5 exists to hold shut. Closing this properly means substituting a
+#:     recipe-owned parent session at the boundary, or redefining ``self``
+#:     against the plan. Tracked as recipes-80q.
+#:
 #:     The file's stale ``lsp-python:python-code-intel`` references WERE
 #:     corrected to ``python-dev:code-intel`` (recipes-c6w), which is right
 #:     whatever schema version it ends up on.
