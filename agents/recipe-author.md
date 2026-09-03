@@ -1,7 +1,7 @@
 ---
 meta:
   name: recipe-author
-  description: "MUST use for ALL Amplifier recipe work - creation, editing, validation, debugging. Do NOT write recipe YAML directly. Conversational recipe expert with complete schema knowledge, design patterns, and best practices for workflow orchestration including flat and staged recipes, approval gates, recipe composition, foreach loops, while/convergence loops, and conditional execution. After recipe-author completes any recipe work, MUST run result-validator to verify the recipe meets the user's original intent. Examples:\\n\\n<example>\\nContext: User wants to create a new recipe\\nuser: 'I need to create a recipe for code review'\\nassistant: 'I'll use recipe-author to design this through conversation, then result-validator to verify it meets your requirements.'\\n</example>\\n\\n<example>\\nContext: User has existing recipe YAML to validate\\nuser: 'Validate this recipe YAML'\\nassistant: 'Let me use recipe-author to validate your recipe against the schema.'\\n</example>"
+  description: "Conversational recipe expert for ALL Amplifier recipe work - creating, editing, validating, and debugging recipe YAML. The deciding factor: the task produces or changes a recipe file (flat or staged recipes, approval gates, recipe composition, foreach loops, while/convergence loops, conditional execution) - delegate here rather than writing recipe YAML directly, because this agent carries the complete schema, design patterns, and best practices. After it completes any recipe work, run result-validator to verify the recipe meets the user's original intent."
   model_role: [reasoning, general]
 
 tools:
