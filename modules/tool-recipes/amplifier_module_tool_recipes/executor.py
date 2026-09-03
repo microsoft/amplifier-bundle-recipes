@@ -3386,6 +3386,66 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         elif step.output and results:
             context[step.output] = results[-1]
 
+    async def _engine_for_sub_recipe(
+        self,
+        sub_recipe_path: Path,
+        sub_context: dict[str, Any],
+        project_path: Path,
+        *,
+        parent_session_id: str | None = None,
+    ) -> "RecipeExecutor":
+        """The executor a sub-recipe must run on -- ``self``, or a scoped twin.
+
+        ``schema_version`` is a property of the recipe, not of how the recipe
+        was reached. A v2 sub-recipe therefore resolves its ``agent:``
+        references from its own declared closure whether it is invoked
+        directly or as a ``type: recipe`` step of some other recipe
+        (recipe-dependency-manifest.v1 Core 3/4).
+
+        Before this, a sub-recipe simply ran on ``self`` -- the parent's
+        executor, bound to the parent's coordinator. Under a *legacy* parent
+        that meant the caller's agent map: ``repo-audit.yaml`` (v2, declaring
+        ``foundation:zen-architect``) ran fine invoked directly and died with
+        "Agent 'foundation:zen-architect' not found in configuration" when
+        reached through ``ecosystem-audit-batch.yaml`` (legacy) under a bundle
+        without that agent -- same recipe, same host, two different agent maps
+        (recipes-ykj).
+
+        Returns:
+            ``self`` for a legacy sub-recipe -- unchanged, caller-bound, the
+            behaviour ``conformance/legacy-compat`` pins. For a v2 sub-recipe,
+            a twin executor bound to that recipe's own closed-world
+            coordinator. The twin shares this executor's session manager, so
+            the sub-recipe's session, checkpointing and approval gates behave
+            exactly as they always have.
+
+        Raises:
+            Whatever resolving the closure raises -- an unavailable runner
+            library, an undeclared agent, an unresolvable dependency. There is
+            deliberately no fallback to the caller-bound path: running a v2
+            recipe against the parent's map would resolve a *different* agent
+            catalog while reporting success.
+        """
+        from .closed_world import host_coordinator_of  # noqa: PLC0415 -- lazy
+        from .runner_adapter import build_sub_recipe_scope  # noqa: PLC0415
+        from .runner_adapter import is_v2_recipe  # noqa: PLC0415
+
+        if not is_v2_recipe(sub_recipe_path):
+            return self
+
+        scoped = await build_sub_recipe_scope(
+            # The HOST's coordinator, never an outer recipe's scope: each
+            # recipe's closure is its own, not the intersection with its
+            # parent's. See `closed_world.host_coordinator_of`.
+            host_coordinator_of(self.coordinator),
+            self.session_manager,
+            sub_recipe_path,
+            sub_context,
+            project_path,
+            session_id=parent_session_id,
+        )
+        return type(self)(scoped, self.session_manager)
+
     async def _execute_recipe_step(
         self,
         step: Step,
@@ -3461,11 +3521,20 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         child_session_key = f"_child_session_{step.id}"
         saved_child_session_id = context.get(child_session_key)
 
+        # A sub-recipe that declares `schema_version` runs closed-world against
+        # ITS OWN declared closure, whatever the parent is (recipes-ykj).
+        engine = await self._engine_for_sub_recipe(
+            sub_recipe_path,
+            sub_context,
+            project_path,
+            parent_session_id=parent_session_id,
+        )
+
         # Execute sub-recipe recursively
         # Note: rate_limiter and orchestrator_config are inherited from parent (sub-recipes cannot override)
         # parent_session_id is passed so sub-recipes can check for cancellation
         try:
-            result = await self.execute_recipe(
+            result = await engine.execute_recipe(
                 recipe=sub_recipe,
                 context_vars=sub_context,
                 project_path=project_path,

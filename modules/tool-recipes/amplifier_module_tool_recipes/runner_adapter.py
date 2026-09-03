@@ -1329,6 +1329,88 @@ class EngineSessionRecorder:
         return getattr(self._inner, name)
 
 
+def closed_world_scope(
+    resolved_plan: Any, coordinator: Any, recipe_path: Path | str
+) -> Any:
+    """The coordinator view a schema-v2 recipe executes against, labelled.
+
+    One home for the three things that turn a resolved plan into a runnable
+    scope: build the catalog from the plan's closure, wrap the caller's
+    coordinator in it, and say so at INFO with the ``execution_mode`` label.
+    Both v2 entry points -- a top-level run (:func:`run_v2_recipe_in_session`)
+    and a v2 sub-recipe reached from another recipe
+    (:func:`build_sub_recipe_scope`) -- go through here, so neither can
+    silently acquire a different catalog or wear a different label.
+
+    ``coordinator`` must be the *host's* coordinator, never an already-scoped
+    view -- see :func:`~.closed_world.host_coordinator_of`.
+    """
+    from .closed_world import ClosedWorldCoordinator  # noqa: PLC0415 -- lazy
+    from .closed_world import build_catalog  # noqa: PLC0415
+
+    catalog = build_catalog(resolved_plan)
+    scoped = ClosedWorldCoordinator(coordinator, catalog)
+    logger.info(
+        "Executing %s on the legacy step engine with the plan's closed-world "
+        "catalog (%d agent(s): %s) [execution_mode=%s]",
+        recipe_path,
+        len(catalog),
+        ", ".join(catalog.names) or "none",
+        V2_LEGACY_ENGINE_EXECUTION_MODE,
+    )
+    return scoped
+
+
+async def build_sub_recipe_scope(
+    coordinator: Any,
+    session_manager: Any,
+    recipe_path: Path,
+    context_vars: Mapping[str, Any] | None,
+    project_path: Path,
+    *,
+    session_id: str | None = None,
+    plan: Callable[..., Awaitable[Any]] | None = None,
+) -> Any:
+    """The closed-world coordinator for a schema-v2 recipe reached as a *step*.
+
+    A recipe's ``schema_version`` is a property of the recipe, not of how it
+    was reached (manifest.v1 Core 3/4). Invoked directly, ``repo-audit.yaml``
+    resolves ``foundation:zen-architect`` from its own declared closure;
+    invoked as a ``type: recipe`` step of a legacy parent it used to inherit
+    the parent's caller-bound coordinator and die on "Agent
+    'foundation:zen-architect' not found in configuration" -- the *same*
+    recipe, the same host, two different agent maps (recipes-ykj).
+
+    This resolves the sub-recipe exactly as a direct invocation would: the
+    library's ``plan()`` over the sub-recipe's own manifest, then the same
+    catalog and the same label via :func:`closed_world_scope`.
+
+    Unlike :func:`run_v2_recipe_in_session`, a refusal here **raises** rather
+    than becoming a ``RunResult``: the caller is a step of another recipe, and
+    a step reports failure by failing. There is deliberately no fallback to
+    the caller-bound path -- running a v2 sub-recipe against the parent's map
+    would resolve a different agent catalog while reporting success.
+
+    Args:
+        coordinator: the *host's* coordinator. Unwrapping an already-scoped
+            parent view is the caller's job (:func:`build_sub_recipe_scope`
+            is handed one by the executor, which unwraps first).
+        plan: injection seam for tests; defaults to the library's ``plan``.
+
+    Raises:
+        RecipeRunnerUnavailableError: the runner library is not importable, so
+            the declared closure cannot be resolved at all.
+    """
+    runner = load_runner()
+    services = await build_host_services(
+        coordinator, session_manager, project_path, session_id=session_id
+    )
+    check_model_roles(recipe_path, services.provider_access)
+    request = build_run_request(recipe_path, context_vars, services, coordinator)
+    resolved = await (plan or runner.plan)(request)
+    return closed_world_scope(resolved, coordinator, recipe_path)
+
+
 async def run_v2_recipe_in_session(
     coordinator: Any,
     session_manager: Any,
@@ -1389,8 +1471,6 @@ async def run_v2_recipe_in_session(
         reported as themselves; nothing reports SUCCEEDED that did not succeed.
     """
     runner = load_runner()
-    from .closed_world import ClosedWorldCoordinator  # noqa: PLC0415 -- lazy
-    from .closed_world import build_catalog  # noqa: PLC0415
 
     services = await build_host_services(
         coordinator, session_manager, project_path, session_id=session_id
@@ -1415,16 +1495,7 @@ async def run_v2_recipe_in_session(
         report_engine_session()
         return runner.RunResult(run_id=run_id, status=runner.RunStatus.FAILED, error=exc)
 
-    catalog = build_catalog(resolved)
-    scoped = ClosedWorldCoordinator(coordinator, catalog)
-    logger.info(
-        "Executing %s on the legacy step engine with the plan's closed-world "
-        "catalog (%d agent(s): %s) [execution_mode=%s]",
-        recipe_path,
-        len(catalog),
-        ", ".join(catalog.names) or "none",
-        V2_LEGACY_ENGINE_EXECUTION_MODE,
-    )
+    scoped = closed_world_scope(resolved, coordinator, recipe_path)
 
     execute = engine or _legacy_engine_run
     try:
