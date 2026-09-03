@@ -536,7 +536,7 @@ Each step represents one unit of work in the workflow. Steps can be agent invoca
   while_steps: list             # Optional - Multi-step loop body (list of step definitions, requires while_condition)
   output: string                # Optional - Variable name for step result
   agent_config: dict            # Optional - Override agent configuration
-  timeout: integer              # Optional - Max execution time (seconds)
+  timeout: integer|string       # Optional - Max execution time (seconds), or a template resolving to one
   retry: dict                   # Optional - Retry configuration
   on_error: string              # Optional - Error handling strategy
   depends_on: list[string]      # Optional - Step IDs that must complete first
@@ -1368,7 +1368,7 @@ Existing recipes without `parse_json` continue working:
 
 #### `timeout` (optional)
 
-**Type:** integer (seconds)
+**Type:** integer (seconds), or a template string resolving to one
 **Default:** 600 (10 minutes)
 **Purpose:** Prevent hanging on unresponsive steps.
 
@@ -1376,12 +1376,45 @@ Existing recipes without `parse_json` continue working:
 ```yaml
 - timeout: 300   # 5 minutes
 - timeout: 1800  # 30 minutes for long-running analysis
+- timeout: "{{step_timeout}}"   # resolved from context at execution time
 ```
 
 **Behavior:**
 - If step exceeds timeout, execution cancelled
 - Error logged with clear timeout message
 - Recipe can resume from checkpoint (step retries)
+- Applies to both `agent` steps (the sub-session spawn) and `bash` steps
+
+**Templated timeouts:**
+
+A `timeout:` may be a `{{template}}` so one recipe can be run with different
+limits — a short budget in CI, a long one for an overnight run:
+
+```yaml
+context:
+  step_timeout: 1800   # overridable at run time
+
+steps:
+  - id: "deep-analysis"
+    agent: "analyzer"
+    prompt: "Analyze the codebase"
+    timeout: "{{step_timeout}}"
+```
+
+The template is resolved once, immediately before the timeout is applied, and
+must yield a positive number of seconds. Resolution failures are loud and
+name the step, the template, and what it resolved to:
+
+- an undefined variable — `Step 'deep-analysis': timeout template
+  '{{step_timeout}}' could not be resolved: Undefined variable: ...`
+- a non-numeric value — `... resolved to 'soon', which is not a number of seconds`
+- a non-positive value — `... resolved to 0, but timeout must be positive`
+
+Each of these fails *before* the agent is spawned or the command is run, so an
+unusable timeout never burns an invocation. A non-templated string that is not
+a number (`timeout: "soon"`) is rejected earlier still, at recipe validation.
+
+Literal numbers are unaffected — they never touch the substitution machinery.
 
 #### `retry` (optional)
 
@@ -2117,9 +2150,17 @@ Bash steps respect the `timeout` field (default: 600 seconds):
   type: "bash"
   command: "test -d node_modules"
   timeout: 10  # 10 seconds
+
+- id: "configurable"
+  type: "bash"
+  command: "./run-suite.sh"
+  timeout: "{{suite_timeout}}"  # resolved from context at execution time
 ```
 
-If the command exceeds the timeout, it's killed and the step fails.
+If the command exceeds the timeout, it's killed and the step fails. Templated
+timeouts resolve before the command is spawned — see
+[`timeout` (optional)](#timeout-optional) for the resolution rules and error
+messages.
 
 ### Complete Example
 
