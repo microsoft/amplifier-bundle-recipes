@@ -39,6 +39,7 @@ from .runner_adapter import V2_EXECUTION_MODE
 from .runner_adapter import RecipeRunnerUnavailableError
 from .runner_adapter import V2ResumeUnavailableError
 from .runner_adapter import check_adapter_config
+from .runner_adapter import check_legacy_agents_available
 from .runner_adapter import declared_schema_version
 from .runner_adapter import is_v2_recipe
 from .runner_adapter import label_execution_mode
@@ -801,6 +802,28 @@ Example:
                     "message": "Recipe validation failed",
                     "errors": validation.errors,
                     "warnings": validation.warnings,
+                },
+            )
+
+        # Plan-time agent preflight. A legacy recipe binds `agent:` to the
+        # CALLER's map, so one referencing an agent this bundle does not mount
+        # is already doomed -- it just does not find out until the first agent
+        # step, where it dies on a bare "not found" that names neither the
+        # bundle nor a remedy. Fail here instead, before any step runs.
+        #
+        # This changes behavior ONLY for runs that were going to fail anyway:
+        # when every referenced agent is present (or the host exposes no
+        # readable registry) the preflight is a no-op, which is what keeps
+        # `conformance/legacy-compat` byte-identical.
+        preflight = check_legacy_agents_available(recipe, self.coordinator)
+        if preflight is not None:
+            missing, message = preflight
+            return ToolResult(
+                success=False,
+                error={
+                    "message": message,
+                    "type": "LegacyAgentsUnavailable",
+                    "missing_agents": missing,
                 },
             )
 
