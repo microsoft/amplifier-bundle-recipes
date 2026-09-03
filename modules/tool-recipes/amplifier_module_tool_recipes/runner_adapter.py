@@ -75,6 +75,7 @@ __all__ = [
     "CallerAgentLeakError",
     "CoordinatorEventSink",
     "CoordinatorProviderAccess",
+    "EngineSessionRecorder",
     "RecipeRunnerUnavailableError",
     "SessionApprovalCallback",
     "ModelRoleUnavailableError",
@@ -1298,6 +1299,36 @@ async def run_v2_recipe(
     return await (run or runner.run)(request)
 
 
+class EngineSessionRecorder:
+    """A session-manager view that remembers the FIRST session the engine makes.
+
+    The step engine creates its own session inside ``execute_recipe``. *That*
+    session -- not the one the tool bound around the run -- is where the
+    approval gate, the checkpoint and the completed-step list live. Nothing
+    else reports it: a run that stops at a gate raises from inside the engine,
+    and a run that fails may not reach a context at all.
+
+    Capturing it is what makes a later ``resume`` able to re-enter the run that
+    was actually interrupted instead of starting a second one beside it.
+
+    Only the first creation is kept. Sub-recipe steps create their own child
+    sessions later; the top-level one is the run's identity.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.session_id: str | None = None
+
+    def create_session(self, *args: Any, **kwargs: Any) -> str:
+        created = self._inner.create_session(*args, **kwargs)
+        if self.session_id is None:
+            self.session_id = created
+        return created
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 async def run_v2_recipe_in_session(
     coordinator: Any,
     session_manager: Any,
@@ -1306,6 +1337,9 @@ async def run_v2_recipe_in_session(
     project_path: Path,
     *,
     session_id: str | None = None,
+    run_id: str | None = None,
+    resume_engine_session_id: str | None = None,
+    on_engine_session: Callable[[str | None], None] | None = None,
     plan: Callable[..., Awaitable[Any]] | None = None,
     engine: Callable[..., Awaitable[Any]] | None = None,
 ) -> Any:
@@ -1332,9 +1366,22 @@ async def run_v2_recipe_in_session(
     obtained providers, and why an in-session v2 agent step does real model
     work rather than reporting "No providers available" (recipes-30w).
 
+    Resuming uses this same function, and that is the point: a run that
+    stopped at an approval gate, mid-``foreach`` or mid-sub-recipe must
+    continue on the engine that ran it, not on a second one that never saw
+    those step shapes (recipes-5c6). ``resume_engine_session_id`` names the
+    engine session to re-enter; the engine skips what it checkpointed there.
+
     Args:
+        run_id: the recorded run id to continue under, when resuming.
+        resume_engine_session_id: re-enter this engine session instead of
+            creating one. Its own checkpoint decides what is skipped.
+        on_engine_session: called once with the engine session id (or None if
+            no session was ever created), whatever the outcome. This is the
+            only report of it -- see :class:`EngineSessionRecorder`.
         plan/engine: injection seams for tests. ``engine`` receives
-            ``(scoped_coordinator, recipe_path, context, project_path)``.
+            ``(scoped_coordinator, recipe_path, context, project_path,
+            session_manager)`` plus a keyword ``session_id``.
 
     Returns:
         The library's ``RunResult``, so every caller translates one shape. A
@@ -1349,12 +1396,23 @@ async def run_v2_recipe_in_session(
         coordinator, session_manager, project_path, session_id=session_id
     )
     check_model_roles(recipe_path, services.provider_access)
-    request = build_run_request(recipe_path, context_vars, services, coordinator)
+    request = build_run_request(
+        recipe_path, context_vars, services, coordinator, run_id=run_id
+    )
     run_id = request.run_id or f"run-{uuid.uuid4().hex[:12]}"
+
+    recorder = EngineSessionRecorder(session_manager)
+
+    def report_engine_session() -> str | None:
+        engine_session_id = resume_engine_session_id or recorder.session_id
+        if on_engine_session is not None:
+            on_engine_session(engine_session_id)
+        return engine_session_id
 
     try:
         resolved = await (plan or runner.plan)(request)
     except Exception as exc:  # noqa: BLE001 -- preflight refusals are results
+        report_engine_session()
         return runner.RunResult(run_id=run_id, status=runner.RunStatus.FAILED, error=exc)
 
     catalog = build_catalog(resolved)
@@ -1371,9 +1429,15 @@ async def run_v2_recipe_in_session(
     execute = engine or _legacy_engine_run
     try:
         final_context = await execute(
-            scoped, recipe_path, dict(context_vars or {}), project_path, session_manager
+            scoped,
+            recipe_path,
+            dict(context_vars or {}),
+            project_path,
+            recorder,
+            session_id=resume_engine_session_id,
         )
     except Exception as exc:  # noqa: BLE001 -- one place turns any failure into a result
+        engine_session_id = report_engine_session()
         stage = getattr(exc, "stage_name", None)
         if stage is not None and type(exc).__name__ == "ApprovalGatePausedError":
             return runner.RunResult(
@@ -1381,7 +1445,9 @@ async def run_v2_recipe_in_session(
                 status=runner.RunStatus.PAUSED,
                 plan=resolved,
                 completed_steps=_engine_completed_steps(
-                    session_manager, getattr(exc, "session_id", None), project_path
+                    session_manager,
+                    getattr(exc, "session_id", None) or engine_session_id,
+                    project_path,
                 ),
                 pending_approval=stage,
             )
@@ -1390,9 +1456,15 @@ async def run_v2_recipe_in_session(
             run_id=run_id,
             status=runner.RunStatus.FAILED,
             plan=resolved,
+            # What the engine checkpointed before it died -- never assumed
+            # empty, or a resume would redo every step that did run.
+            completed_steps=_engine_completed_steps(
+                session_manager, engine_session_id, project_path
+            ),
             error=exc,
         )
 
+    engine_session_id = report_engine_session()
     engine_session = (final_context or {}).get("session") or {}
     return runner.RunResult(
         run_id=run_id,
@@ -1400,7 +1472,7 @@ async def run_v2_recipe_in_session(
         plan=resolved,
         outputs=dict(final_context or {}),
         completed_steps=_engine_completed_steps(
-            session_manager, engine_session.get("id"), project_path
+            session_manager, engine_session.get("id") or engine_session_id, project_path
         ),
     )
 
@@ -1411,8 +1483,14 @@ async def _legacy_engine_run(
     context_vars: Mapping[str, Any],
     project_path: Path,
     session_manager: Any,
+    *,
+    session_id: str | None = None,
 ) -> Mapping[str, Any]:
     """Run the recipe on the legacy step engine, against the scoped coordinator.
+
+    ``session_id`` re-enters an existing engine session -- the engine's own
+    resumption path, which skips what that session checkpointed. Left None,
+    the engine creates a fresh session, which is what a first run wants.
 
     Imported lazily so this module keeps importing without the engine's own
     dependencies, exactly as the library import is lazy.
@@ -1423,7 +1501,11 @@ async def _legacy_engine_run(
     recipe = Recipe.from_yaml(recipe_path)
     executor = RecipeExecutor(scoped_coordinator, session_manager)
     return await executor.execute_recipe(
-        recipe, dict(context_vars), project_path, recipe_path=recipe_path
+        recipe,
+        dict(context_vars),
+        project_path,
+        session_id=session_id,
+        recipe_path=recipe_path,
     )
 
 
