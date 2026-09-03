@@ -29,6 +29,7 @@ from .models import RateLimitingConfig
 from .models import Recipe
 from .models import RecursionConfig
 from .models import Step
+from .models import coerce_timeout
 from .session import ApprovalStatus
 from .session import SessionManager
 
@@ -2500,6 +2501,12 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         if parallel_group_id:
             session_metadata["parallel_group_id"] = parallel_group_id
 
+        # Resolve the step timeout before spawning: a templated value must be a
+        # number by the time asyncio.wait_for sees it, and failing here (rather
+        # than after the spawn) means an unresolvable template never burns an
+        # agent invocation.
+        effective_timeout = self._resolve_step_timeout(step, context)
+
         # Spawn sub-session with agent via capability (with step timeout)
         spawn_coro = spawn_fn(
             agent_name=step.agent,
@@ -2513,10 +2520,10 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             use_subprocess=step.spawn_mode == "subprocess",
         )
         try:
-            result = await asyncio.wait_for(spawn_coro, timeout=step.timeout)
+            result = await asyncio.wait_for(spawn_coro, timeout=effective_timeout)
         except asyncio.TimeoutError:
             raise ValueError(
-                f"Step '{step.id}': agent '{step.agent}' timed out after {step.timeout}s"
+                f"Step '{step.id}': agent '{step.agent}' timed out after {effective_timeout}s"
             ) from None
 
         # Give the cyclic GC a chance to reclaim PyO3 / Rust-backed objects and
@@ -3593,6 +3600,44 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
         return re.sub(pattern, replace, template)
 
+    def _resolve_step_timeout(self, step: Step, context: dict[str, Any]) -> int | float:
+        """Resolve a step's ``timeout:`` to a number of seconds.
+
+        ``asyncio.wait_for`` silently accepts a string and then compares it
+        against a float, so a template that reached it unresolved would blow up
+        deep inside the event loop with a TypeError naming neither the step nor
+        the field. This resolves it once, up front, and fails with a message
+        that names both.
+
+        A literal number -- the overwhelmingly common case -- is returned
+        untouched without going anywhere near the substitution machinery, so
+        existing recipes keep their exact prior behavior.
+        """
+        raw = step.timeout
+        literal = coerce_timeout(raw)
+        if literal is not None and not isinstance(raw, str):
+            return literal
+
+        try:
+            rendered = self.substitute_variables(str(raw), context)
+        except ValueError as exc:
+            raise ValueError(
+                f"Step '{step.id}': timeout template {raw!r} could not be resolved: {exc}"
+            ) from None
+
+        resolved = coerce_timeout(rendered)
+        if resolved is None:
+            raise ValueError(
+                f"Step '{step.id}': timeout template {raw!r} resolved to {rendered!r}, "
+                "which is not a number of seconds"
+            )
+        if resolved <= 0:
+            raise ValueError(
+                f"Step '{step.id}': timeout template {raw!r} resolved to {resolved}, "
+                "but timeout must be positive"
+            )
+        return resolved
+
     async def _execute_bash_step(
         self,
         step: Step,
@@ -3645,6 +3690,10 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 # Substitute variables in env values
                 env[key] = self.substitute_variables(str(value), context)
 
+        # Resolve the step timeout before spawning the subprocess, so an
+        # unresolvable template fails before any command runs.
+        effective_timeout = self._resolve_step_timeout(step, context)
+
         # Execute command with timeout.
         # Spawn a resolved bash explicitly rather than the platform default
         # shell: recipe bash steps may use bash-specific features like
@@ -3665,14 +3714,14 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=step.timeout,
+                    timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
                 # Kill the process on timeout
                 process.kill()
                 await process.wait()
                 raise ValueError(
-                    f"Step '{step.id}': command timed out after {step.timeout}s"
+                    f"Step '{step.id}': command timed out after {effective_timeout}s"
                 ) from None
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
