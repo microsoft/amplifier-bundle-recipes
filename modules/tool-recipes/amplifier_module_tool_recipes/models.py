@@ -313,7 +313,8 @@ class Step:
     as_var: str | None = None  # Maps to 'as' in YAML (as is Python reserved)
     collect: str | None = None
     parallel: bool | int = False  # False=sequential, True=unbounded, int=max concurrent
-    checkpoint_iterations: bool = False  # Save progress after each foreach iteration for resumability
+    checkpoint_iterations: bool = False  # Save progress after each foreach iteration for resumability.
+    # Each checkpoint writes the full session state to disk — avoid on sub-second iterations.
     max_iterations: int = 100
     # Number of seconds, or a template string resolved against the run context
     # at execution time (e.g. "{{step_timeout}}"). Templates are resolved once,
