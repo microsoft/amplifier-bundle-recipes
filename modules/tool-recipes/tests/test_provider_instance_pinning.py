@@ -93,14 +93,42 @@ requires_runner = pytest.mark.skipif(
 
 
 def _provider(
-    instance_id: str, module: str, priority: int, default_model: str
+    instance_id: str | None, module: str, priority: int, default_model: str
 ) -> dict[str, Any]:
-    return {
-        "id": instance_id,
-        "instance_id": instance_id,
+    """One mount-plan provider entry.
+
+    ``instance_id=None`` is the module's DEFAULT instance -- an entry the host
+    allows to carry no id at all (at most one per module,
+    ``_session_init.py:136-152``). It is not a hypothetical: this host's 14th
+    provider is one, and it is the entry that exposed the mount-key hole.
+    ``id``/``instance_id`` both appear on id'd entries because
+    ``_map_id_to_instance_id`` (``runtime/config.py:448-484``) copies one to
+    the other without stripping either, and the two host matchers read
+    different ones.
+    """
+    entry: dict[str, Any] = {
         "module": module,
         "config": {"priority": priority, "default_model": default_model},
     }
+    if instance_id:
+        entry["id"] = instance_id
+        entry["instance_id"] = instance_id
+    return entry
+
+
+def mount_key(entry: dict[str, Any]) -> str:
+    """The name the KERNEL mounts an entry under.
+
+    Mirrors ``amplifier_core._session_init`` (``_session_init.py:154-214``):
+    the instance id if there is one, else the module id with a leading
+    ``provider-`` stripped. Keying these mirrors by ``entry["id"]`` instead --
+    as they first did -- silently drops every id-less entry from the simulated
+    child, which is precisely where the two matchers can still disagree.
+    """
+    instance_id = entry.get("instance_id") or entry.get("id")
+    if isinstance(instance_id, str) and instance_id:
+        return instance_id
+    return str(entry.get("module", "")).removeprefix("provider-")
 
 
 #: The 14 provider instances the failing host had mounted, in declaration
@@ -122,6 +150,11 @@ HOST_PROVIDERS: list[dict[str, Any]] = [
     _provider("luna", "provider-openai", 14, "gpt-5.6-luna"),
     _provider("luna-max", "provider-openai", 15, "gpt-5.6-luna"),
     _provider("sol-max", "provider-openai", 16, "gpt-5.6-sol"),
+    # The 14th, and the only one with NO id: the default instance of its own
+    # module, mounted as "openai-chatgpt". Present because the capture has it
+    # -- a 13-entry fixture cannot see what an id-less entry does to either
+    # matcher.
+    _provider(None, "provider-openai-chatgpt", 17, "gpt-5.6-sol"),
 ]
 
 #: What the host's routing matrix (``routing.matrix=anthropic``) actually
@@ -193,7 +226,7 @@ def host_spawn_promotes(
 
     for pref in preferences or ():
         if pref.provider in lookup:
-            return providers[lookup[pref.provider]].get("id")
+            return mount_key(providers[lookup[pref.provider]])
     return None
 
 
@@ -207,7 +240,7 @@ def child_role_pin_promotes(
     keyed by INSTANCE ID, the first preference that matches one wins, and an
     ambiguous name is refused rather than guessed.
     """
-    mounted = [entry["id"] for entry in providers if entry.get("id")]
+    mounted = [mount_key(entry) for entry in providers if mount_key(entry)]
 
     def variants(name: str) -> set[str]:
         short = name.replace("provider-", "")
@@ -263,7 +296,7 @@ def child_mount_plan(
     every other instance at or below 0 is demoted to 1.
     """
     plan = {
-        entry["id"]: {
+        mount_key(entry): {
             "priority": entry["config"]["priority"],
             "default_model": entry["config"]["default_model"],
         }
@@ -661,7 +694,7 @@ class TestInstancePinning:
         await executor.execute_recipe(one_step_recipe(), {}, temp_dir)
 
         prefs = spawn.calls[0]["provider_preferences"]
-        by_id = {entry["id"]: entry for entry in HOST_PROVIDERS}
+        by_id = {mount_key(entry): entry for entry in HOST_PROVIDERS}
         declared_modules = {
             f"provider-{provider}" for provider, _ in MATRIX_REASONING_GENERAL
         }
@@ -822,7 +855,7 @@ class TestOverlaySurvivesTheChildsRePin:
 
         call = spawn.calls[0]
         overlay = call["agent_configs"]["foundation:zen-architect"]
-        mounted = {entry["id"] for entry in HOST_PROVIDERS}
+        mounted = {mount_key(entry) for entry in HOST_PROVIDERS}
 
         assert overlay["provider_preferences"][0] == {
             "provider": "opus",
@@ -916,7 +949,7 @@ class TestOverlaySurvivesTheChildsRePin:
                 }
             },
             providers=[
-                entry for entry in HOST_PROVIDERS if entry["id"] != "gemini"
+                entry for entry in HOST_PROVIDERS if mount_key(entry) != "gemini"
             ],
         )
 
@@ -929,7 +962,9 @@ class TestOverlaySurvivesTheChildsRePin:
         assert "provider_preferences" not in overlay
         assert overlay["model_role"] == ["reasoning"]
 
-        providers = [entry for entry in HOST_PROVIDERS if entry["id"] != "gemini"]
+        providers = [
+            entry for entry in HOST_PROVIDERS if mount_key(entry) != "gemini"
+        ]
         child = child_boot(call, "foundation:zen-architect", providers=providers)
         assert child["reasserted"] is False
         # Parent ordering, exactly as a `delegate` of the same agent gets.
@@ -980,6 +1015,169 @@ class TestOverlaySurvivesTheChildsRePin:
 
         assert spawn.calls[0]["provider_preferences"] is None
         assert spawn.calls[0]["agent_configs"] is coordinator.config["agents"]
+
+
+# ---------------------------------------------------------------------------
+# The id-less default instance: the 14th, and the name neither matcher owns
+# ---------------------------------------------------------------------------
+#
+# A provider entry without an ``id`` is legal (at most one per module) and IS
+# mounted -- under the module's short name (``_session_init.py:154-214``). The
+# two matchers read that name differently the moment its module has more than
+# one entry: the spawner's flat lookup gives the module's short name to the
+# LAST declared instance (``spawn_utils.py:648-673``), while the child mounts
+# the id-less entry there. So a chain naming it promotes one provider at spawn
+# and a different one at ``session:start`` -- the field defect's exact shape,
+# reached by a different collision.
+#
+# Measured against the installed host before the guard existed (the same
+# harness as the capture above, with this host's own id-less entry moved into
+# ``provider-openai``): spawn promoted ``sol-max``, ``role_pin`` re-pinned to
+# ``openai``.
+
+
+#: The hostile-but-legal host: one id-less ``provider-openai`` entry, at the
+#: lowest priority number, alongside two id'd instances of the same module.
+MIXED_PROVIDERS: list[dict[str, Any]] = [
+    _provider(None, "provider-openai", 1, "gpt-5.6-default"),
+    _provider("sol", "provider-openai", 3, "gpt-5.6-sol"),
+    _provider("sol-max", "provider-openai", 9, "gpt-5.6-sol"),
+    _provider("opus", "provider-anthropic", 5, "claude-opus-5"),
+]
+
+MIXED_AGENT_OVERLAY: dict[str, Any] = {
+    "description": "wants openai, by module name",
+    "model_role": ["fast"],
+    "provider_preferences": [{"provider": "openai", "model": "gpt-5.[0-9]"}],
+}
+
+
+class TestTheIdLessDefaultInstance:
+    """A mounted instance the engine cannot name is skipped, never pinned."""
+
+    def test_the_capture_host_really_has_a_fourteenth_id_less_instance(self):
+        """The fixture is the capture, not a tidied-up version of it."""
+        assert len(HOST_PROVIDERS) == 14
+        id_less = [entry for entry in HOST_PROVIDERS if not entry.get("id")]
+        assert [entry["module"] for entry in id_less] == [
+            "provider-openai-chatgpt"
+        ]
+        # Mounted, and under its module's short name -- not absent, and not "".
+        assert mount_key(id_less[0]) == "openai-chatgpt"
+        assert "openai-chatgpt" in child_mount_plan(HOST_PROVIDERS, None)
+
+    def test_pinning_to_an_unnameable_instance_would_split_the_matchers(self):
+        """Non-vacuity: the name the guard refuses really is a split name.
+
+        Without this, a guard that never fires and a guard that is not needed
+        look identical.
+        """
+        by_mount_name = [ProviderPreference(provider="openai", model="")]
+        assert host_spawn_promotes(MIXED_PROVIDERS, by_mount_name) == "sol-max"
+        assert child_role_pin_promotes(MIXED_PROVIDERS, by_mount_name) == "openai"
+
+    @pytest.mark.asyncio
+    async def test_the_engine_never_emits_the_split_name(
+        self, mock_session_manager, temp_dir
+    ):
+        spawn = FakeSpawn()
+        coordinator = HostCoordinator(
+            spawn,
+            agents={"caller:writer": dict(MIXED_AGENT_OVERLAY)},
+            providers=MIXED_PROVIDERS,
+        )
+
+        executor = RecipeExecutor(coordinator, mock_session_manager)
+        await executor.execute_recipe(
+            one_step_recipe("caller:writer"), {}, temp_dir
+        )
+
+        call = spawn.calls[0]
+        emitted = [pref.provider for pref in call["provider_preferences"]]
+        overlay = call["agent_configs"]["caller:writer"]
+
+        assert emitted == ["sol"], (
+            "the engine pinned to the id-less default instance's mount name, "
+            "which the spawner resolves to a different provider entirely"
+        )
+        assert [p["provider"] for p in overlay["provider_preferences"]] == emitted
+
+    @pytest.mark.asyncio
+    async def test_spawn_and_child_land_on_the_same_instance(
+        self, mock_session_manager, temp_dir
+    ):
+        """The whole invariant, stated once: both matchers, one instance."""
+        spawn = FakeSpawn()
+        coordinator = HostCoordinator(
+            spawn,
+            agents={"caller:writer": dict(MIXED_AGENT_OVERLAY)},
+            providers=MIXED_PROVIDERS,
+        )
+
+        executor = RecipeExecutor(coordinator, mock_session_manager)
+        await executor.execute_recipe(
+            one_step_recipe("caller:writer"), {}, temp_dir
+        )
+
+        call = spawn.calls[0]
+        promoted = host_spawn_promotes(
+            MIXED_PROVIDERS, call["provider_preferences"]
+        )
+        child = child_boot(
+            call, "caller:writer", providers=MIXED_PROVIDERS
+        )
+
+        assert promoted == "sol"
+        assert child["winner"] == promoted, (
+            "spawn promoted %r and the child re-pinned to %r -- the same "
+            "disagreement the whole branch exists to remove"
+            % (promoted, child["winner"])
+        )
+        assert child["reasserted"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_sole_id_less_instance_is_still_pinnable(
+        self, mock_session_manager, temp_dir
+    ):
+        """Only one entry for the module -> its mount name IS unambiguous.
+
+        The guard refuses split names, not id-less entries: dropping every
+        id-less provider would strand the single-provider hosts that are the
+        common case.
+        """
+        providers = [
+            _provider(None, "provider-anthropic", 4, "claude-opus-5"),
+            _provider("gemini", "provider-gemini", 7, "gemini-3.1-flash"),
+        ]
+        spawn = FakeSpawn()
+        coordinator = HostCoordinator(
+            spawn,
+            agents={
+                "caller:writer": {
+                    "model_role": ["reasoning"],
+                    "provider_preferences": [
+                        {"provider": "anthropic", "model": "claude-opus-*"}
+                    ],
+                }
+            },
+            providers=providers,
+        )
+
+        executor = RecipeExecutor(coordinator, mock_session_manager)
+        await executor.execute_recipe(
+            one_step_recipe("caller:writer"), {}, temp_dir
+        )
+
+        call = spawn.calls[0]
+        assert [pref.provider for pref in call["provider_preferences"]] == [
+            "anthropic"
+        ]
+        assert host_spawn_promotes(providers, call["provider_preferences"]) == (
+            "anthropic"
+        )
+        child = child_boot(call, "caller:writer", providers=providers)
+        assert child["winner"] == "anthropic"
+        assert child["reasserted"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1070,7 +1268,7 @@ class TestV2InSessionRun:
 
         # The overlay declares instance ids, not the module names the agent
         # file was written with.
-        mounted = {entry["id"] for entry in HOST_PROVIDERS}
+        mounted = {mount_key(entry) for entry in HOST_PROVIDERS}
         assert [p["provider"] for p in overlay["provider_preferences"]] == [
             pref.provider for pref in call["provider_preferences"]
         ]

@@ -471,6 +471,22 @@ def _warn_depends_on_unenforced(recipe: "Recipe") -> None:
 # rather than emitted as a name something else might answer to, and a chain
 # that ends up empty becomes `None` -- inherit the parent, exactly as a
 # `delegate` of the same agent does.
+#
+# "Name the instance" is only worth anything if BOTH matchers read that name as
+# the same instance, and an instance id is not the only thing a host mounts a
+# provider under.  An entry with no `id` is the module's DEFAULT instance and
+# mounts under the module's short name (`amplifier_core/_session_init.py`
+# :154-214) -- at most one per module, but perfectly legal alongside id'd ones.
+# Its mount name is exactly the name the spawner's flat lookup resolves to the
+# LAST declared instance of that module, so a chain naming it splits the two
+# matchers all over again: measured against the installed host with this
+# machine's own id-less 14th provider entry moved into `provider-openai`, the
+# spawn promoted `sol-max` while the child re-pinned to the id-less instance
+# mounted as `openai`.  `_nameable_candidates` below therefore keeps only the
+# instances whose mount name the spawner resolves back to that very entry.  It
+# is a no-op wherever every instance carries an id (this host's other 13) and
+# wherever a module has just one entry (every single-instance host), and it is
+# what stops the pin from quietly becoming the defect it exists to fix.
 
 
 def _provider_name_variants(name: str) -> set[str]:
@@ -492,6 +508,65 @@ def _provider_instance_id(entry: dict[str, Any]) -> str:
     return ""
 
 
+def _provider_mount_key(entry: dict[str, Any]) -> str:
+    """The name the KERNEL mounts this entry under; empty if it has none.
+
+    Mirrors ``amplifier_core._session_init`` (``_session_init.py:154-214``): an
+    entry carrying an instance id is remapped onto it, and an entry without one
+    is its module's default instance, keeping the module id with a leading
+    ``provider-`` stripped.  That default name is the key the child's routing
+    re-assert matches against, so it -- not the empty string the old code read
+    such an entry as -- is what the entry is actually called.
+    """
+    instance_id = _provider_instance_id(entry)
+    if instance_id:
+        return instance_id
+    module = str(entry.get("module", "") or "")
+    return module.removeprefix("provider-")
+
+
+def _spawn_provider_lookup(entries: list[dict[str, Any]]) -> dict[str, int]:
+    """The spawner's own name -> entry index map.
+
+    Mirrors ``spawn_utils._build_provider_lookup`` (spawn_utils.py:648-673)
+    field for field, INCLUDING that it reads ``id`` (never ``instance_id``) and
+    that it is built by enumeration, so a name several entries answer to keeps
+    the LAST of them.
+    """
+    lookup: dict[str, int] = {}
+    for index, entry in enumerate(entries):
+        module = str(entry.get("module", "") or "")
+        lookup[module] = index
+        short = module.replace("provider-", "")
+        if short != module:
+            lookup[short] = index
+        lookup[f"provider-{short}"] = index
+        instance_id = entry.get("id")
+        if isinstance(instance_id, str) and instance_id:
+            lookup[instance_id] = index
+    return lookup
+
+
+def _nameable_candidates(
+    candidates: list[tuple[int, dict[str, Any]]], lookup: dict[str, int]
+) -> list[tuple[int, dict[str, Any]]]:
+    """The candidates both consumers read as the same instance.
+
+    An entry is nameable when the name the kernel mounts it under is a name the
+    spawner's lookup resolves back to that same entry.  An entry that is not
+    cannot be pinned at all: whatever name the engine wrote, the spawn would
+    promote one provider and the child's re-assert would promote another --
+    which is the defect this module exists to close, not a smaller version of
+    it.
+    """
+    return [
+        (index, entry)
+        for index, entry in candidates
+        if _provider_mount_key(entry)
+        and lookup.get(_provider_mount_key(entry)) == index
+    ]
+
+
 def _provider_entry_config(entry: dict[str, Any]) -> dict[str, Any]:
     config = entry.get("config")
     return config if isinstance(config, dict) else {}
@@ -506,7 +581,10 @@ def _provider_priority(entry: dict[str, Any]) -> float:
 
 
 def _pin_preference_to_instance(
-    pref: Any, entries: list[dict[str, Any]], instance_ids: set[str]
+    pref: Any,
+    entries: list[dict[str, Any]],
+    instance_ids: set[str],
+    lookup: dict[str, int],
 ) -> Any | None:
     """One preference, rewritten to name a provider instance. ``None`` = drop.
 
@@ -514,22 +592,27 @@ def _pin_preference_to_instance(
 
     1. A preference already naming a mounted instance id is returned untouched
        -- an explicit pin is the caller's decision, not ours to re-pick.
-    2. Instances of the named module whose configured ``default_model`` matches
+    2. Only instances the two consumers read the same way are candidates at all
+       (``_nameable_candidates``); an instance neither name can single out is
+       skipped in favour of the next one, because pinning to it would recreate
+       the spawn/child split this function exists to remove.
+    3. Instances of the named module whose configured ``default_model`` matches
        the preference's model pattern are preferred, and the winner's own
        default model replaces the pattern (a concrete name both consumers can
        apply without re-globbing). A preference naming no model at all ("use
        the provider's default") likewise gets the chosen instance's default
        model, rather than an empty string the spawner would write over that
        provider's configured model.
-    3. Failing that, every instance of the module is a candidate and the
-       preference's model pattern rides through unchanged, for the host to
+    4. Failing that, every nameable instance of the module is a candidate and
+       the preference's model pattern rides through unchanged, for the host to
        resolve against that instance's model list.
-    4. Among candidates the lowest priority number wins -- the instance this
+    5. Among candidates the lowest priority number wins -- the instance this
        session resolves for that module anyway -- ties broken by declaration
        order.
-    5. No instance of the module is mounted: dropped.  A name this host cannot
-       serve must not be handed on, because downstream it can still collide
-       with an unrelated instance that happens to share the spelling.
+    6. No instance of the module is mounted, or none of them is nameable:
+       dropped.  A name this host cannot serve *unambiguously* must not be
+       handed on, because downstream it can still collide with an unrelated
+       instance that happens to share the spelling.
     """
     provider = getattr(pref, "provider", "") or ""
     model = getattr(pref, "model", "") or ""
@@ -540,8 +623,8 @@ def _pin_preference_to_instance(
 
     variants = _provider_name_variants(provider)
     candidates = [
-        entry
-        for entry in entries
+        (index, entry)
+        for index, entry in enumerate(entries)
         if variants & _provider_name_variants(str(entry.get("module", "")))
     ]
     if not candidates:
@@ -554,21 +637,35 @@ def _pin_preference_to_instance(
         )
         return None
 
+    nameable = _nameable_candidates(candidates, lookup)
+    if not nameable:
+        logger.warning(
+            "provider preference %r names %d mounted instance(s) this session "
+            "cannot pin unambiguously: the name each is mounted under (%s) "
+            "resolves elsewhere in the spawner's own provider lookup, so a "
+            "pin would promote one provider at spawn and a different one at "
+            "the child's session:start - dropping it instead",
+            provider,
+            len(candidates),
+            ", ".join(
+                sorted(
+                    _provider_mount_key(entry) or "(unnamed)" for _, entry in candidates
+                )
+            ),
+        )
+        return None
+
     matching = [
-        entry
-        for entry in candidates
+        (index, entry)
+        for index, entry in nameable
         if model
         and fnmatch.fnmatchcase(
             str(_provider_entry_config(entry).get("default_model", "")), model
         )
     ]
-    pool = matching or candidates
-    chosen = min(pool, key=_provider_priority)
-    chosen_id = _provider_instance_id(chosen)
-    if not chosen_id:
-        # Nothing better to say than what the caller said: this host's provider
-        # entries carry no instance id to pin to.
-        return pref
+    pool = matching or nameable
+    _, chosen = min(pool, key=lambda item: _provider_priority(item[1]))
+    chosen_id = _provider_mount_key(chosen)
 
     chosen_default = str(_provider_entry_config(chosen).get("default_model", ""))
     chosen_model = chosen_default or model if (matching or not model) else model
@@ -613,10 +710,13 @@ def pin_preferences_to_instances(
         return preferences
 
     instance_ids = {_provider_instance_id(entry) for entry in entries} - {""}
+    # Built once, from the same list, so every preference in this chain is
+    # judged against one snapshot of what the spawner would resolve.
+    lookup = _spawn_provider_lookup(entries)
 
     pinned: list[Any] = []
     for pref in preferences:
-        resolved = _pin_preference_to_instance(pref, entries, instance_ids)
+        resolved = _pin_preference_to_instance(pref, entries, instance_ids, lookup)
         if resolved is not None:
             pinned.append(resolved)
 
