@@ -2274,9 +2274,40 @@ Recipe composition allows recipes to invoke other recipes as sub-workflows. This
 1. **Parent recipe** encounters a `type: "recipe"` step
 2. **Context is prepared** - Only explicitly passed variables are included
 3. **Sub-recipe loads** - Recipe file is parsed and validated
-4. **Sub-recipe executes** - Runs with isolated context
-5. **Results return** - Sub-recipe's final context becomes the step's output
-6. **Parent continues** - Output available via `output` variable
+4. **Agents are scoped** - see [Agent Isolation](#agent-isolation) below
+5. **Sub-recipe executes** - Runs with isolated context
+6. **Results return** - Sub-recipe's final context becomes the step's output
+7. **Parent continues** - Output available via `output` variable
+
+### Agent Isolation
+
+**A sub-recipe's `schema_version` is its own.** A sub-recipe that declares
+`schema_version: 2` resolves every `agent:` reference from its own
+`dependencies:` closure, exactly as it would if you invoked it directly —
+whether the parent is `schema_version: 2` or a legacy recipe with no
+`schema_version` at all.
+
+```yaml
+# parent.yaml — legacy, no schema_version: its OWN agent steps are caller-bound
+steps:
+  - id: "audit"
+    type: "recipe"
+    recipe: "repo-audit.yaml"   # schema_version: 2 → resolves from ITS OWN closure
+```
+
+Consequences worth knowing:
+
+- **A v2 sub-recipe is portable through a legacy parent.** It runs under a
+  bundle that carries none of the agents it names, because it brings its own.
+- **Closures are not inherited or intersected.** A v2 sub-recipe of a v2
+  parent gets its own catalog, not the parent's and not the overlap; each
+  recipe declares what it needs.
+- **There is no fallback.** If a v2 sub-recipe's closure cannot be resolved
+  (unreachable dependency, undeclared agent, runner library unavailable), the
+  step fails. It never silently reverts to the caller's agent map — that
+  would resolve a *different* agent while reporting success.
+- **A legacy sub-recipe is unchanged**: caller-bound, resolving from whatever
+  coordinator the parent is running against.
 
 ### Context Isolation
 

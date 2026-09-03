@@ -73,6 +73,7 @@ __all__ = [
     "SPAWN_CAPABILITY",
     "agent_provenance_record",
     "build_catalog",
+    "host_coordinator_of",
 ]
 
 #: Execution mode label for a schema-v2 recipe executed in-session: the
@@ -456,7 +457,36 @@ class ClosedWorldCoordinator:
         getter = getattr(self._coordinator, "get", None)
         return getter(name) if callable(getter) else None
 
+    @property
+    def host_coordinator(self) -> Any:
+        """The coordinator this view was built over -- one layer down."""
+        return self._coordinator
+
     def __getattr__(self, name: str) -> Any:
         # Only reached for attributes this view does not define itself, so
         # `config` and the capability methods above always win.
         return getattr(self._coordinator, name)
+
+
+def host_coordinator_of(coordinator: Any) -> Any:
+    """The real host coordinator underneath any number of scoped views.
+
+    A v2 sub-recipe of a v2 parent must be scoped over the *host*, not over
+    the parent's scope. Nesting the views would leave the parent's
+    :class:`ClosedWorldSpawn` innermost, so it -- not the sub-recipe's own
+    catalog -- would decide which agent names are admissible, and every agent
+    the sub-recipe declared but the parent did not would be refused. Each
+    recipe's closure is its own (manifest Core 3/4); it is neither inherited
+    nor intersected.
+
+    A plain host coordinator is returned unchanged, so this is safe to call
+    unconditionally.
+    """
+    seen: list[int] = []
+    while isinstance(coordinator, ClosedWorldCoordinator):
+        # Defensive: a self-referential view would otherwise spin forever.
+        if id(coordinator) in seen:  # pragma: no cover - not constructible today
+            break
+        seen.append(id(coordinator))
+        coordinator = coordinator.host_coordinator
+    return coordinator
