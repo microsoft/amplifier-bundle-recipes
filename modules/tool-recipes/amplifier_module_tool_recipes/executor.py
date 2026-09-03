@@ -65,6 +65,54 @@ def _model_role_label(role: Any) -> str | None:
     return str(role)
 
 
+def _model_after_pattern_resolution(resolution: Any, provider_name: str) -> str:
+    """The model a step should spawn with, honouring the documented fallback.
+
+    ``resolve_model_pattern`` reports "nothing matched" in one of two shapes,
+    depending on which ``amplifier-foundation`` build is installed: older ones
+    hand the glob back *unchanged*, newer ones return ``resolved_model=None``.
+    The first is the dangerous one -- the pattern goes to the provider verbatim,
+    and no provider has a model literally named ``claude-haiku-*``, so the spawn
+    dies with a 404 (``not_found_error``) instead of running. The documented
+    contract is the opposite: "if model pattern has no matches -> uses
+    provider's default model" (``context/recipe-instructions.md``,
+    ``docs/BEST_PRACTICES.md``). An empty model is how this executor already
+    spells "use the provider's default" (see the ``step.provider``-only branch),
+    so that is what an unmatched pattern collapses to under either shape,
+    loudly. ``None`` in particular must never reach a provider as the string
+    ``"None"``.
+
+    The fallback fires only on POSITIVE evidence of no match: a pattern was
+    resolved, a non-empty catalogue came back from the provider, and nothing in
+    it matched. "Could not enumerate this provider's models" is a different
+    fact -- there the pattern rides through untouched for the host to resolve
+    against the instance it finally picks (see ``pin_preferences_to_instances``),
+    because discarding the author's pattern on no evidence would silently
+    downgrade a step that would otherwise have resolved fine.
+    """
+    resolved_model = str(getattr(resolution, "resolved_model", "") or "")
+    pattern = getattr(resolution, "pattern", None)
+    available_models = getattr(resolution, "available_models", None)
+    matched_models = getattr(resolution, "matched_models", None)
+
+    if not pattern or not available_models or matched_models:
+        return resolved_model
+
+    logger.warning(
+        "model pattern %r matched none of the %d model(s) provider %r offers - "
+        "falling back to that provider's default model, as documented. "
+        "Passing the pattern through would 404 (no model is literally named "
+        "%r). Available: %s",
+        pattern,
+        len(available_models),
+        provider_name or "(unnamed)",
+        pattern,
+        ", ".join(str(m) for m in list(available_models)[:10])
+        + ("..." if len(available_models) > 10 else ""),
+    )
+    return ""
+
+
 def _is_wsl_bash(path: str) -> bool:
     """True if ``path`` is the WSL launcher rather than a real Windows bash.
 
@@ -2421,7 +2469,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         provider_name=pref.provider,
                         coordinator=self.coordinator,
                     )
-                    resolved_model = model_resolution.resolved_model
+                    resolved_model = _model_after_pattern_resolution(
+                        model_resolution, pref.provider
+                    )
                 provider_preferences.append(
                     ProviderPreference(provider=pref.provider, model=resolved_model)
                 )
@@ -2433,7 +2483,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 provider_name=step.provider,
                 coordinator=self.coordinator,
             )
-            resolved_model = model_resolution.resolved_model
+            resolved_model = _model_after_pattern_resolution(
+                model_resolution, step.provider
+            )
             provider_preferences = [
                 ProviderPreference(provider=step.provider, model=resolved_model)
             ]

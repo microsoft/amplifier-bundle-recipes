@@ -148,7 +148,7 @@ Checking requirements:
 ✗ Model selection: ALL steps use claude-opus-4-* (most expensive)
   User explicitly requested "fast/cheap models"
 
-Recommendation: Change model to claude-haiku or claude-sonnet-* for cost optimization.
+Recommendation: Change model to claude-haiku-* or claude-sonnet-* for cost optimization.
 
 ❌ VERDICT: FAIL
 ```

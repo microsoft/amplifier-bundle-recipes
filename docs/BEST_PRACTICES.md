@@ -1129,7 +1129,9 @@ steps:
 
 - **Class resolves to no models**: Falls through to next preference entry, or session default
 - **Provider not configured**: Falls back to default provider (warning logged)
-- **Model pattern has no matches**: Uses provider's default model
+- **Model pattern has no matches**: Uses provider's default model (warning logged)
+- **Bare model id (not a pattern)**: Used verbatim — a family name like `claude-haiku`
+  is not a model id and will 404. Pin a pattern (`claude-haiku-*`) instead.
 - **No provider/model specified**: Uses session's configured provider
 
 ### Anti-Patterns

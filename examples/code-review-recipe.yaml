@@ -35,7 +35,7 @@ tags: ["code-review", "quality", "analysis", "python", "conditional", "model-sel
 #
 # MODEL SELECTION STRATEGY:
 # This recipe demonstrates cost/capability optimization by matching models to tasks:
-# - claude-haiku: Fast, cheap - for simple classification (assess-severity, quick-approval)
+# - claude-haiku-*: Fast, cheap - for simple classification (assess-severity, quick-approval)
 # - claude-sonnet-*: Balanced - for thorough analysis (analyze-structure, identify-issues)
 # - claude-opus-*: Powerful - for strategic design (suggest-improvements, validate-suggestions)
 #
@@ -106,7 +106,7 @@ steps:
     agent: "foundation:zen-architect"
     mode: "ANALYZE"
     provider: "anthropic"
-    model: "claude-haiku"
+    model: "claude-haiku-*"
     prompt: |
       Based on the identified issues: {{identified_issues}}
 
@@ -194,7 +194,7 @@ steps:
     agent: "foundation:zen-architect"
     mode: "REVIEW"
     provider: "anthropic"
-    model: "claude-haiku"
+    model: "claude-haiku-*"
     condition: "{{severity}} == 'none'"
     prompt: |
       Based on this analysis: {{structure_analysis}}

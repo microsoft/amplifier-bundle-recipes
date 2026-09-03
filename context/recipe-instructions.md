@@ -118,7 +118,7 @@ steps:
   - id: "quick-classification"
     agent: "foundation:explorer"
     provider: "anthropic"
-    model: "claude-haiku"           # Fast, cheap for simple tasks
+    model: "claude-haiku-*"         # Fast, cheap for simple tasks
     prompt: "Classify this as bug/feature/question"
 
   - id: "deep-analysis"
@@ -143,15 +143,17 @@ Model names support glob patterns (fnmatch-style) for flexible version matching:
 
 | Task Type | Recommended Model | Why |
 |-----------|-------------------|-----|
-| Simple classification, yes/no | `claude-haiku` | Fast, cheap, sufficient |
+| Simple classification, yes/no | `claude-haiku-*` | Fast, cheap, sufficient |
 | Code implementation, analysis | `claude-sonnet-*` | Good balance of speed/capability |
 | Architecture, strategy, security | `claude-opus-*` | Best reasoning, worth the cost |
-| Quick summaries, formatting | `claude-haiku` | No deep reasoning needed |
+| Quick summaries, formatting | `claude-haiku-*` | No deep reasoning needed |
 
 ### Fallback Behavior
 
 - If specified provider not configured → uses default provider (warning logged)
-- If model pattern has no matches → uses provider's default model
+- If model pattern has no matches → uses provider's default model (warning logged)
+- If a model is written as a bare id rather than a pattern (no `*`, `?`, `[`) → used
+  verbatim, so a family name like `claude-haiku` 404s. Pin `claude-haiku-*` instead.
 - If no provider/model specified → uses session's configured provider
 
 ## Quick Gotchas
