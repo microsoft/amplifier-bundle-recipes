@@ -1,9 +1,21 @@
 # validate-recipes.yaml
-# Recipe Validator v1.0.2
+# Recipe Validator v1.0.5
 # Validates recipe YAML files in a bundle repository for structural correctness,
 # best practices, and semantic consistency.
 #
 # CHANGELOG:
+# v1.0.5 - Stop reporting the schema v2 header as an unknown recipe key
+#        - VALID_RECIPE_KEYS predated schema v2, so every migrated recipe
+#          drew UNKNOWN_RECIPE_KEY for `schema_version` and `dependencies`:
+#          96 false positives across this repo's own 49 v2 recipes, telling
+#          authors the recommended format was a typo. Added schema_version,
+#          dependencies, agents, capabilities.
+# v1.0.4 - Surface engine warnings under their own finding code
+#        - ValidationResult.warnings are plain strings, so a coded engine
+#          warning (RECIPE_LEGACY_AGENT_REFS) carries its code as a leading
+#          `CODE: ` token. Route on it instead of flattening every engine
+#          warning into the one ENGINE_WARNING bucket, so a legacy recipe
+#          with namespaced agent refs is greppable in the report.
 # v1.0.3 - Fix live-confirmed defect: enhance_diagrams: "false" crashed the run
 #        - dot-regen-enhance is conditional on enhance_diagrams, and
 #          dot-regen-write referenced its `collect: enhanced_dots` output
@@ -100,7 +112,7 @@ description: |
   - Deterministic quality classification with explicit PASS thresholds
   - Quick-approval path for clean repos (no unnecessary LLM analysis)
   - Configurable recipes directory and known agent patterns
-version: "1.0.3"
+version: "1.0.5"
 author: "Amplifier Recipes Collection"
 tags: ["recipes", "validation", "quality", "audit", "structure", "best-practices"]
 
@@ -424,6 +436,13 @@ steps:
           "name", "description", "version", "author", "created", "updated",
           "tags", "context", "steps", "stages", "recursion", "rate_limiting",
           "orchestrator",
+          # Schema v2 manifest keys. Omitting these made this validator report
+          # the v2 header itself as UNKNOWN_RECIPE_KEY -- 96 false positives
+          # across this repo's own 49 migrated recipes, telling authors the
+          # recommended format was a typo. Whether a *present* manifest key is
+          # VALID is the runner library's judgment (recipe-runner-lib.v1 Core 1),
+          # not this list's; this list only says the key is recognized.
+          "schema_version", "dependencies", "agents", "capabilities",
       }
 
       VALID_STEP_KEYS = {
@@ -497,10 +516,21 @@ steps:
                               "detail": "",
                           })
                       for warn in result.warnings:
+                          # An engine warning may self-identify with a leading
+                          # `CODE: ` token (e.g. RECIPE_LEGACY_AGENT_REFS).
+                          # ValidationResult.warnings are plain strings, so the
+                          # code travels in the message; surface it as the
+                          # finding's own code rather than flattening every
+                          # engine warning into one bucket.
+                          message = str(warn)
+                          code = "ENGINE_WARNING"
+                          head, sep, _rest = message.partition(": ")
+                          if sep and head.isupper() and head.replace("_", "").isalnum():
+                              code = head
                           findings.append({
-                              "code": "ENGINE_WARNING",
+                              "code": code,
                               "severity": "WARNING",
-                              "message": str(warn),
+                              "message": message,
                               "detail": "",
                           })
                   except Exception as exc:

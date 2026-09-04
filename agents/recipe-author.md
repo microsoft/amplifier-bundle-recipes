@@ -59,10 +59,90 @@ This agent is available when the recipes bundle is included. It can be invoked f
 
 ## Knowledge Base
 
+### Schema v2 is the default output (NOT optional)
+
+**Every recipe this agent produces that has an `agent:` step carries a schema v2
+header.** There is no "add it later" mode and no v1-by-default fallback. A recipe
+without the header is only correct when it has no agent steps at all
+(bash-only), or when a documented structural reason blocks migration.
+
+```yaml
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+      - "foundation:security-guardian"
+
+name: "..."
+description: "..."
+version: "1.0.0"
+# ... all other v1 top-level fields are unchanged
+```
+
+**Why it is the default.** Without the header, a step's `agent:` resolves from
+the **calling session's** agent map. The recipe works in the bundle it was
+authored in and nowhere else: elsewhere it fails with
+`Agent 'foundation:git-ops' not found in configuration`, or — worse — silently
+resolves a *different* agent that happens to share the name. With the header,
+agents resolve from the recipe's own declared closure, so the same file runs
+from any bundle, in-session or through the standalone `recipe-runner` CLI.
+
+**Authoring rules**
+
+| Rule | Detail |
+|------|--------|
+| Declare every namespace | Each `ns:name` agent a step references must appear under `required_agents` of the dependency whose bundle ships it. One `dependencies` entry per source bundle. |
+| Self-reference is correct | A recipe using agents from its *own* bundle declares that bundle too. This is not redundant — the closure is what resolution reads. |
+| Pin, never track | `@v2.1.2` or a SHA. Never `@main`. A branch makes the closure change under the recipe. |
+| `agent: self` is exempt | It names no bundle and no `dependencies` entry can supply it. |
+| Aliases are top-level | The `agents:` alias map is a top-level key, never a per-dependency key. Declaring it without `schema_version: 2` is a parse ERROR. |
+| Typos fail loudly | Unknown manifest keys are a parse ERROR, not silently ignored. |
+
+**Verify before handing back:** `recipes` tool `operation: validate` on the
+recipe path. For a v2 recipe this runs the runner library's manifest parse plus
+plan preflight, so an undeclared agent surfaces as a typed preflight failure
+rather than a runtime surprise.
+
+### Pattern: migrate a legacy recipe to v2
+
+Triggered by any of: the validator finding `RECIPE_LEGACY_AGENT_REFS`, a result
+labelled `legacy-caller-bound`, or `Agent 'x:y' not found in configuration`.
+
+1. **Collect every agent reference.** Flat steps, staged steps, and nested
+   `foreach` / `while` bodies. Exclude `agent: self`; exclude bare (un-namespaced)
+   names — those are aliases or caller-local agents, not bundle agents.
+2. **Find the source bundle for each namespace.** The namespace is the bundle's
+   short name: `foundation:*` → `amplifier-foundation`. For a non-obvious
+   namespace, look for the agent's `.md` under `agents/` in the candidate bundle
+   repo, or grep the repo's own `bundle.yaml` / `bundle.md` for the namespace.
+   Do **not** guess a source URL — an undeclared or wrong source is a preflight
+   failure, which is the correct loud outcome, but a *wrong-but-resolvable*
+   source silently binds the recipe to the wrong agent.
+3. **Include the recipe's own bundle** if any step references an agent that
+   bundle ships.
+4. **Pin each source** to a tag or SHA. Reuse the pin already used elsewhere in
+   the repo rather than inventing a new one (grep for an existing `source:` line).
+5. **Write the header** above `name:`, with one `dependencies` entry per bundle
+   and every referenced agent under that entry's `required_agents`.
+6. **Verify**: `recipes` tool `operation: validate` on the migrated path — this
+   is manifest parse + dependency plan preflight, executing nothing. A clean
+   result means every referenced agent is actually supplied by a declared source.
+7. **Bump the recipe version and add a changelog entry** (see Changelog
+   Maintenance below).
+
+**If migration is genuinely blocked** (e.g. a recipe built around `agent: self`,
+which no `dependencies` entry can supply), leave it legacy and write the reason
+into a header comment naming what would have to change. A recorded reason is a
+valid outcome; a silent legacy recipe is not.
+
 ### Recipe Schema
 
 The agent has complete knowledge of the recipe schema including:
 
+- **Schema v2 dependency manifests: `schema_version`, `dependencies`, `required_agents`, the top-level `agents` alias map, `capabilities`** — the default for any recipe with agent steps
 - All required and optional fields
 - Field types and constraints
 - Validation rules
@@ -126,6 +206,14 @@ The agent should be aware of common Amplifier agents:
 
 The agent understands:
 
+- **v2-first: any recipe with an `agent:` step gets a `schema_version: 2` + `dependencies` header, always**
+- **NEVER rename an agent to dodge a missing one.** If `foundation:git-ops` is
+  not available, the fix is declaring the dependency that ships it — not
+  swapping in whatever agent the current bundle happens to expose. Renaming
+  makes the recipe resolve a *different* agent while looking like it works.
+- **NEVER fork a local copy of a shipped recipe to work around a missing agent.**
+  The fork inherits the same caller-bound defect, and the shipped recipe stays
+  broken for everyone else. Fix the shipped recipe upstream.
 - When to use recipes vs interactive sessions
 - How to structure multi-step workflows
 - Context variable naming conventions
@@ -286,6 +374,14 @@ The agent understands:
 
 **Example structure:**
 ```yaml
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+
 name: "comprehensive-analysis"
 version: "1.0.0"
 
@@ -400,6 +496,18 @@ Does this structure make sense? Any changes?
 **Agent:**
 ```yaml
 # Generated recipe:
+
+# Schema v2 header: every agent this recipe names resolves from THIS declared
+# closure, not from whatever bundle happens to run it.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:security-guardian"
+      - "foundation:performance-optimizer"
+      - "foundation:zen-architect"
 
 name: "code-review-security-performance"
 description: "Security and performance analysis with improvement suggestions"
@@ -578,6 +686,14 @@ tools:
 ## Validation Checklist
 
 When generating or validating recipes, the agent checks:
+
+### Portability (schema v2)
+- [ ] Recipe has an `agent:` step → `schema_version: 2` header present
+- [ ] Every namespaced (`ns:name`) agent referenced — flat, staged, and nested `foreach`/`while` bodies — appears under some dependency's `required_agents`
+- [ ] The recipe's own bundle is declared if it supplies any referenced agent
+- [ ] Every `source:` pinned to a tag or SHA, never a branch
+- [ ] No agent was renamed, and no shipped recipe was forked, to work around a missing agent
+- [ ] `recipes` tool `operation: validate` passes (manifest parse + plan preflight)
 
 ### Structure
 - [ ] Valid YAML syntax

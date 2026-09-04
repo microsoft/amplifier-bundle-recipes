@@ -688,6 +688,27 @@ class Recipe:
     orchestrator: OrchestratorConfig | None = (
         None  # Orchestrator config for spawned sessions
     )
+    # Raw declared `schema_version`, or None when the key is absent (a *legacy*
+    # recipe). Recorded, never interpreted: this engine executes v1 semantics
+    # either way, and manifest validity is the runner library's to judge
+    # (`recipe-runner-lib.v1` Core 1). It exists so plan-time diagnostics can
+    # tell a legacy recipe from a portable one without re-reading the file.
+    schema_version: Any | None = None
+    # Where this recipe was loaded from, when it came from a file. None for a
+    # recipe constructed in memory (tests, generators).
+    source_path: Path | None = None
+
+    @property
+    def declares_v2(self) -> bool:
+        """True when the recipe declares ``schema_version: 2``.
+
+        Deliberately exact rather than truthy: a recipe with no
+        ``schema_version`` and a recipe with an out-of-range one are both
+        "not v2" for diagnostic purposes. Judging whether a *present* value is
+        valid stays the runner library's job (``recipe-runner-lib.v1`` Core 1);
+        this only answers "did the author opt into the portable format?".
+        """
+        return self.schema_version == 2
 
     @property
     def is_staged(self) -> bool:
@@ -907,6 +928,8 @@ class Recipe:
             recursion=recursion_config,
             rate_limiting=rate_limiting_config,
             orchestrator=orchestrator_config,
+            schema_version=data.get("schema_version"),
+            source_path=path,
         )
 
         return recipe

@@ -91,6 +91,17 @@ The agent guides you through:
 ### Recipe Example
 
 ```yaml
+# Schema v2 header — required for any recipe with `agent:` steps. It makes the
+# recipe portable: agents resolve from THIS declared closure, not from whatever
+# bundle happens to run it.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+
 name: "code-review-flow"
 description: "Multi-stage code review with analysis, feedback, and validation"
 version: "1.0.0"
@@ -100,23 +111,28 @@ context:
 
 steps:
   - id: "analyze"
-    agent: "zen-architect"
+    agent: "foundation:zen-architect"
     mode: "ANALYZE"
     prompt: "Analyze the code at {{file_path}} for complexity and maintainability"
     output: "analysis"
 
   - id: "suggest-improvements"
-    agent: "zen-architect"
+    agent: "foundation:zen-architect"
     mode: "ARCHITECT"
     prompt: "Based on this analysis: {{analysis}}, suggest concrete improvements"
     output: "improvements"
 
   - id: "validate-suggestions"
-    agent: "zen-architect"
+    agent: "foundation:zen-architect"
     mode: "REVIEW"
     prompt: "Review these suggestions: {{improvements}} for feasibility"
     output: "validation"
 ```
+
+**The header is not optional.** Without it, `agent:` resolves from the calling
+session's agent map — the recipe runs in the bundle it was authored in and
+nowhere else. See
+[RECIPE_SCHEMA.md → Quick start: the v2 header](docs/RECIPE_SCHEMA.md#quick-start-the-v2-header).
 
 ## Session Management
 
