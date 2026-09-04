@@ -6,7 +6,7 @@ This document provides best practices for creating, maintaining, and using Ampli
 
 ## Table of Contents
 
-- [Design Principles](#design-principles)
+- [Design Principles](#design-principles) — **start with rule 0: declare your dependencies**
 - [Recipe Structure](#recipe-structure)
 - [Step Design](#step-design)
 - [Context Management](#context-management)
@@ -21,6 +21,57 @@ This document provides best practices for creating, maintaining, and using Ampli
 ---
 
 ## Design Principles
+
+### 0. Declare Your Dependencies (schema v2 first)
+
+**Any recipe with an `agent:` step carries a `schema_version: 2` header.** This
+is rule zero because it is the one defect that does not show up until someone
+else runs your recipe.
+
+✅ **Good:**
+```yaml
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+
+name: "architecture-review"
+```
+
+❌ **Bad:**
+```yaml
+name: "architecture-review"      # no header: agents resolve from the CALLER
+steps:
+  - id: "review"
+    agent: "foundation:zen-architect"
+```
+
+**Why:** without the header, `agent:` resolves from the calling session's agent
+map. The recipe works in the bundle it was authored in and nowhere else —
+elsewhere it fails with `Agent 'foundation:zen-architect' not found in
+configuration`, or silently resolves a *different* agent of the same name. With
+it, agents resolve from the recipe's own declared closure.
+
+**Rules:**
+
+- List every namespaced (`ns:name`) agent under the `required_agents` of the
+  dependency whose bundle ships it — including the recipe's **own** bundle.
+- Pin every `source` to a tag or SHA. Never `@main`.
+- `agent: self` is exempt; bash-only recipes need no header.
+
+**NEVER rename an agent, and never fork a local copy of a shipped recipe, to
+work around a missing agent.** Both bind the recipe harder to one caller,
+silently change which agent actually runs, and leave the shipped file broken
+for everyone else. Declare the dependency and fix the shipped recipe upstream.
+
+A legacy recipe announces itself three ways: the `RECIPE_LEGACY_AGENT_REFS`
+validation warning, a result labeled `legacy-caller-bound`, or an
+`Agent 'x:y' not found in configuration` failure. All three have the same fix.
+
+See [RECIPE_SCHEMA.md → Schema v2](RECIPE_SCHEMA.md#schema-v2--dependency-manifests).
 
 ### 1. Single Responsibility
 
@@ -1515,6 +1566,34 @@ description: "[DEPRECATED] Use security-audit-v2 instead"
 ---
 
 ## Common Pitfalls
+
+### 0. Renaming Agents to Dodge a Missing One
+
+❌ **Problem:** a shipped recipe references `foundation:git-ops`, your bundle
+does not expose it, so you fork the recipe locally and rename the agent to
+something that *is* available.
+
+```yaml
+# forked copy, agent renamed until it stopped erroring
+- id: "commit"
+  agent: "mybundle:helper"        # was foundation:git-ops
+```
+
+This is the single most damaging recipe anti-pattern: the fork inherits the same
+caller-bound defect, the renamed step now runs a *different* agent than the
+recipe was designed around, and the shipped recipe stays broken for everyone.
+
+✅ **Solution:** declare the dependency on the shipped recipe.
+
+```yaml
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:git-ops"
+```
 
 ### 1. Overly Generic Prompts
 

@@ -10,11 +10,40 @@ Recipes are declarative YAML specifications that define multi-step agent workflo
 
 **Schema Version:** 1.3.0
 
-> **Schema v2 is in draft.** Recipes that declare their own bundle/behavior
-> dependencies are specified in
-> [Schema v2 — Dependency Manifests (DRAFT)](#schema-v2--dependency-manifests-draft)
-> near the end of this document. Everything before that section describes
-> schema v1, the only executable format today.
+## Quick start: the v2 header
+
+**Any recipe with an `agent:` step should carry this header.** It is the default
+for new recipes, not an opt-in.
+
+```yaml
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+
+name: my-recipe            # everything below is unchanged from v1
+description: "..."
+version: "1.0.0"
+steps: [...]
+```
+
+Without it, a step's `agent:` resolves from the **calling session's** agent map:
+the recipe runs in the bundle it was authored in and nowhere else. With it,
+agents resolve from the recipe's own declared closure, so the same file runs
+from any bundle. List every namespaced agent under the `required_agents` of the
+dependency whose bundle ships it (including the recipe's own bundle), and pin
+each `source` to a tag or SHA — never a branch.
+
+A recipe with **no** `schema_version` is a *legacy recipe*: still executable
+through the Amplifier `recipes` tool, still caller-bound, and rejected outright
+by the standalone `recipe-runner` CLI.
+
+Full reference: [Schema v2 — Dependency Manifests](#schema-v2--dependency-manifests).
+Everything between here and that section describes the v1 fields, which v2
+recipes use unchanged.
 
 ## Top-Level Structure
 
@@ -2731,9 +2760,20 @@ Full results are always saved in the recipe session files. Use `recipes list` to
 
 ---
 
-## Schema v2 — Dependency Manifests (DRAFT)
+## Schema v2 — Dependency Manifests
 
-> **DRAFT — the contract is DRAFT. Manifest key spellings are parser-verified.**
+> **Shipped and executable. The underlying seam contract is still status DRAFT.**
+>
+> Schema v2 is the recommended format for any recipe with `agent:` steps, and it
+> runs today: the `recipes` tool routes a `schema_version`-declaring recipe
+> through the runner library for manifest parse and dependency resolution, then
+> executes it on the proven step engine with a closed-world agent catalog. The
+> format is exercised by the migrated recipes, templates and examples shipped in
+> this repository.
+>
+> What remains DRAFT is the *contract*, not the availability of the feature —
+> see "What is still DRAFT" below for the specific behaviors documented from the
+> contract rather than verified end to end here.
 >
 > This section is authored from the seam contract
 > [`contracts/recipe-dependency-manifest.v1.md`](../contracts/recipe-dependency-manifest.v1.md)
@@ -2764,9 +2804,10 @@ Full results are always saved in the recipe session files. Use `recipes list` to
 > match the shipped runner's `api.LockMode` and `lockfile.LOCK_VERSION` by
 > inspection; their runtime semantics are likewise unverified here.
 >
-> Everything earlier in this document describes **schema v1**, which remains the
-> only executable format today. A recipe that does not declare
-> `schema_version` is a *legacy recipe* and keeps its existing v1 behavior — see
+> Everything earlier in this document describes the **v1 field set**, which v2
+> recipes use unchanged — v2 adds the manifest header, it does not replace the
+> recipe body. A recipe that does not declare `schema_version` is a *legacy
+> recipe* and keeps its existing caller-bound behavior — see
 > [Legacy recipes](#legacy-recipes-no-schema_version) below.
 
 **Citation key.** `manifest.v1 Core N` refers to numbered invariant N in
@@ -3079,6 +3120,19 @@ A recipe without `schema_version` and `dependencies` is a **legacy recipe**
 The boundary is deliberate: legacy recipes keep working exactly where they
 already worked, they are never silently upgraded, and they cannot be run from
 the portable surfaces that promise isolation.
+
+**How a legacy recipe announces itself.** Three surfaces, one cause:
+
+| Surface | What you see |
+|---------|--------------|
+| Validation | `RECIPE_LEGACY_AGENT_REFS` — a WARNING naming every namespaced agent the recipe references and the remedy. Emitted by `validate_recipe`, surfaced by `validate-recipes.yaml`. Exempt: `agent: self`, bash-only recipes, and files under a `fixtures/` directory. |
+| Execution | The result is labeled `legacy-caller-bound`, with a deprecation warning. |
+| Failure | `Agent 'foundation:git-ops' not found in configuration`, from a caller whose bundle does not expose it. |
+
+**The remedy is always the header, never a rename.** Renaming the agents to
+whatever the running bundle happens to expose, or forking a local copy of a
+shipped recipe, binds the recipe *harder* to one caller and leaves the shipped
+file broken for everyone else. Declare the dependency and fix the shipped recipe.
 
 ### Worked example
 

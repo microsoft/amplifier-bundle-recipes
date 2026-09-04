@@ -1,11 +1,15 @@
 """Tests for recipe validation logic."""
 
+from pathlib import Path
+
 from amplifier_module_tool_recipes.models import ApprovalConfig
 from amplifier_module_tool_recipes.models import Recipe
 from amplifier_module_tool_recipes.models import Stage
 from amplifier_module_tool_recipes.models import Step
+from amplifier_module_tool_recipes.validator import LEGACY_AGENT_REFS_CODE
 from amplifier_module_tool_recipes.validator import ValidationResult
 from amplifier_module_tool_recipes.validator import check_agent_availability
+from amplifier_module_tool_recipes.validator import check_legacy_agent_refs
 from amplifier_module_tool_recipes.validator import check_step_dependencies
 from amplifier_module_tool_recipes.validator import check_variable_references
 from amplifier_module_tool_recipes.validator import extract_variables
@@ -760,3 +764,229 @@ class TestDeeperDotPathValidation:
         assert "items" in errors[0]
         assert "not a dict" in errors[0]
         assert "list" in errors[0]
+
+
+class TestCheckLegacyAgentRefs:
+    """Tests for check_legacy_agent_refs (RECIPE_LEGACY_AGENT_REFS).
+
+    The bug this check exists to catch: a shipped recipe referenced
+    ``foundation:file-ops`` / ``foundation:git-ops``, a session whose bundle did
+    not expose them failed to run it, and the "fix" applied was to fork a local
+    copy and RENAME the agents -- binding the recipe harder to one caller
+    instead of declaring the dependency it actually has.
+    """
+
+    def _legacy(self, **kwargs) -> Recipe:
+        """A legacy recipe (no schema_version) with sane required fields."""
+        kwargs.setdefault("name", "test")
+        kwargs.setdefault("description", "test")
+        kwargs.setdefault("version", "1.0.0")
+        return Recipe(**kwargs)
+
+    # --- positive: the warning fires --------------------------------------
+
+    def test_legacy_recipe_with_namespaced_agents_warns(self):
+        """Legacy + ns:name agents -> one warning naming every agent."""
+        recipe = self._legacy(
+            steps=[
+                Step(id="s1", agent="foundation:file-ops", prompt="p", output="a"),
+                Step(id="s2", agent="foundation:git-ops", prompt="p", output="b"),
+            ],
+        )
+        warnings = check_legacy_agent_refs(recipe)
+        assert len(warnings) == 1
+        assert warnings[0].startswith(f"{LEGACY_AGENT_REFS_CODE}: ")
+        assert "foundation:file-ops" in warnings[0]
+        assert "foundation:git-ops" in warnings[0]
+
+    def test_warning_states_the_remedy_and_forbids_renaming(self):
+        """The message must carry the fix, not just the complaint."""
+        recipe = self._legacy(
+            steps=[Step(id="s1", agent="foundation:explorer", prompt="p", output="a")]
+        )
+        message = check_legacy_agent_refs(recipe)[0]
+        assert "schema_version: 2" in message
+        assert "dependencies" in message
+        assert "RECIPE_SCHEMA.md" in message
+        assert "rename" in message.lower()
+        assert "fork" in message.lower()
+
+    def test_staged_recipe_is_covered(self):
+        """Agent refs inside stages are found, not just flat steps."""
+        recipe = self._legacy(
+            stages=[
+                Stage(
+                    name="review",
+                    steps=[
+                        Step(
+                            id="s1",
+                            agent="foundation:zen-architect",
+                            prompt="p",
+                            output="a",
+                        )
+                    ],
+                    approval=ApprovalConfig(required=False),
+                )
+            ],
+        )
+        warnings = check_legacy_agent_refs(recipe)
+        assert len(warnings) == 1
+        assert "foundation:zen-architect" in warnings[0]
+
+    def test_nested_foreach_body_is_covered(self):
+        """A foreach body's agent refs are raw dicts -- still found."""
+        recipe = self._legacy(
+            steps=[
+                Step(
+                    id="loop",
+                    foreach="{{items}}",
+                    while_steps=[
+                        {
+                            "id": "inner",
+                            "agent": "foundation:bug-hunter",
+                            "prompt": "p",
+                            "output": "x",
+                        }
+                    ],
+                    collect="results",
+                )
+            ],
+            context={"items": ["a"]},
+        )
+        warnings = check_legacy_agent_refs(recipe)
+        assert len(warnings) == 1
+        assert "foundation:bug-hunter" in warnings[0]
+
+    def test_deeply_nested_body_is_covered(self):
+        """Bodies nest; the walk recurses."""
+        recipe = self._legacy(
+            steps=[
+                Step(
+                    id="outer",
+                    foreach="{{items}}",
+                    while_steps=[
+                        {
+                            "id": "mid",
+                            "foreach": "{{items}}",
+                            "steps": [
+                                {
+                                    "id": "deep",
+                                    "agent": "python-dev:code-intel",
+                                    "prompt": "p",
+                                    "output": "x",
+                                }
+                            ],
+                            "collect": "inner_results",
+                        }
+                    ],
+                    collect="results",
+                )
+            ],
+            context={"items": ["a"]},
+        )
+        warnings = check_legacy_agent_refs(recipe)
+        assert len(warnings) == 1
+        assert "python-dev:code-intel" in warnings[0]
+
+    # --- negative: exemptions ---------------------------------------------
+
+    def test_v2_recipe_is_exempt(self):
+        """schema_version: 2 declares its closure -- nothing to warn about."""
+        recipe = self._legacy(
+            steps=[Step(id="s1", agent="foundation:explorer", prompt="p", output="a")],
+            schema_version=2,
+        )
+        assert recipe.declares_v2 is True
+        assert check_legacy_agent_refs(recipe) == []
+
+    def test_agent_self_is_exempt(self):
+        """`self` names no bundle; no dependencies entry could supply it."""
+        recipe = self._legacy(
+            steps=[Step(id="s1", agent="self", prompt="p", output="a")],
+        )
+        assert check_legacy_agent_refs(recipe) == []
+
+    def test_bash_only_recipe_is_exempt(self):
+        """No agent references, no warning."""
+        recipe = self._legacy(
+            steps=[Step(id="s1", type="bash", command="echo hi", output="a")],
+        )
+        assert check_legacy_agent_refs(recipe) == []
+
+    def test_bare_agent_name_is_exempt(self):
+        """A bare name carries no bundle information to declare."""
+        recipe = self._legacy(
+            steps=[Step(id="s1", agent="reviewer", prompt="p", output="a")],
+        )
+        assert check_legacy_agent_refs(recipe) == []
+
+    def test_fixture_path_is_exempt(self):
+        """Fixtures are pinned test inputs, several legacy on purpose."""
+        recipe = self._legacy(
+            steps=[Step(id="s1", agent="foundation:explorer", prompt="p", output="a")],
+            source_path=Path("recipes/tests/fixtures/valid-recipe.yaml"),
+        )
+        assert check_legacy_agent_refs(recipe) == []
+
+    def test_non_fixture_path_still_warns(self):
+        """The exemption is the fixtures dir, not 'has a path at all'."""
+        recipe = self._legacy(
+            steps=[Step(id="s1", agent="foundation:explorer", prompt="p", output="a")],
+            source_path=Path("recipes/ship-it.yaml"),
+        )
+        assert len(check_legacy_agent_refs(recipe)) == 1
+
+    # --- wiring ------------------------------------------------------------
+
+    def test_wired_into_validate_recipe_as_a_warning(self):
+        """Surfaces through validate_recipe, and never fails validation."""
+        recipe = self._legacy(
+            steps=[Step(id="s1", agent="foundation:explorer", prompt="p", output="a")],
+        )
+        result = validate_recipe(recipe)
+        assert result.is_valid
+        assert result.errors == []
+        assert any(w.startswith(LEGACY_AGENT_REFS_CODE) for w in result.warnings)
+
+    def test_from_yaml_records_schema_version_and_path(self, tmp_path):
+        """The model carries what the check needs, straight from the file."""
+        legacy = tmp_path / "legacy.yaml"
+        legacy.write_text(
+            "name: legacy\n"
+            "description: d\n"
+            "version: 1.0.0\n"
+            "steps:\n"
+            "  - id: s1\n"
+            '    agent: "foundation:explorer"\n'
+            "    prompt: p\n"
+            "    output: a\n",
+            encoding="utf-8",
+        )
+        recipe = Recipe.from_yaml(legacy)
+        assert recipe.schema_version is None
+        assert recipe.declares_v2 is False
+        assert recipe.source_path == legacy
+        assert len(check_legacy_agent_refs(recipe)) == 1
+
+        portable = tmp_path / "portable.yaml"
+        portable.write_text(
+            "schema_version: 2\n"
+            "dependencies:\n"
+            '  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"\n'
+            "    kind: bundle\n"
+            "    required_agents:\n"
+            '      - "foundation:explorer"\n'
+            "name: portable\n"
+            "description: d\n"
+            "version: 1.0.0\n"
+            "steps:\n"
+            "  - id: s1\n"
+            '    agent: "foundation:explorer"\n'
+            "    prompt: p\n"
+            "    output: a\n",
+            encoding="utf-8",
+        )
+        recipe = Recipe.from_yaml(portable)
+        assert recipe.schema_version == 2
+        assert recipe.declares_v2 is True
+        assert check_legacy_agent_refs(recipe) == []

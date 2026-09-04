@@ -30,6 +30,45 @@ All recipe work MUST follow this lifecycle. Do NOT write recipe YAML directly.
 
 ---
 
+## Recipe schema v2 — required for any recipe with `agent:` steps
+
+Every recipe that names an agent carries this header. It is the default, not an option.
+
+```yaml
+schema_version: 2
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:zen-architect"
+      - "foundation:explorer"
+```
+
+**Why**: without the header, `agent:` resolves from the **calling session's** agent map. The recipe runs in the bundle it was written in and nowhere else — elsewhere it fails outright, or silently resolves a *different* agent of the same name. With it, agents resolve from the recipe's own declared closure, so the same file runs from any bundle, in-session or through the standalone `recipe-runner` CLI.
+
+**Rules**
+
+- List **every** namespaced (`ns:name`) agent a step references, under the `required_agents` of the dependency whose bundle ships it. One `dependencies` entry per source bundle.
+- A recipe using agents from its **own** bundle declares that bundle too — self-referential declarations are correct, not redundant.
+- **Pin a tag or SHA, never a branch** (`@v2.1.2`, not `@main`).
+- `agent: self` needs no declaration and cannot be declared.
+- Unknown manifest keys are a parse ERROR, not silently ignored — typos fail loudly.
+
+**When an agent is missing**
+
+Symptoms: `Agent 'foundation:git-ops' not found in configuration`; a result labelled `legacy-caller-bound`; or the validator finding `RECIPE_LEGACY_AGENT_REFS`.
+
+Two remedies, both on the shipped recipe:
+
+1. No v2 header → add one declaring the bundle that ships the agent.
+2. Header present but the agent is outside the closure → add the bundle to `dependencies`, the agent to `required_agents`.
+
+**NEVER rename agents to whatever the current bundle happens to expose, and never fork a local copy of a shipped recipe to dodge a missing agent.** Both bind the recipe harder to one caller and leave the shipped file broken for everyone else. Declare the dependency and fix the shipped recipe upstream.
+
+Full reference: `docs/RECIPE_SCHEMA.md` → "Schema v2".
+
+---
+
 ## How to Run Recipes
 
 ### Conversational (Recommended)

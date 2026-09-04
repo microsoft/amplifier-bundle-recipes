@@ -116,7 +116,49 @@ After `recipe-author` creates or edits a recipe, validate it against the user's 
 2. Check each requirement against the recipe structure
 3. Verify no scope creep (unrequested additions)
 4. Confirm workflow matches intent
-5. Provide clear verdict
+5. **Check the schema v2 header** (see below — a missing one is a FAIL)
+6. Provide clear verdict
+
+**Schema v2 header check (any recipe with `agent:` steps)**
+
+A recipe with at least one `agent:` step MUST carry a `schema_version: 2` +
+`dependencies` header. Without it, `agent:` resolves from the *calling session's*
+agent map, so the recipe only runs in the bundle it was authored in — everywhere
+else it fails, or silently resolves a different agent of the same name. That is a
+portability defect the user did not ask for, so it fails validation even when
+every stated requirement is met.
+
+| Check | FAIL when |
+|-------|-----------|
+| Header present | Recipe has an `agent:` step (other than `agent: self`) but no `schema_version: 2` |
+| Agents declared | A referenced `ns:name` agent — including inside stages and nested `foreach`/`while` bodies — appears under no dependency's `required_agents` |
+| Sources pinned | A `dependencies[].source` tracks a branch (`@main`) rather than a tag or SHA |
+| No dodging | An agent was **renamed**, or a shipped recipe **forked locally**, to work around a missing agent instead of declaring the dependency |
+
+Exempt: bash-only recipes (no agent steps) and `agent: self` (no bundle can
+supply it). A recipe left legacy for a documented structural reason passes only
+if that reason is written into the file.
+
+**Schema v2 failure example:**
+```
+Validating recipe against user requirements:
+
+User requested: "A recipe that greps the repo and summarizes findings"
+
+Checking requirements:
+✓ Search step present (step: scan, type: bash)
+✓ Summary step present (step: summarize, agent: foundation:zen-architect)
+✗ Portability: recipe has an agent step but declares no `schema_version: 2`
+  `foundation:zen-architect` will resolve from the calling session's agent map.
+  Under a bundle without Foundation this fails:
+  "Agent 'foundation:zen-architect' not found in configuration".
+
+Recommendation: add a `schema_version: 2` header with a `dependencies` entry for
+amplifier-foundation (pinned tag) listing `foundation:zen-architect` under
+`required_agents`. Do NOT rename the agent to a locally-available one.
+
+❌ VERDICT: FAIL
+```
 
 **Example:**
 ```

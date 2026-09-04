@@ -2,9 +2,11 @@
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .models import Recipe
+from .runner_adapter import collect_agent_references
 
 
 @dataclass
@@ -46,6 +48,10 @@ def validate_recipe(recipe: Recipe, coordinator: Any = None) -> ValidationResult
     # Agent steps that silently discard their response (no `output:`)
     output_warnings = check_agent_output_capture(recipe)
     warnings.extend(output_warnings)
+
+    # Legacy recipe carrying namespaced agent references (portability)
+    legacy_warnings = check_legacy_agent_refs(recipe)
+    warnings.extend(legacy_warnings)
 
     # Dependency validation
     dep_errors = check_step_dependencies(recipe)
@@ -414,6 +420,98 @@ def check_agent_output_capture(recipe: Recipe) -> list[str]:
         )
 
     return warnings
+
+
+#: Finding code for a legacy recipe that references namespaced agents.
+#: Emitted as a leading ``CODE: `` token on the warning string so consumers
+#: that only see the message text (``validate-recipes.yaml`` reads
+#: ``ValidationResult.warnings``, which are plain strings) can still route on
+#: the code instead of pattern-matching prose.
+LEGACY_AGENT_REFS_CODE = "RECIPE_LEGACY_AGENT_REFS"
+
+#: A path component that marks a recipe as a pinned test input rather than a
+#: shipped artifact. Fixtures under ``recipes/tests/fixtures/`` and
+#: ``conformance/*/fixtures/`` are deliberately legacy -- several exist
+#: precisely so legacy behavior stays observable -- so nudging them toward v2
+#: would be noise against files that must never change.
+_FIXTURE_DIR_NAME = "fixtures"
+
+
+def _is_namespaced_agent(agent: str) -> bool:
+    """True for a canonical ``namespace:name`` reference.
+
+    A bare name (``reviewer``) is either a v2 alias or a caller-local agent;
+    neither carries the bundle information this check is about. ``self`` is
+    already excluded upstream by ``collect_agent_references``.
+    """
+    namespace, sep, name = agent.partition(":")
+    return bool(sep) and bool(namespace) and bool(name) and ":" not in name
+
+
+def _is_fixture_recipe(source_path: Path | None) -> bool:
+    """True when the recipe was loaded from a test-fixture directory."""
+    if source_path is None:
+        return False
+    return _FIXTURE_DIR_NAME in source_path.parts
+
+
+def check_legacy_agent_refs(recipe: Recipe) -> list[str]:
+    """Warn when a *legacy* recipe references namespaced (``ns:name``) agents.
+
+    A recipe with no ``schema_version: 2`` manifest resolves every ``agent:``
+    from the **calling session's** agent map. Referencing ``foundation:explorer``
+    from such a recipe therefore only works in a session that happens to expose
+    Foundation -- run it from another bundle and it fails with
+    ``Agent 'foundation:explorer' not found in configuration``, or worse,
+    silently resolves a *different* agent that shares the name.
+
+    The tempting fix is the wrong one: renaming the agents to whatever the
+    current bundle happens to have, or forking a local copy of the recipe.
+    Both bind the recipe even harder to one caller. The fix is to declare the
+    dependency (``schema_version: 2`` + ``dependencies``) so agents resolve
+    from the recipe's own closure.
+
+    Scope and exemptions:
+
+    * Covers flat, staged and nested (``foreach``/``while``) bodies -- the walk
+      is ``runner_adapter.collect_agent_references``, the same one the runtime
+      preflight uses, so this check and the runtime never disagree about which
+      agents a recipe references.
+    * ``agent: self`` is exempt (excluded by that walk) -- it names no bundle,
+      and no ``dependencies`` entry can supply it.
+    * Bash-only recipes are exempt for free: no agent references, no warning.
+    * Recipes under a ``fixtures/`` directory are exempt -- they are pinned
+      test inputs, several of them deliberately legacy forever.
+
+    One warning per recipe, naming every offending agent, rather than one per
+    step: the remedy is a single header, not a per-step edit.
+    """
+    if recipe.declares_v2:
+        return []
+    if _is_fixture_recipe(recipe.source_path):
+        return []
+
+    namespaced = sorted(
+        agent
+        for agent in collect_agent_references(recipe)
+        if _is_namespaced_agent(agent)
+    )
+    if not namespaced:
+        return []
+
+    agents = ", ".join(namespaced)
+    return [
+        f"{LEGACY_AGENT_REFS_CODE}: recipe declares no `schema_version: 2` but "
+        f"references namespaced agents ({agents}). A legacy recipe resolves "
+        f"`agent:` from the CALLING session's agent map, so it fails with "
+        f"\"Agent 'x:y' not found in configuration\" under any bundle that does "
+        f"not expose them -- or silently resolves a different agent of the same "
+        f"name. Remedy: add a `schema_version: 2` header with a `dependencies` "
+        f"block declaring the bundle that ships each agent, and list them under "
+        f"`required_agents` (see docs/RECIPE_SCHEMA.md 'Schema v2'). Never "
+        f"rename the agents or fork a local copy to dodge a missing agent -- "
+        f"that binds the recipe to one caller instead of freeing it."
+    ]
 
 
 def check_step_dependencies(recipe: Recipe) -> list[str]:
