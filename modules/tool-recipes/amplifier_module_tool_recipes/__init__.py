@@ -58,6 +58,7 @@ from .runner_adapter import resume_v2_recipe
 from .closed_world import agent_provenance_record
 from .runner_adapter import provider_roles_label
 from .runner_adapter import run_v2_recipe
+from .runner_adapter import runner_provenance
 from .runner_adapter import run_v2_recipe_in_session
 from .runner_adapter import V2_LEGACY_ENGINE_EXECUTION_MODE
 from .runner_adapter import validate_v2_recipe
@@ -816,6 +817,12 @@ Example:
             "step_ids": step_ids,
             "session_id": session_id,
             "engine_session_id": engine_session_id,
+            # WHICH copy of the runner library produced the provenance above
+            # (recipes-4g5): module file, version and content digest. Two
+            # clones of this repo at different commits both report
+            # `version: 0.1.0`, so a record naming only the version cannot
+            # tell a refreshed library from a stale one after the fact.
+            "runner_library": runner_provenance(),
         }
         targets = [sid for sid in (session_id, engine_session_id) if sid]
         for target in dict.fromkeys(targets):
@@ -865,6 +872,10 @@ Example:
             # run so the session-default fallback is visible rather than
             # inferred from behaviour.
             "provider_roles": provider_roles_label(self.coordinator),
+            # Which copy of the runner library executed this run (recipes-4g5).
+            # Named for the same reason: a second, stale clone on sys.path is
+            # otherwise invisible in the output it produced.
+            "runner_library": runner_provenance(),
         }
         if plan is not None:
             # Core 7 provenance: which dependency supplied each agent.

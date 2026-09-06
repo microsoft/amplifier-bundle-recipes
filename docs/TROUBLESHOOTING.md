@@ -15,6 +15,7 @@ This guide helps you diagnose and fix problems when creating or executing recipe
 - [JSON and Data Format Issues](#json-and-data-format-issues)
 - [The Process Hangs After the Recipe Finishes](#the-process-hangs-after-the-recipe-finishes)
 - [Auditing a Finished Run: `steps.jsonl`](#auditing-a-finished-run-stepsjsonl)
+- [Recipe Runner Library Skew](#recipe-runner-library-skew)
 - [Debugging Tips](#debugging-tips)
 
 ---
@@ -1098,6 +1099,82 @@ jq -r 'select(.step_id=="summarise" and .response_truncated==true)
 Writing the log is fail-soft: if it cannot be written, the run continues
 without it and the reason is logged at DEBUG level. It never changes what a run
 does, and it never changes `state.json`.
+
+---
+
+## Recipe Runner Library Skew
+
+### Symptom: a v2 run succeeds, but its provenance record is missing fields
+
+```
+# The run reports success and names its agents...
+'status': 'completed', 'agent_provenance': {...}
+
+# ...but the persisted provenance has no `defined_in` / `via_includes`,
+# and `recipe-runner plan --json` on the same recipe emits them.
+```
+
+**Cause:** two copies of `amplifier_recipe_runner` exist on the machine and the
+*wrong* one was imported. The measured case (recipes-4g5): the Amplifier venv
+had the library editable-installed from a second cache clone
+(`~/.amplifier/recipe-runner/cache/...`) pinned at an older commit, while the
+`recipes` tool module executed from a refreshed bundle cache
+(`~/.amplifier/cache/...`). Both clones declare `version: 0.1.0`, so nothing
+looked wrong.
+
+**How to see which library ran.** Every v2 run now names it, on the tool output
+and in the persisted run record, under `runner_library`:
+
+```python
+{
+  "package_dir": ".../amplifier-bundle-recipes/src/amplifier_recipe_runner",
+  "module_file": ".../src/amplifier_recipe_runner/__init__.py",
+  "version": "0.1.0",
+  "fingerprint": "cd2a2435bcc75e5d",   # digest of the package's own sources
+  "source": "in-bundle"                # or "installed" / "already-imported"
+}
+```
+
+`fingerprint` is what makes the record useful: `version` alone cannot separate
+two clones of this repo at different commits, which is exactly the skew that
+produced the defect.
+
+**What the adapter does about it.** `load_runner()` puts the library shipped in
+the *same checkout* as the tool module (`<bundle-root>/src`) at the **front** of
+`sys.path` before the first import, so the bundle-local copy wins over any
+installed one.
+
+Two cases `sys.path` order cannot fix are detected rather than assumed:
+
+- the library was already imported before the adapter ran, and
+- an editable install is served by a `sys.meta_path` finder, which outranks
+  `sys.path` entirely.
+
+In both, the imported copy is compared against the bundle-local one by version
+*and* content digest, and a mismatch is logged as a `WARNING` naming both paths
+and both versions:
+
+```
+WARNING amplifier_module_tool_recipes.runner_adapter: Recipe runner library SKEW:
+this run will execute amplifier-recipe-runner from
+/.../stale-clone/amplifier_recipe_runner/__init__.py (version 0.0.1, fingerprint 8516f02e...),
+but the copy shipped beside this tool module is
+/.../amplifier-bundle-recipes/src/amplifier_recipe_runner/__init__.py (version 0.1.0, fingerprint cd2a2435...).
+```
+
+Two copies whose contents are **identical** are not a skew and never warn --
+otherwise every run on a machine with two cache clones would cry wolf.
+
+**Remedy:**
+
+```bash
+# Refresh or remove the shadowing copy
+uv pip uninstall amplifier-recipe-runner
+
+# Or confirm which one a run used, from the run's own record
+amplifier tool invoke recipes -o json operation=execute recipe_path=... \
+  | grep -o "'runner_library': {[^}]*}"
+```
 
 ---
 
