@@ -86,6 +86,17 @@ STATUS_CANCELLED = "cancelled"
 EVENT_STARTED = "started"
 EVENT_FINISHED = "finished"
 
+# One line per *process* that appends to a given log, written before that
+# process's first step record.  A run says what it did; the header says who did
+# it -- which engine file, which git sha, imported from where (recipes-669).
+# A resume in a fresh process appends its own header, so a run continued by a
+# different engine says so in the file rather than looking seamless.
+EVENT_HEADER = "header"
+
+# Logs this process has already announced itself in.  Cheap, and it keeps the
+# header at one line per process without ever reading the file back.
+_HEADED: set[str] = set()
+
 # Keys written even when their value is None.  A grouping key that is
 # sometimes absent forces every consumer to distinguish "this step had no
 # parent" from "an older engine wrote this line", and those are not the same
@@ -334,6 +345,36 @@ class StepLog:
     @property
     def enabled(self) -> bool:
         return self.path is not None
+
+    def ensure_header(self) -> bool:
+        """Write this process's ``header`` line, once per log file.
+
+        Fail-soft like every other write here, and idempotent per process: the
+        first ``StepLog`` opened against a path writes it, every later one is a
+        no-op.  Returns ``True`` only when a line was actually appended.
+        """
+        if self.path is None:
+            return False
+        key = str(self.path)
+        if key in _HEADED:
+            return False
+        _HEADED.add(key)
+        try:
+            from .engine_provenance import engine_provenance
+
+            engine: dict[str, Any] | None = engine_provenance()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("steps.jsonl: engine provenance unavailable: %s", exc)
+            engine = None
+        record = {
+            "v": STEPS_LOG_SCHEMA_VERSION,
+            "record_id": new_record_id(),
+            "event": EVENT_HEADER,
+            "written_at": utc_now_iso(),
+            "pid": os.getpid(),
+            "engine": engine,
+        }
+        return append_record(self.path, record)
 
     def begin(self, **base: Any) -> StepAttempt:
         """Open an attempt.  Does not write anything until ``start`` is called."""

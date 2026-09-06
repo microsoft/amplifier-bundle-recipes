@@ -73,6 +73,18 @@ fixtures:
   - RCP-105
   - RCP-008
   notes: 'No network is reachable in this fixture by construction: the resolver only reads local paths.'
+- id: good-activation-install-resolves-the-in-bundle-runner
+  polarity: GOOD
+  title: The real module-activation install succeeds and resolves the in-bundle runner
+  clauses:
+  - lib.v1 Core 1
+  satisfies:
+  - RCP-101
+  notes: 'The only fixture that leaves the in-process library and drives the CONSUMER''s command (`uv
+    pip install -e <module> --python <env> --no-sources`) into a throwaway venv. Carries its own discrimination
+    control: the same install against the pre-hotfix pyproject (02a3dfe8f071c5ee92db6266609025bca87731a1^)
+    must fail, naming allow-direct-references. Skips with a reason when uv or git is absent, or when the
+    host environment cannot supply what activation assumes.'
 - id: bad-undeclared-agent-fails-preflight-before-side-effects
   polarity: BAD
   title: UndeclaredAgentError, raised before any step or spawn
@@ -316,12 +328,18 @@ rows:
     coverage: partial
     fixtures:
     - good-full-step-vocabulary-matches-the-legacy-engine
+    - good-activation-install-resolves-the-in-bundle-runner
     - good-identical-resolved-graph-across-hosts
     covered: Two independent hosts (in-process library, separate process) produce byte-identical resolved-graph
-      identity, so neither carries resolution logic of its own.
+      identity, so neither carries resolution logic of its own. Separately, the Amplifier tool adapter
+      is INSTALLED the way production installs it (`uv pip install -e <module> --python <env> --no-sources`,
+      the command whose failure broke `amplifier update` on 2026-09-02) into a clean venv, and its load_runner()
+      is measured to resolve the ONE in-bundle library rather than a second copy -- discrimination-proved
+      in-fixture against the pre-hotfix pyproject.
     not_covered: The ledger records 'every host surface is a thin adapter' as NOT-ASSERTABLE (architectural
-      judgement). Only two hosts exist to compare; the Amplifier tool adapter is not yet a runner host
-      (residual R1).
+      judgement). Only two hosts are COMPARED; the Amplifier tool adapter is exercised only as far as
+      install + import + runner resolution, not as a runner host producing a resolved graph (residual
+      R1).
   RCP-102:
     coverage: partial
     fixtures:

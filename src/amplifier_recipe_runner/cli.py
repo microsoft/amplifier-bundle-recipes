@@ -447,7 +447,14 @@ def _echo_plan(plan: ExecutionPlan, recipe: Path, *, as_json: bool, run_id: str)
     for name in sorted(plan.agents):
         provenance = plan.agents[name]
         alias = f" (alias {provenance.alias})" if provenance.alias else ""
-        click.echo(f"  - {name}{alias} <- {provenance.supplied_by}")
+        # `supplied_by` is the tree that DEFINES the agent. When that is not
+        # the declared dependency itself, say so on the same line rather than
+        # leaving the reader to wonder why a URI they never declared appeared.
+        via = ""
+        if provenance.declared_by and provenance.declared_by != provenance.supplied_by:
+            chain = " -> ".join(provenance.via_includes) if provenance.via_includes else "includes"
+            via = f" (via {provenance.declared_by} -> {chain})"
+        click.echo(f"  - {name}{alias} <- {provenance.supplied_by}{via}")
 
     click.echo(f"steps: {', '.join(plan.step_ids) if plan.step_ids else '(none)'}")
 
