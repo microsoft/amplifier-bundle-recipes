@@ -190,9 +190,15 @@ Model names support glob patterns (fnmatch-style) for flexible version matching:
 ### Fallback Behavior
 
 - If specified provider not configured → uses default provider (warning logged)
-- If model pattern has no matches → uses provider's default model (warning logged)
+- If model pattern has no matches → uses provider's default model, resolved to a real
+  model id (warning logged). Never the empty string — an empty model overwrites the
+  provider's own default and the run dies with "model: String should have at least 1
+  character".
 - If a model is written as a bare id rather than a pattern (no `*`, `?`, `[`) → used
   verbatim, so a family name like `claude-haiku` 404s. Pin `claude-haiku-*` instead.
+- **`model:` without `provider:` is silently discarded** — the step runs on the session
+  default. Always write the two together. Validation warns with
+  `RECIPE_MODEL_WITHOUT_PROVIDER`.
 - If no provider/model specified → uses session's configured provider
 
 ## Quick Gotchas
