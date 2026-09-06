@@ -393,11 +393,35 @@ approval:
   prompt: string         # Message shown to user
   timeout: integer       # Seconds to wait (0 = wait forever)
   default: string        # "approve" or "deny" on timeout (default: "deny")
+  when: string           # "after_stage" (default) or "before_stage"
 ```
+
+**Where the gate sits (`when`):**
+
+| `when` | Pauses | The question it can answer | Denying it |
+|---|---|---|---|
+| `after_stage` (default) | after this stage's LAST step | "You have seen the output — may we go on?" | stops the FOLLOWING stages; this stage's work is already done |
+| `before_stage` | before this stage's FIRST step | "May we do this at all?" | this stage never runs |
+
+```yaml
+# Review gate: fires once `audit` has run. {{findings}} exists.
+approval: { required: true, prompt: "Reviewed {{findings}}. Continue?" }
+```
+
+```yaml
+# Authorisation gate: fires before `apply-migration` runs. Denying stops it.
+approval: { required: true, when: "before_stage", prompt: "Apply to prod?" }
+```
+
+Put the gate `before_stage` whenever the answer must be able to *prevent* the
+stage. A prompt on a `before_stage` gate can only render outputs of EARLIER
+stages — this stage has produced none yet.
 
 **Workflow:**
 
-1. **Stage completes** → Recipe pauses at approval gate
+1. **The gate is reached** → Recipe pauses at the approval gate
+   (after the stage's steps by default; before its first step with
+   `when: "before_stage"`)
 2. **Tool returns status:** `paused_for_approval` with session_id and stage_name
 3. **User reviews** → Decides to approve or deny
 4. **User approves/denies:**
@@ -495,7 +519,14 @@ A Stage groups multiple steps together with an optional approval gate. Stages ar
 
 **Type:** ApprovalConfig object
 
-**Purpose:** Define an approval gate that pauses execution after this stage completes.
+**Purpose:** Define an approval gate on this stage. `when` decides which side
+of the stage it sits on.
+
+> **Read this before trusting the indentation.** By default `approval` under
+> stage N gates the transition from N to N+1. It does **not** gate stage N's
+> own steps — those have already run, and their outputs are already in
+> context, by the time the prompt appears. To gate the work itself, say
+> `when: "before_stage"`.
 
 **Structure:**
 ```yaml
@@ -504,15 +535,24 @@ approval:
   prompt: string         # Required if required=true
   timeout: integer       # Seconds, 0=forever (default: 0)
   default: string        # "approve" or "deny" (default: "deny")
+  when: string           # "after_stage" (default) or "before_stage"
 ```
 
 **Behavior:**
 - If `required: false` or omitted, stage completes without pausing
-- If `required: true`, execution pauses after stage and waits for approval
+- If `required: true` and `when` is `"after_stage"` (the default), every step
+  in the stage runs, the stage is recorded in `completed_stages`, and only
+  then does execution pause. Denying stops the stages that follow
+- If `required: true` and `when` is `"before_stage"`, execution pauses before
+  the stage's first step. At that pause the stage's steps are absent from
+  `completed_steps` and the stage itself is absent from `completed_stages`.
+  Denying means the stage never runs
+- Either way, the pause, `approve`/`deny`, and `resume` work identically
 - User must explicitly approve or deny to continue
 - On timeout, applies `default` action
+- Omitting `when` behaves exactly as it did before the field existed
 
-**Example:**
+**Example — a review gate (default):**
 ```yaml
 - name: "analysis"
   steps:
@@ -525,10 +565,27 @@ approval:
     prompt: |
       Security audit complete. Review findings before proceeding:
       {{findings}}
-      
+
       Approve to continue with fixes.
     timeout: 3600
     default: "deny"
+```
+
+**Example — an authorisation gate:**
+```yaml
+- name: "apply-migration"
+  approval:
+    required: true
+    when: "before_stage"
+    prompt: |
+      Plan: {{migration_plan}}
+
+      Approve to APPLY this migration to production.
+    default: "deny"
+  steps:
+    - id: "run-migration"
+      agent: "foundation:integration-specialist"
+      prompt: "Apply {{migration_plan}}"
 ```
 
 **See also:** [Approval Gates](#approval-gates) for complete workflow details.

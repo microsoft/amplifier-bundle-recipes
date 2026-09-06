@@ -144,7 +144,19 @@ class OrchestratorConfig:
 
 @dataclass
 class ApprovalConfig:
-    """Approval gate configuration for a stage."""
+    """Approval gate configuration for a stage.
+
+    ``when`` positions the gate relative to the stage it is attached to:
+
+    * ``"after_stage"`` (the default, and the only behaviour before this
+      field existed) -- the stage's steps all run, then the gate pauses the
+      run. A *review* checkpoint: "you have seen the output, may we go on?"
+    * ``"before_stage"`` -- the gate pauses the run before the stage's FIRST
+      step runs, so denying it means the stage never happened. An
+      *authorisation* checkpoint: "may we do this at all?"
+
+    Omitting ``when`` leaves an existing recipe byte-for-byte unchanged.
+    """
 
     required: bool = False  # Whether approval is needed to proceed
     prompt: str = ""  # Message shown to user when requesting approval
@@ -152,6 +164,9 @@ class ApprovalConfig:
         0  # Seconds to wait for approval (0 = wait forever, which is the default)
     )
     default: Literal["deny", "approve"] = "deny"  # What happens on timeout
+    when: Literal["after_stage", "before_stage"] = (
+        "after_stage"  # Gate position relative to the stage
+    )
 
     def validate(self) -> list[str]:
         """Validate approval configuration."""
@@ -162,9 +177,18 @@ class ApprovalConfig:
             errors.append(
                 f"approval.default must be 'deny' or 'approve', got '{self.default}'"
             )
+        if self.when not in ("after_stage", "before_stage"):
+            errors.append(
+                f"approval.when must be 'after_stage' or 'before_stage', got '{self.when}'"
+            )
         if self.required and not self.prompt:
             errors.append("approval.prompt is required when approval.required is true")
         return errors
+
+    @property
+    def gates_before_stage(self) -> bool:
+        """True when this gate pauses BEFORE its stage's first step runs."""
+        return self.required and self.when == "before_stage"
 
 
 @dataclass

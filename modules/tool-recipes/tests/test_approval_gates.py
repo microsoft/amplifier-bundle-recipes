@@ -37,6 +37,36 @@ class TestApprovalConfig:
         assert config.prompt == ""
         assert config.timeout == 0  # Default: wait forever (no timeout)
         assert config.default == "deny"
+        # A gate written before `when` existed still means "after this stage".
+        assert config.when == "after_stage"
+        assert config.gates_before_stage is False
+
+    def test_before_stage_is_a_valid_position(self):
+        """`when: before_stage` gates the stage it is attached to."""
+        config = ApprovalConfig(
+            required=True, prompt="Run this stage?", when="before_stage"
+        )
+        assert config.validate() == []
+        assert config.gates_before_stage is True
+
+    def test_after_stage_written_explicitly_is_the_default(self):
+        """Spelling out the default changes nothing."""
+        config = ApprovalConfig(
+            required=True, prompt="Continue?", when="after_stage"
+        )
+        assert config.validate() == []
+        assert config.gates_before_stage is False
+
+    def test_invalid_when_value(self):
+        """An unrecognised position is refused by name, not silently ignored."""
+        config = ApprovalConfig(required=True, prompt="p", when="during")  # type: ignore
+        errors = config.validate()
+        assert any("approval.when" in e and "during" in e for e in errors)
+
+    def test_gates_before_stage_needs_required(self):
+        """A gate that is not required gates nothing, wherever it sits."""
+        config = ApprovalConfig(required=False, when="before_stage")
+        assert config.gates_before_stage is False
 
     def test_valid_configuration(self):
         """Valid configuration should have no errors."""
