@@ -202,6 +202,25 @@ fixtures:
   notes: 'ABSENCE PROBE. Pins HOST_PORTS to the contract''s own five names in contract order, then scans
     every port protocol and payload for an agent map. Discrimination: mutations/port-carries-agent-map.patch
     -- which keeps exactly five ports and widens one, so only this probe catches it.'
+- id: good-full-step-vocabulary-matches-the-legacy-engine
+  polarity: GOOD
+  title: One full-vocabulary recipe run on BOTH engines produces the same context
+  clauses:
+  - lib.v1 Core 1
+  - lib.v1 Core 2
+  - lib.v1 Core 8
+  satisfies:
+  - RCP-101
+  - RCP-102
+  - RCP-108
+  notes: 'PARITY FIXTURE. Runs conformance/kit/fixtures/recipes/full-vocabulary.yaml -- bash, parse_json,
+    conditions (taken and not taken), on_error: continue, sequential and bounded-parallel foreach, a multi-step
+    foreach body, a convergence while loop with update_context + break_when, a `type: recipe` sub-recipe,
+    a templated timeout and an agent step -- through the LEGACY in-session engine and through the LIBRARY''s
+    public `run()`, then diffs every recipe-visible context variable. Self-discriminating: it compares
+    the library against the other implementation rather than against an authored expectation, so a drift
+    in EITHER engine fails it. Requires the legacy engine to be importable and refuses to run against
+    a stand-in.'
 rows:
   RCP-001:
     coverage: partial
@@ -308,6 +327,7 @@ rows:
   RCP-101:
     coverage: partial
     fixtures:
+    - good-full-step-vocabulary-matches-the-legacy-engine
     - good-activation-install-resolves-the-in-bundle-runner
     - good-identical-resolved-graph-across-hosts
     covered: Two independent hosts (in-process library, separate process) produce byte-identical resolved-graph
@@ -324,6 +344,7 @@ rows:
     coverage: partial
     fixtures:
     - good-declared-dependency-runs-from-lean-caller
+    - good-full-step-vocabulary-matches-the-legacy-engine
     - good-plan-reports-provenance-without-executing-anything
     covered: '`plan` and `run` are exercised with no UI and no Amplifier CLI; `plan` is proved side-effect
       free (empty workspace after) and works with no host services at all.'
@@ -383,6 +404,7 @@ rows:
     - bad-colliding-declared-dependencies-fail-preflight
     - bad-errored-step-is-never-a-completed-step
     - bad-undeclared-agent-fails-preflight-before-side-effects
+    - good-full-step-vocabulary-matches-the-legacy-engine
     covered: 'All four named preflight classes are asserted by type, not by exit code: UndeclaredAgentError,
       AgentCollisionError, TrustRefusedError, ProvenanceMismatchError. ''Never a fabricated success''
       is asserted in BOTH directions: before preflight, as FAILED status with 0 completed steps and 0

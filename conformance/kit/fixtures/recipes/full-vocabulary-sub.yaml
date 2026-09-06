@@ -1,0 +1,21 @@
+# Sub-recipe reached as a `type: recipe` step of full-vocabulary.yaml.
+#
+# Deliberately LEGACY (no `schema_version`): both engines then run it the same
+# way -- inside the parent's world -- so the diff is comparing sub-recipe step
+# semantics rather than two different closure policies. A v2 sub-recipe gets
+# its own closure in the library and its own closed-world engine in-session;
+# that is a separate claim with its own fixtures.
+name: full-vocabulary-sub
+description: A sub-recipe whose output delta the parent collects.
+version: "1.0.0"
+
+steps:
+  - id: sub-echo
+    type: bash
+    command: echo sub-saw-{{forwarded.count}}
+    output: sub_saw
+
+  - id: sub-derive
+    type: bash
+    command: echo derived
+    output: sub_derived

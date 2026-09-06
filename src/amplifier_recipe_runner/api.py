@@ -166,6 +166,18 @@ class RunRequest:
     run_id: str | None = None
     """Caller-chosen run identifier; generated when omitted."""
 
+    state_dir: str | Path | None = None
+    """Where this run may persist resumable state, if the host wants it kept.
+
+    Not a host-import channel: it names a *directory this run owns*, and
+    nothing read from it can widen the recipe's agent surface (manifest Core
+    4 constrains agents, not filesystem paths). It exists because pause ->
+    approve -> resume spans separate processes: the run that pauses at an
+    approval gate must leave its context and position somewhere the run that
+    resumes can read. ``None`` means "keep nothing", which is why a run that
+    never pauses needs no directory at all.
+    """
+
     legacy_mode: bool = False
     """Labeled caller-bound legacy mode (manifest Core 10).
 
@@ -356,6 +368,18 @@ class RunResult:
     status: RunStatus
     plan: ExecutionPlan | None = None
     outputs: Mapping[str, Any] = field(default_factory=dict)
+    """Per-step result, keyed by step id."""
+
+    context: Mapping[str, Any] = field(default_factory=dict)
+    """The run's final recipe context -- every variable a step wrote.
+
+    Distinct from :attr:`outputs`, which is keyed by *step id*: a recipe reads
+    its own values by the names its `output:`/`collect:` fields chose, and a
+    host that wants to act on a finished run needs those names, not the step
+    ids that happened to produce them. Present on every terminal status, so a
+    failed or paused run still reports what it managed to compute.
+    """
+
     completed_steps: tuple[str, ...] = ()
     error: BaseException | None = None
     pending_approval: str | None = None

@@ -1664,6 +1664,15 @@ EXPECTED_RUN_REQUEST_FIELDS: tuple[str, ...] = (
     "trust_policy",
     "lock_mode",
     "run_id",
+    # A directory THIS RUN owns, for its own resumable state. Justified
+    # against manifest.v1 Core 4 (recipes-xov): Core 4 constrains what can
+    # reach a recipe's AGENT surface, and a filesystem path cannot -- nothing
+    # read back from it is consulted during agent resolution, which happens
+    # exclusively against the frozen PlanCatalog. It exists because pause ->
+    # approve -> resume spans separate processes, so the run that pauses at an
+    # approval gate must leave its position somewhere the run that resumes can
+    # read. `None` (the default) means "keep nothing".
+    "state_dir",
     "legacy_mode",
 )
 
@@ -2030,6 +2039,189 @@ async def probe_ports_carry_no_agent_map() -> str:
         f"ports.__all__ pinned at {len(ports_module.__all__)} names; {len(tokens)} port members / "
         f"annotations / signatures scanned with 0 agent-map hits "
         f"(scanner control flagged {len(control)} taint(s))"
+    )
+
+
+# ==========================================================================
+# FULL STEP VOCABULARY -- the two engines, one recipe, diffed
+# ==========================================================================
+
+
+#: The keys `execute_recipe` injects into every context. They legitimately
+#: differ between the two engines (session ids, absolute recipe paths), so a
+#: diff that included them would report noise as non-conformance.
+_ENGINE_INTERNAL_KEYS: tuple[str, ...] = ("recipe", "session", "step", "stage")
+
+#: What the agent step returns, on BOTH sides. Fixed so the comparison is of
+#: step semantics, not of two different model answers.
+_AGENT_REPLY: str = "done:supplier:reviewer"
+
+
+def legacy_engine_module() -> Any:
+    """Import the legacy in-session engine, or say why it could not be found.
+
+    Located, never stubbed -- the same rule ``_bootstrap`` applies to the
+    library. A fixture that quietly compared the library against a double
+    would prove nothing at all, which is the one failure mode a parity check
+    cannot afford.
+    """
+    try:
+        from amplifier_module_tool_recipes import executor as legacy  # type: ignore[import-not-found]
+
+        return legacy
+    except ImportError:
+        pass
+
+    module_root = KIT_DIR.parents[1] / "modules" / "tool-recipes"
+    if module_root.is_dir() and str(module_root) not in sys.path:
+        sys.path.insert(0, str(module_root))
+    try:
+        from amplifier_module_tool_recipes import executor as legacy  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise KitFailure(
+            "the legacy step engine (amplifier_module_tool_recipes.executor) is not importable, "
+            f"and this fixture refuses to compare the library against a stand-in. Tried {module_root}. "
+            "Run the kit with PYTHONPATH=src:modules/tool-recipes, as conformance/README.md documents."
+        ) from exc
+    return legacy
+
+
+async def _legacy_run(recipe_path: Path, project_path: Path) -> dict[str, Any]:
+    """Run ``recipe_path`` on the LEGACY engine and return its final context."""
+    from unittest.mock import AsyncMock
+    from unittest.mock import MagicMock
+
+    legacy = legacy_engine_module()
+    from amplifier_module_tool_recipes.models import Recipe  # type: ignore[import-not-found]
+
+    coordinator = MagicMock()
+    coordinator.session = MagicMock()
+    coordinator.config = {"agents": {}}
+    coordinator.hooks = None  # keeps _show_progress from awaiting a MagicMock
+    spawn = AsyncMock(return_value=_AGENT_REPLY)
+    coordinator.get_capability.return_value = spawn
+
+    session_manager = MagicMock()
+    session_manager.create_session.return_value = "legacy-session"
+    session_manager.load_state.return_value = {
+        "current_step_index": 0,
+        "context": {},
+        "completed_steps": [],
+        "started": "2026-01-01T00:00:00",
+    }
+    session_manager.is_cancellation_requested.return_value = False
+    session_manager.is_immediate_cancellation.return_value = False
+
+    executor = legacy.RecipeExecutor(coordinator, session_manager)
+    recipe = Recipe.from_yaml(recipe_path)
+    return await executor.execute_recipe(recipe, {}, project_path, recipe_path=recipe_path)
+
+
+async def _library_run(recipe_path: Path, project_path: Path) -> Any:
+    """Run ``recipe_path`` on the LIBRARY, through its real public entry point."""
+    from amplifier_recipe_runner.api import RunRequest
+    from amplifier_recipe_runner.execution import run as run_recipe
+
+    class FixedReplyBackend:
+        async def spawn(self, request: Any) -> str:
+            return _AGENT_REPLY
+
+    return await run_recipe(
+        RunRequest(recipe=recipe_path, services=services(project_path)),
+        resolver=local_resolver(),
+        spawn_backend=FixedReplyBackend(),
+    )
+
+
+def _comparable(context: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in context.items() if key not in _ENGINE_INTERNAL_KEYS}
+
+
+@fixture(
+    id="good-full-step-vocabulary-matches-the-legacy-engine",
+    polarity="GOOD",
+    title="One full-vocabulary recipe run on BOTH engines produces the same context",
+    clauses=("lib.v1 Core 1", "lib.v1 Core 2", "lib.v1 Core 8"),
+    rows=("RCP-101", "RCP-102", "RCP-108"),
+    notes=(
+        "PARITY FIXTURE. Runs conformance/kit/fixtures/recipes/full-vocabulary.yaml -- bash, "
+        "parse_json, conditions (taken and not taken), on_error: continue, sequential and "
+        "bounded-parallel foreach, a multi-step foreach body, a convergence while loop with "
+        "update_context + break_when, a `type: recipe` sub-recipe, a templated timeout and an "
+        "agent step -- through the LEGACY in-session engine and through the LIBRARY's public "
+        "`run()`, then diffs every recipe-visible context variable. Self-discriminating: it "
+        "compares the library against the other implementation rather than against an authored "
+        "expectation, so a drift in EITHER engine fails it. Requires the legacy engine to be "
+        "importable and refuses to run against a stand-in."
+    ),
+)
+async def good_full_vocabulary_parity() -> str:
+    from amplifier_recipe_runner.api import RunStatus
+
+    recipe_path = RECIPES / "full-vocabulary.yaml"
+    expect(recipe_path.is_file(), f"missing parity recipe {recipe_path}")
+
+    legacy_workspace = Path(tempfile.mkdtemp(prefix="recipes-parity-legacy-"))
+    library_workspace = Path(tempfile.mkdtemp(prefix="recipes-parity-library-"))
+
+    legacy_context = await _legacy_run(recipe_path, legacy_workspace)
+    result = await _library_run(recipe_path, library_workspace)
+
+    if result.status is not RunStatus.SUCCEEDED:
+        raise KitFailure(
+            f"the library could not run the full-vocabulary recipe: {result.status.value} -- "
+            f"{type(result.error).__name__ if result.error else 'no error reported'}: {result.error}"
+        )
+
+    legacy_seen = _comparable(legacy_context)
+    library_seen = _comparable(result.context)
+
+    # Non-vacuity FIRST: an empty comparison would pass while proving nothing.
+    expected_variables = {
+        "payload",
+        "restated",
+        "gated_on",
+        "absorbed_out",
+        "absorbed_code",
+        "fanned",
+        "fanned_parallel",
+        "compounded",
+        "ticks",
+        "delegated",
+        "verdict",
+        "settled",
+    }
+    missing_legacy = sorted(expected_variables - set(legacy_seen))
+    missing_library = sorted(expected_variables - set(library_seen))
+    expect(not missing_legacy, f"legacy engine produced none of {missing_legacy}; the comparison would be vacuous")
+    expect(not missing_library, f"library produced none of {missing_library}; the comparison would be vacuous")
+
+    # The condition that did NOT pass must have written nothing, on both sides.
+    expect("gated_off" not in legacy_seen, "legacy engine ran a step whose condition was false")
+    expect("gated_off" not in library_seen, "library ran a step whose condition was false")
+
+    differing = sorted(
+        key
+        for key in set(legacy_seen) | set(library_seen)
+        if legacy_seen.get(key, "<absent>") != library_seen.get(key, "<absent>")
+    )
+    if differing:
+        detail = "; ".join(
+            f"{key}: legacy={_brief(legacy_seen.get(key, '<absent>'), 120)} "
+            f"library={_brief(library_seen.get(key, '<absent>'), 120)}"
+            for key in differing
+        )
+        raise KitFailure(
+            f"the two engines disagree on {len(differing)} context variable(s): {detail}. "
+            "Every intended difference belongs in docs/EXECUTOR_PARITY.md with its reason; "
+            "an undocumented one is a parity defect."
+        )
+
+    return (
+        f"{len(legacy_seen)} recipe-visible variables identical across both engines "
+        f"(covering {len(expected_variables)} named step outputs: bash, parse_json, conditions, "
+        f"on_error, foreach sequential + parallel, compound body, convergence loop, sub-recipe, "
+        f"templated timeout, agent step)"
     )
 
 

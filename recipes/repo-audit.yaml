@@ -1,0 +1,2171 @@
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+#
+# v1.10.0 -- this block is the only change. Previously the two
+# `agent: "foundation:*"` steps below resolved out of the CALLING session's
+# agent map; a caller without those agents failed at run time with
+# "Agent 'foundation:zen-architect' not found in configuration". They now
+# resolve from this recipe's own declared closure. No behavior change under
+# the legacy engine, which ignores both new top-level keys. Recipe logic,
+# steps and prompts untouched.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:modular-builder"
+      - "foundation:zen-architect"
+  # A model provider, declared from the SAME pinned source. Agents resolve from
+  # the closure and so must the model they run on: the standalone runner never
+  # borrows the calling environment's providers (manifest.v1 Core 4), so a
+  # recipe that does not declare one has agent steps with nothing to run on.
+  # In-session this line is inert -- the legacy engine spawns through the
+  # caller's session, which brings its own providers.
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2#subdirectory=providers/anthropic-sonnet.yaml"
+    kind: behavior
+# ---------------------------------------------------------------------------
+
+name: "repo-audit"
+description: "Audit a single Amplifier ecosystem repository for compliance with Microsoft standards and Amplifier guidelines."
+version: "1.10.0"
+author: "Amplifier Team"
+tags: ["audit", "compliance", "github", "amplifier"]
+
+# Single Repository Audit Recipe
+#
+# Checks a repository against Amplifier ecosystem standards:
+# - Listed in MODULES.md for discoverability
+# - Required Microsoft boilerplate files (CODE_OF_CONDUCT.md, SECURITY.md, SUPPORT.md, LICENSE)
+# - README.md has Contributing and Trademarks sections (verbatim from template)
+# - GitHub Issues status (recommendation to disable for non-main repos)
+# - Repository stats (open PRs, activity)
+#
+# Usage:
+#   # Basic audit
+#   amplifier recipes execute repo-audit.yaml --context '{"repo_name": "amplifier-core"}'
+#
+#   # Audit with fix PR creation
+#   amplifier recipes execute repo-audit.yaml --context '{
+#     "repo_name": "amplifier-module-tool-web",
+#     "create_fix_pr": "true"
+#   }'
+#
+#   # Audit a non-Microsoft repo
+#   amplifier recipes execute repo-audit.yaml --context '{
+#     "repo_owner": "robotdad",
+#     "repo_name": "amplifier-app-transcribe"
+#   }'
+#
+#   # Audit AND apply the canonical branch-protection ruleset (audit-only is the
+#   # default). Only takes effect on microsoft/* PUBLIC repos where the branch
+#   # protection or bypass-actors check reported an error - e.g. migrating a
+#   # repo that was hand-remediated with classic branch protection (which blocks
+#   # even ruleset-bypass-capable maintainers) to the canonical repository
+#   # ruleset. See STEP "apply-protection-fix" below.
+#   amplifier recipes execute repo-audit.yaml --context '{
+#     "repo_name": "amplifier-bundle-dot-runner",
+#     "apply_fixes": "true"
+#   }'
+#
+# Requirements:
+#   - gh CLI installed and authenticated
+#   - Write access to the repo if create_fix_pr is "true"
+#   - Repo admin access (or equivalent) if apply_fixes is "true"
+
+recursion:
+  max_depth: 2
+  max_total_steps: 50
+
+context:
+  # Repository to audit
+  repo_owner: "microsoft"
+  repo_name: ""
+  
+  # Optional: local filesystem path to the repository (used as fallback when GitHub raw access fails,
+  # e.g. for private repos where unauthenticated curl returns 404)
+  repo_path: ""
+  
+  # Whether to create PRs for fixable issues (use string "true"/"false" for condition compatibility)
+  create_fix_pr: "false"
+  
+  # Dry-run mode: show what WOULD happen without actually creating PRs
+  # When "true", prepares fixes and shows PR preview but doesn't push/create
+  dry_run: "false"
+
+  # Whether to APPLY the canonical branch-protection ruleset when the
+  # branch-protection or bypass-actors checks reported an error (e.g. a repo
+  # hand-remediated with classic branch protection instead of the canonical
+  # ruleset - see NOTES-dot-runner-protection.md). DEFAULT IS "false"
+  # (audit-only, no changes). When "true", the "apply-protection-fix" step
+  # still only acts on microsoft/* PUBLIC repos that actually have an error
+  # finding to fix - every other repo/condition gets an explicit skip verdict,
+  # never a silent no-op. Use string "true"/"false" for condition compatibility,
+  # matching create_fix_pr/dry_run above.
+  apply_fixes: "false"
+  
+  # Working directory for intermediate files
+  working_dir: "./ai_working/repo-audit"
+  
+  # Reference content location (amplifier-core as source of truth)
+  reference_repo: "microsoft/amplifier-core"
+
+steps:
+  # ==========================================================================
+  # STEP 1: Setup and Validate Repository
+  # ==========================================================================
+  - id: "setup"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      mkdir -p "{{working_dir}}/{{repo_name}}"
+      mkdir -p "{{working_dir}}/reference"
+      echo "Working directory created: {{working_dir}}/{{repo_name}}"
+    output: "setup_result"
+    timeout: 30
+    on_error: "fail"
+
+  - id: "fetch-repo-info"
+    type: "bash"
+    command: |
+      gh repo view "{{repo_owner}}/{{repo_name}}" --json name,owner,description,hasIssuesEnabled,hasWikiEnabled,hasProjectsEnabled,isArchived,isPrivate,defaultBranchRef,pushedAt,url 2>&1 || echo '{"error": "Repository not found or not accessible"}'
+    output: "repo_info_raw"
+    timeout: 60
+    retry:
+      max_attempts: 3
+      backoff: "exponential"
+      initial_delay: 5
+    on_error: "continue"
+    output_exit_code: "repo_fetch_code"
+
+  - id: "validate-repo"
+    type: "bash"
+    parse_json: true
+    command: |
+      # Check if repo fetch was successful
+      # Use heredoc to safely handle JSON with special characters (quotes, apostrophes)
+      cat << 'REPO_INFO_EOF' > /tmp/repo_info_$$.json
+      {{repo_info_raw}}
+      REPO_INFO_EOF
+      
+      if jq -e '.error' /tmp/repo_info_$$.json > /dev/null 2>&1; then
+        echo '{"valid": false, "error": "Repository not found or not accessible"}'
+      elif jq -e '.isArchived' /tmp/repo_info_$$.json | grep -q 'true'; then
+        echo '{"valid": false, "error": "Repository is archived"}'
+      else
+        jq '{valid: true, name: .name, description: .description, issues_enabled: .hasIssuesEnabled, last_push: .pushedAt}' /tmp/repo_info_$$.json
+      fi
+      rm -f /tmp/repo_info_$$.json
+    output: "repo_validation"
+    timeout: 30
+    on_error: "fail"
+
+  # ==========================================================================
+  # STEP 2: Check MODULES.md Listing
+  # ==========================================================================
+  - id: "fetch-modules-md"
+    type: "bash"
+    command: |
+      curl -sL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/microsoft/amplifier/main/docs/MODULES.md" > "{{working_dir}}/MODULES.md"
+      if [ -s "{{working_dir}}/MODULES.md" ]; then
+        echo "Fetched MODULES.md ($(wc -c < "{{working_dir}}/MODULES.md") bytes)"
+      else
+        echo "ERROR: Failed to fetch MODULES.md"
+        exit 1
+      fi
+    output: "modules_fetch_result"
+    timeout: 60
+    retry:
+      max_attempts: 3
+      backoff: "exponential"
+      initial_delay: 5
+    on_error: "fail"
+
+  - id: "check-modules-listing"
+    type: "bash"
+    parse_json: true
+    command: |
+      REPO_NAME="{{repo_name}}"
+      MODULES_FILE="{{working_dir}}/MODULES.md"
+      
+      # Search for the repo name in MODULES.md
+      if grep -q "$REPO_NAME" "$MODULES_FILE"; then
+        # Check if it's in a table row (proper listing) or a link
+        if grep -E "\|\s*\*\*$REPO_NAME\*\*|\[$REPO_NAME\]|$REPO_NAME\s*\|" "$MODULES_FILE" > /dev/null; then
+          echo '{"listed": true, "finding": "Repository is properly listed in MODULES.md", "severity": "pass"}'
+        else
+          echo '{"listed": true, "finding": "Repository name appears in MODULES.md but may not be properly listed in a table", "severity": "warning"}'
+        fi
+      else
+        echo '{"listed": false, "finding": "Repository is NOT listed in MODULES.md - recommend adding for discoverability", "severity": "recommendation"}'
+      fi
+    output: "modules_listing"
+    timeout: 30
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 3: Fetch Reference Boilerplate Files
+  # ==========================================================================
+  - id: "fetch-reference-files"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      REF_DIR="{{working_dir}}/reference"
+      BASE_URL="https://raw.githubusercontent.com/{{reference_repo}}/main"
+      
+      echo "Fetching reference boilerplate files from {{reference_repo}}..."
+      
+      for file in CODE_OF_CONDUCT.md SECURITY.md SUPPORT.md LICENSE README.md; do
+        curl -sL --retry 3 --retry-delay 2 "$BASE_URL/$file" > "$REF_DIR/$file"
+        if [ -s "$REF_DIR/$file" ]; then
+          echo "$file: fetched ($(wc -c < "$REF_DIR/$file") bytes)"
+        else
+          echo "$file: WARNING - empty or failed"
+        fi
+      done
+      
+      echo "Reference files fetch complete"
+    output: "reference_fetch_result"
+    timeout: 120
+    retry:
+      max_attempts: 2
+      backoff: "linear"
+      initial_delay: 5
+    on_error: "fail"
+
+  # ==========================================================================
+  # STEP 4: Fetch Target Repository Files
+  # ==========================================================================
+  - id: "fetch-target-files"
+    type: "bash"
+    command: |
+      TARGET_DIR="{{working_dir}}/{{repo_name}}"
+      LOCAL_PATH="{{repo_path}}"
+
+      echo "Fetching files from {{repo_owner}}/{{repo_name}}..."
+
+      # Use authenticated `gh api` for content fetching so this works for
+      # BOTH public and private repos. Unauthenticated raw.githubusercontent.com
+      # returns HTTP 404 for private repos even when the file exists, which
+      # would silently misreport every private repo as missing all boilerplate.
+      # Authenticated `gh api` distinguishes:
+      #   - 200 + content : file exists (decode and write)
+      #   - 404           : file truly missing
+      #   - 401/403       : auth/scope problem (loud warning)
+      for file in CODE_OF_CONDUCT.md SECURITY.md SUPPORT.md LICENSE README.md; do
+        # Capture stderr so we can detect auth failures vs true 404s
+        API_OUT=$(gh api "repos/{{repo_owner}}/{{repo_name}}/contents/$file" 2>&1)
+        API_RC=$?
+
+        if [ "$API_RC" -eq 0 ]; then
+          # Success — decode base64 content
+          echo "$API_OUT" | jq -r '.content' | base64 -d > "$TARGET_DIR/$file" 2>/dev/null
+          if [ -s "$TARGET_DIR/$file" ]; then
+            echo "$file: found via gh api ($(wc -c < "$TARGET_DIR/$file") bytes)"
+            continue
+          fi
+        fi
+
+        # Check if this looks like an auth failure (any private repo whose
+        # owner the user lacks access to, or expired token, or bad scope)
+        if echo "$API_OUT" | grep -qE "(HTTP 401|HTTP 403|Bad credentials|requires authentication|insufficient scopes)"; then
+          echo "$file: AUTH ERROR — gh CLI lacks access to {{repo_owner}}/{{repo_name}}"
+          echo "  Run 'gh auth status' and ensure your token has 'repo' scope and access to this repo."
+          rm -f "$TARGET_DIR/$file"
+          continue
+        fi
+
+        # Local-path fallback (offline / pre-clone case)
+        if [ -n "$LOCAL_PATH" ] && [ -f "$LOCAL_PATH/$file" ]; then
+          cp "$LOCAL_PATH/$file" "$TARGET_DIR/$file"
+          echo "$file: found via local path ($(wc -c < "$TARGET_DIR/$file") bytes)"
+          continue
+        fi
+
+        # Genuine miss (HTTP 404 with auth proven good by the surrounding context)
+        echo "$file: NOT FOUND (gh api returned non-zero, local path: ${LOCAL_PATH:-not set})"
+        rm -f "$TARGET_DIR/$file"
+      done
+    output: "target_fetch_result"
+    timeout: 120
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 5: Compare Boilerplate Files
+  # ==========================================================================
+  - id: "compare-boilerplate"
+    type: "bash"
+    parse_json: true
+    command: |
+      REF_DIR="{{working_dir}}/reference"
+      TARGET_DIR="{{working_dir}}/{{repo_name}}"
+      
+      # Initialize results
+      results='{"files": [], "all_pass": true}'
+      
+      # Whitespace-normalized diff: strips trailing whitespace from each line
+      # before comparison. This handles the common case where one file ends
+      # with a trailing newline at EOF and the other does not (POSIX text-file
+      # convention vs editors that omit it), which would otherwise be reported
+      # as a content difference even when the visible content is identical.
+      for file in CODE_OF_CONDUCT.md SECURITY.md SUPPORT.md LICENSE; do
+        if [ ! -f "$TARGET_DIR/$file" ]; then
+          results=$(echo "$results" | jq --arg file "$file" '.files += [{"name": $file, "status": "missing", "match": false, "severity": "error"}] | .all_pass = false')
+        elif diff -q <(awk '{sub(/[[:space:]]+$/,""); print}' "$REF_DIR/$file") <(awk '{sub(/[[:space:]]+$/,""); print}' "$TARGET_DIR/$file") > /dev/null 2>&1; then
+          results=$(echo "$results" | jq --arg file "$file" '.files += [{"name": $file, "status": "present", "match": true, "severity": "pass"}]')
+        else
+          results=$(echo "$results" | jq --arg file "$file" '.files += [{"name": $file, "status": "present", "match": false, "severity": "error"}] | .all_pass = false')
+        fi
+      done
+      
+      echo "$results"
+    output: "boilerplate_check"
+    timeout: 60
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 5b: Check for Existing Fix PR (Deduplication)
+  # ==========================================================================
+  - id: "check-existing-pr"
+    condition: "{{create_fix_pr}} == 'true'"
+    type: "bash"
+    parse_json: true
+    command: |
+      REPO="{{repo_owner}}/{{repo_name}}"
+      BRANCH_NAME="fix/compliance-boilerplate-update"
+      
+      # Check for existing open PRs from this branch
+      EXISTING_PR=$(gh pr list -R "$REPO" --head "$BRANCH_NAME" --state open --json number,url,title 2>/dev/null || echo "[]")
+      
+      PR_COUNT=$(echo "$EXISTING_PR" | jq 'length')
+      
+      if [ "$PR_COUNT" -gt 0 ]; then
+        PR_URL=$(echo "$EXISTING_PR" | jq -r '.[0].url')
+        PR_NUMBER=$(echo "$EXISTING_PR" | jq -r '.[0].number')
+        PR_TITLE=$(echo "$EXISTING_PR" | jq -r '.[0].title')
+        jq -n \
+          --argjson existing true \
+          --arg url "$PR_URL" \
+          --argjson num "$PR_NUMBER" \
+          --arg title "$PR_TITLE" \
+          '{
+            existing_pr: $existing,
+            pr_url: $url,
+            pr_number: $num,
+            pr_title: $title,
+            message: "Existing compliance PR found - will skip creation to avoid duplicate"
+          }'
+      else
+        jq -n '{
+          existing_pr: false,
+          pr_url: null,
+          pr_number: null,
+          pr_title: null,
+          message: "No existing PR found - can proceed with creation if issues exist"
+        }'
+      fi
+    output: "existing_pr_check"
+    timeout: 60
+    on_error: "continue"
+
+  # `check-existing-pr` only runs when create_fix_pr is true, so on an audit-only
+  # run it never sets `existing_pr_check`. Variable substitution happens BEFORE a
+  # step's condition is evaluated, so the downstream steps that reference
+  # {{existing_pr_check}} blew up with "Undefined variable" even though their own
+  # conditions would have skipped them. Provide the default explicitly -- same
+  # pattern as validate-bundle-repo's set-default-build-check.
+  - id: "set-default-existing-pr-check"
+    condition: "{{create_fix_pr}} != 'true'"
+    type: "bash"
+    parse_json: true
+    command: |
+      jq -n '{
+        existing_pr: false,
+        pr_url: null,
+        pr_number: null,
+        pr_title: null,
+        message: "PR creation not requested - existing-PR check skipped"
+      }'
+    output: "existing_pr_check"
+    timeout: 10
+    on_error: "fail"
+
+  - id: "report-existing-pr"
+    condition: "{{create_fix_pr}} == 'true'"
+    type: "bash"
+    command: |
+      # Only report if there's an existing PR (check the output)
+      cat << 'EXISTING_PR_JSON' > /tmp/existing_pr_$$.json
+      {{existing_pr_check}}
+      EXISTING_PR_JSON
+      
+      EXISTING=$(jq -r '.existing_pr // false' /tmp/existing_pr_$$.json)
+      
+      if [ "$EXISTING" = "true" ]; then
+        PR_URL=$(jq -r '.pr_url' /tmp/existing_pr_$$.json)
+        PR_NUM=$(jq -r '.pr_number' /tmp/existing_pr_$$.json)
+        echo "=========================================="
+        echo "EXISTING PR FOUND - WILL SKIP PR CREATION"
+        echo "=========================================="
+        echo ""
+        echo "An open compliance PR already exists for {{repo_owner}}/{{repo_name}}:"
+        echo ""
+        echo "  PR #$PR_NUM"
+        echo "  URL: $PR_URL"
+        echo ""
+        echo "Please review and merge the existing PR before running"
+        echo "the audit again with create_fix_pr enabled."
+        echo "=========================================="
+      else
+        echo "No existing PR found - will proceed with fix creation if issues exist"
+      fi
+      rm -f /tmp/existing_pr_$$.json
+    output: "existing_pr_report"
+    timeout: 30
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 6: Check README Contributing and Trademarks Sections
+  # ==========================================================================
+  - id: "check-readme-sections"
+    type: "bash"
+    parse_json: true
+    command: |
+      REF_DIR="{{working_dir}}/reference"
+      TARGET_DIR="{{working_dir}}/{{repo_name}}"
+      TARGET_README="$TARGET_DIR/README.md"
+      REF_README="$REF_DIR/README.md"
+
+      # Check if README exists
+      if [ ! -f "$TARGET_README" ]; then
+        echo '{"readme_exists": false, "contributing_section": false, "trademarks_section": false, "contributing_verbatim": false, "trademarks_verbatim": false, "severity": "error", "finding": "README.md is missing"}'
+        exit 0
+      fi
+
+      # Sanity check the reference README before relying on it. If the
+      # reference fetch failed or returned partial content, downstream
+      # comparisons would silently mis-report "content differs" when the
+      # real condition is "I could not complete the comparison".
+      REF_README_OK="true"
+      REF_README_BYTES=0
+      if [ ! -s "$REF_README" ]; then
+        REF_README_OK="false"
+      else
+        REF_README_BYTES=$(wc -c < "$REF_README" | tr -d ' ')
+      fi
+
+      # Reference must have both canonical headings, byte-exact, to be
+      # usable as a comparison source. If either is missing, treat the
+      # reference as broken rather than letting comparisons silently fail.
+      CONTRIB_REF_LINE=$(grep -Fxn -- "## Contributing" "$REF_README" 2>/dev/null | head -1 | cut -d: -f1)
+      TRADE_REF_LINE=$(grep -Fxn -- "## Trademarks" "$REF_README" 2>/dev/null | head -1 | cut -d: -f1)
+      if [ -z "$CONTRIB_REF_LINE" ] || [ -z "$TRADE_REF_LINE" ]; then
+        REF_README_OK="false"
+      fi
+
+      # classify_heading: locate a section by NAME (e.g. "Contributing") in a
+      # given file and classify it into one of three states:
+      #   conformant    - a line byte-exactly equal to the canonical heading exists
+      #   nonconformant - a heading (levels 1-4) exists whose tokenized text
+      #                   contains the section name as a whole word, but the
+      #                   line is NOT byte-exact (wrong level, emoji, combined
+      #                   heading like "## Contributing · Security · Support")
+      #   absent        - no heading at any level matches at all
+      #
+      # IMPORTANT: the tokenized/fuzzy scan exists ONLY to distinguish
+      # "missing entirely" from "present with wrong heading" for reporting.
+      # It NEVER promotes a non-exact heading to a pass -- see evaluate_section.
+      classify_heading() {
+        local file="$1" name="$2" canonical="$3"
+        HSTATE="absent"
+        HLINE=""
+        HTEXT=""
+
+        local exact_line
+        exact_line=$(grep -Fxn -- "$canonical" "$file" 2>/dev/null | head -1 | cut -d: -f1)
+        if [ -n "$exact_line" ]; then
+          HSTATE="conformant"
+          HLINE="$exact_line"
+          return 0
+        fi
+
+        local line_num line_text word_list
+        while IFS=: read -r line_num line_text; do
+          word_list=$(printf '%s' "$line_text" | sed -E 's/^#{1,4}[[:space:]]+//' | tr -c '[:alpha:]' '\n' | grep -v '^$')
+          if printf '%s\n' "$word_list" | grep -iFxq -- "$name"; then
+            HSTATE="nonconformant"
+            HLINE="$line_num"
+            HTEXT="$line_text"
+            return 0
+          fi
+        done < <(grep -nE "^#{1,4}[[:space:]]" "$file" 2>/dev/null)
+
+        HSTATE="absent"
+        return 0
+      }
+
+      # extract_section_body: given a heading line number, return every line
+      # from that heading up to (but not including) the next "## " heading,
+      # or to EOF if there is none.
+      extract_section_body() {
+        local file="$1" start="$2"
+        local next
+        next=$(tail -n +$((start + 1)) "$file" | grep -n "^## " | head -1 | cut -d: -f1 || echo "")
+        if [ -n "$next" ]; then
+          sed -n "${start},$((start + next - 1))p" "$file"
+        else
+          tail -n +"$start" "$file"
+        fi
+      }
+
+      # canonical_lines_missing: containment check, not equality. Every
+      # non-empty, whitespace-normalized line of the CANONICAL body must
+      # appear somewhere in the TARGET body; extra target lines are fine.
+      # Blockquote/admonition lines (e.g. GitHub "> [!NOTE]" asides) are
+      # dropped from the CANONICAL side only, since those are repo-instance
+      # commentary (e.g. amplifier-core's own contribution-status notice),
+      # not the legally-mandated boilerplate every repo must carry verbatim.
+      canonical_lines_missing() {
+        local canonical_file="$1" target_file="$2"
+
+        if [ ! -s "$canonical_file" ] || [ ! -s "$target_file" ]; then
+          echo "unknown"
+          return 0
+        fi
+
+        awk '{ gsub(/[ \t]+/, " "); sub(/^ /, ""); sub(/ $/, ""); if (length($0) > 0 && $0 !~ /^>/) print }' "$canonical_file" > /tmp/_canon_norm_$$.txt
+        awk '{ gsub(/[ \t]+/, " "); sub(/^ /, ""); sub(/ $/, ""); if (length($0) > 0) print }' "$target_file" > /tmp/_target_norm_$$.txt
+
+        if [ ! -s /tmp/_canon_norm_$$.txt ] || [ ! -s /tmp/_target_norm_$$.txt ]; then
+          rm -f /tmp/_canon_norm_$$.txt /tmp/_target_norm_$$.txt
+          echo "unknown"
+          return 0
+        fi
+
+        local missing
+        missing=$(grep -Fxvf /tmp/_target_norm_$$.txt /tmp/_canon_norm_$$.txt)
+        rm -f /tmp/_canon_norm_$$.txt /tmp/_target_norm_$$.txt
+        if [ -n "$missing" ]; then
+          echo "1"
+        else
+          echo "0"
+        fi
+      }
+
+      # evaluate_section: run the three-state classification for one section
+      # (Contributing or Trademarks) and set <TAG>_SECTION / <TAG>_VERBATIM /
+      # <TAG>_SEVERITY / <TAG>_FINDING accordingly.
+      #   absent        -> error, "is missing required section"
+      #   nonconformant -> error, states both found heading and required heading
+      #                    (this is the fix for the false negative in BUG A:
+      #                    previously a literal grep on "^## Contributing"
+      #                    reported this exact case as "missing")
+      #   conformant    -> compare body by CONTAINMENT (fix for BUG B: previously
+      #                    exact `diff -q` equality flagged compliant READMEs
+      #                    with extra repo-specific content as "differs")
+      evaluate_section() {
+        local tag="$1" name="$2" canonical="$3"
+
+        classify_heading "$TARGET_README" "$name" "$canonical"
+        local state="$HSTATE" line="$HLINE" text="$HTEXT"
+
+        eval "${tag}_SECTION=false"
+        eval "${tag}_VERBATIM=false"
+        eval "${tag}_SEVERITY=pass"
+        eval "${tag}_FINDING=''"
+
+        if [ "$state" = "absent" ]; then
+          eval "${tag}_SEVERITY=error"
+          eval "${tag}_FINDING=\"README.md is missing required section: ${canonical}\""
+          return 0
+        fi
+
+        eval "${tag}_SECTION=true"
+
+        if [ "$state" = "nonconformant" ]; then
+          eval "${tag}_SEVERITY=error"
+          eval "${tag}_FINDING=\"README.md has non-conformant heading: found '${text}', requires '${canonical}'\""
+          return 0
+        fi
+
+        if [ "$REF_README_OK" != "true" ]; then
+          eval "${tag}_SEVERITY=warning"
+          eval "${tag}_FINDING=\"README.md comparison could not complete (reference README missing or invalid; ref bytes=${REF_README_BYTES}); retry recommended\""
+          return 0
+        fi
+
+        local ref_line
+        ref_line=$(grep -Fxn -- "$canonical" "$REF_README" | head -1 | cut -d: -f1)
+
+        extract_section_body "$REF_README" "$ref_line" > /tmp/_ref_body_$$.txt
+        extract_section_body "$TARGET_README" "$line" > /tmp/_target_body_$$.txt
+
+        local result
+        result=$(canonical_lines_missing /tmp/_ref_body_$$.txt /tmp/_target_body_$$.txt)
+        rm -f /tmp/_ref_body_$$.txt /tmp/_target_body_$$.txt
+
+        if [ "$result" = "unknown" ]; then
+          eval "${tag}_SEVERITY=warning"
+          eval "${tag}_FINDING=\"README.md comparison could not complete (section extraction yielded empty content); retry recommended\""
+        elif [ "$result" = "1" ]; then
+          eval "${tag}_SEVERITY=error"
+          eval "${tag}_VERBATIM=false"
+          eval "${tag}_FINDING=\"README.md '${canonical}' section is missing required canonical text\""
+        else
+          eval "${tag}_SEVERITY=pass"
+          eval "${tag}_VERBATIM=true"
+        fi
+      }
+
+      evaluate_section "CONTRIB" "Contributing" "## Contributing"
+      evaluate_section "TRADE" "Trademarks" "## Trademarks"
+
+      # Roll the two independent per-section evaluations up into one overall
+      # severity/finding. error beats warning beats pass; findings from every
+      # non-passing section are concatenated so nothing is silently dropped.
+      FINDINGS=()
+      SEVERITY="pass"
+      for tag in CONTRIB TRADE; do
+        sev_var="${tag}_SEVERITY"
+        finding_var="${tag}_FINDING"
+        sev="${!sev_var}"
+        finding="${!finding_var}"
+        if [ "$sev" = "error" ]; then
+          SEVERITY="error"
+          FINDINGS+=("$finding")
+        elif [ "$sev" = "warning" ] && [ "$SEVERITY" != "error" ]; then
+          SEVERITY="warning"
+          FINDINGS+=("$finding")
+        fi
+      done
+
+      if [ "$SEVERITY" = "pass" ]; then
+        FINDING="README.md has correct Contributing and Trademarks sections"
+      else
+        FINDING=$(IFS='; '; echo "${FINDINGS[*]}")
+      fi
+
+      jq -n \
+        --argjson readme_exists true \
+        --argjson has_contrib "$CONTRIB_SECTION" \
+        --argjson has_trade "$TRADE_SECTION" \
+        --argjson contrib_match "$CONTRIB_VERBATIM" \
+        --argjson trade_match "$TRADE_VERBATIM" \
+        --arg severity "$SEVERITY" \
+        --arg finding "$FINDING" \
+        '{
+          readme_exists: $readme_exists,
+          contributing_section: $has_contrib,
+          trademarks_section: $has_trade,
+          contributing_verbatim: $contrib_match,
+          trademarks_verbatim: $trade_match,
+          severity: $severity,
+          finding: $finding
+        }'
+    output: "readme_check"
+    timeout: 60
+    on_error: "continue"
+  # ==========================================================================
+  # STEP 6b: Check if README Fix is Needed
+  # ==========================================================================
+  - id: "check-readme-fix-needed"
+    condition: "{{create_fix_pr}} == 'true' or {{dry_run}} == 'true'"
+    type: "bash"
+    parse_json: true
+    command: |
+      # Check if README check indicates issues that need fixing
+      cat << 'README_CHECK_EOF' > /tmp/readme_check_$$.json
+      {{readme_check}}
+      README_CHECK_EOF
+      
+      SEVERITY=$(jq -r '.severity // "unknown"' /tmp/readme_check_$$.json)
+      CONTRIB_MATCH=$(jq -r '.contributing_verbatim // false' /tmp/readme_check_$$.json)
+      TRADE_MATCH=$(jq -r '.trademarks_verbatim // false' /tmp/readme_check_$$.json)
+      rm -f /tmp/readme_check_$$.json
+      
+      if [ "$SEVERITY" = "pass" ]; then
+        jq -n '{needs_fix: false, reason: "README sections already match"}'
+      else
+        jq -n --arg sev "$SEVERITY" --argjson contrib "$CONTRIB_MATCH" --argjson trade "$TRADE_MATCH" \
+          '{needs_fix: true, severity: $sev, contributing_ok: $contrib, trademarks_ok: $trade}'
+      fi
+    output: "readme_fix_needed"
+    timeout: 30
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 6c: Fix README via Agent (writes directly to file)
+  # ==========================================================================
+  - id: "fix-readme-content"
+    condition: "{{create_fix_pr}} == 'true' or {{dry_run}} == 'true'"
+    agent: "foundation:modular-builder"
+    prompt: |
+      Fix the README.md file for the {{repo_owner}}/{{repo_name}} repository to include correct Contributing and Trademarks sections.
+      
+      ## README Fix Status
+      {{readme_fix_needed}}
+      
+      If "needs_fix" is false, respond with "NO_FIX_NEEDED" and do nothing else.
+      
+      ## Files to Work With
+      
+      1. **Current README**: {{working_dir}}/{{repo_name}}/README.md
+      2. **Reference README**: {{working_dir}}/reference/README.md (contains correct Contributing & Trademarks sections at the end)
+      3. **Output location**: {{working_dir}}/{{repo_name}}/fixes/README.md
+      
+      ## Task
+      
+      1. First, read the reference README.md to see the exact Contributing and Trademarks sections
+      2. Read the current target README.md
+      3. Create a fixed version that:
+         - Keeps ALL existing content up to any existing "## Contributing" or "## Trademarks" section
+         - Removes any existing Contributing and Trademarks sections (and everything after them)
+         - Appends the EXACT Contributing and Trademarks sections from the reference (verbatim, character-for-character)
+      4. Create the fixes directory if needed: {{working_dir}}/{{repo_name}}/fixes/
+      5. Write the fixed README to: {{working_dir}}/{{repo_name}}/fixes/README.md
+      
+      ## Critical Requirements
+      
+      - The Contributing and Trademarks sections MUST be copied EXACTLY from the reference - no modifications
+      - Preserve all project-specific content from the original README
+      - Ensure there's a blank line before the Contributing section
+      - The Contributing section must come before the Trademarks section
+      
+      ## Output
+      
+      After writing the file, confirm what was done. If no fix was needed, just say "NO_FIX_NEEDED".
+    output: "readme_fix_result"
+    timeout: 300
+    on_error: "continue"
+
+  - id: "validate-readme-fix"
+    condition: "{{create_fix_pr}} == 'true' or {{dry_run}} == 'true'"
+    type: "bash"
+    command: |
+      FIXES_DIR="{{working_dir}}/{{repo_name}}/fixes"
+      FIXED_README="$FIXES_DIR/README.md"
+      
+      if [ ! -f "$FIXED_README" ]; then
+        echo "No fixed README generated (may not have been needed)"
+        exit 0
+      fi
+      
+      echo "=== README Fix Validation ==="
+      echo "File: $FIXED_README"
+      echo "Size: $(wc -c < "$FIXED_README") bytes, $(wc -l < "$FIXED_README") lines"
+      echo ""
+      
+      # Validate Contributing section exists with the byte-exact canonical
+      # heading. Exact match (not a "^## Contributing" prefix scan) so a
+      # fix that lands emoji, wrong heading level, or a combined heading
+      # is caught here rather than silently passing validation.
+      if grep -Fxq -- "## Contributing" "$FIXED_README"; then
+        echo "✓ Contributing section found"
+      else
+        echo "✗ ERROR: Contributing section missing or heading not exactly '## Contributing'!"
+        exit 1
+      fi
+      
+      # Validate Trademarks section exists with the byte-exact canonical heading.
+      if grep -Fxq -- "## Trademarks" "$FIXED_README"; then
+        echo "✓ Trademarks section found"
+      else
+        echo "✗ ERROR: Trademarks section missing or heading not exactly '## Trademarks'!"
+        exit 1
+      fi
+      
+      # Check that Contributing comes before Trademarks
+      CONTRIB_LINE=$(grep -Fxn -- "## Contributing" "$FIXED_README" | head -1 | cut -d: -f1)
+      TRADE_LINE=$(grep -Fxn -- "## Trademarks" "$FIXED_README" | head -1 | cut -d: -f1)
+      
+      if [ "$CONTRIB_LINE" -lt "$TRADE_LINE" ]; then
+        echo "✓ Section order correct (Contributing at line $CONTRIB_LINE, Trademarks at line $TRADE_LINE)"
+      else
+        echo "✗ ERROR: Sections in wrong order!"
+        exit 1
+      fi
+      
+      echo ""
+      echo "README fix validated successfully"
+    output: "readme_validation_result"
+    timeout: 30
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 7: Check GitHub Issues Status
+  # ==========================================================================
+  - id: "check-issues-status"
+    type: "bash"
+    parse_json: true
+    command: |
+      # Get issues enabled status from repo validation
+      # Use heredoc to safely handle JSON with special characters
+      cat << 'REPO_JSON_EOF' > /tmp/repo_issues_$$.json
+      {{repo_info_raw}}
+      REPO_JSON_EOF
+      
+      # NOTE: Use 'has()' check + 'tostring' because jq '//' operator treats false as falsy
+      ISSUES_ENABLED=$(jq -r 'if has("hasIssuesEnabled") then (.hasIssuesEnabled | tostring) else "unknown" end' /tmp/repo_issues_$$.json)
+      rm -f /tmp/repo_issues_$$.json
+      
+      # Special case: main amplifier repo SHOULD have issues enabled
+      if [ "{{repo_name}}" = "amplifier" ] && [ "{{repo_owner}}" = "microsoft" ]; then
+        if [ "$ISSUES_ENABLED" = "true" ]; then
+          jq -n '{issues_enabled: true, severity: "pass", finding: "GitHub Issues are enabled (correct for main amplifier repo)"}'
+        else
+          jq -n '{issues_enabled: false, severity: "warning", finding: "GitHub Issues are disabled - main amplifier repo should have issues enabled"}'
+        fi
+      else
+        # Other repos: recommend disabling issues
+        if [ "$ISSUES_ENABLED" = "false" ]; then
+          jq -n '{issues_enabled: false, severity: "pass", finding: "GitHub Issues are disabled (recommended for non-main repos)"}'
+        elif [ "$ISSUES_ENABLED" = "true" ]; then
+          jq -n '{issues_enabled: true, severity: "recommendation", finding: "GitHub Issues are enabled - recommend disabling to funnel issues to main amplifier repo"}'
+        else
+          jq -n --arg status "$ISSUES_ENABLED" '{issues_enabled: null, severity: "unknown", finding: ("Unable to determine issues status: " + $status)}'
+        fi
+      fi
+    output: "issues_check"
+    timeout: 30
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 7b: Check Wiki Status
+  # ==========================================================================
+  - id: "check-wiki-status"
+    type: "bash"
+    parse_json: true
+    command: |
+      cat << 'REPO_JSON_EOF' > /tmp/repo_wiki_$$.json
+      {{repo_info_raw}}
+      REPO_JSON_EOF
+
+      WIKI_ENABLED=$(jq -r 'if has("hasWikiEnabled") then (.hasWikiEnabled | tostring) else "unknown" end' /tmp/repo_wiki_$$.json)
+      rm -f /tmp/repo_wiki_$$.json
+
+      # Policy: all repos (including main amplifier) should disable wiki
+      if [ "{{repo_name}}" = "amplifier" ] && [ "{{repo_owner}}" = "microsoft" ]; then
+        if [ "$WIKI_ENABLED" = "false" ]; then
+          jq -n '{wiki_enabled: false, severity: "pass", finding: "Wiki is disabled (correct)"}'
+        elif [ "$WIKI_ENABLED" = "true" ]; then
+          jq -n '{wiki_enabled: true, severity: "error", finding: "Wiki is enabled - should be disabled even on main amplifier repo"}'
+        else
+          jq -n --arg status "$WIKI_ENABLED" '{wiki_enabled: null, severity: "unknown", finding: ("Unable to determine wiki status: " + $status)}'
+        fi
+      else
+        if [ "$WIKI_ENABLED" = "false" ]; then
+          jq -n '{wiki_enabled: false, severity: "pass", finding: "Wiki is disabled (correct)"}'
+        elif [ "$WIKI_ENABLED" = "true" ]; then
+          jq -n '{wiki_enabled: true, severity: "error", finding: "Wiki is enabled - should be disabled"}'
+        else
+          jq -n --arg status "$WIKI_ENABLED" '{wiki_enabled: null, severity: "unknown", finding: ("Unable to determine wiki status: " + $status)}'
+        fi
+      fi
+    output: "wiki_check"
+    timeout: 30
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 7c: Check Projects Status
+  # ==========================================================================
+  - id: "check-projects-status"
+    type: "bash"
+    parse_json: true
+    command: |
+      cat << 'REPO_JSON_EOF' > /tmp/repo_projects_$$.json
+      {{repo_info_raw}}
+      REPO_JSON_EOF
+
+      PROJECTS_ENABLED=$(jq -r 'if has("hasProjectsEnabled") then (.hasProjectsEnabled | tostring) else "unknown" end' /tmp/repo_projects_$$.json)
+      rm -f /tmp/repo_projects_$$.json
+
+      # Policy: all repos (including main amplifier) should disable projects
+      if [ "{{repo_name}}" = "amplifier" ] && [ "{{repo_owner}}" = "microsoft" ]; then
+        if [ "$PROJECTS_ENABLED" = "false" ]; then
+          jq -n '{projects_enabled: false, severity: "pass", finding: "Projects is disabled (correct)"}'
+        elif [ "$PROJECTS_ENABLED" = "true" ]; then
+          jq -n '{projects_enabled: true, severity: "error", finding: "Projects is enabled - should be disabled even on main amplifier repo"}'
+        else
+          jq -n --arg status "$PROJECTS_ENABLED" '{projects_enabled: null, severity: "unknown", finding: ("Unable to determine projects status: " + $status)}'
+        fi
+      else
+        if [ "$PROJECTS_ENABLED" = "false" ]; then
+          jq -n '{projects_enabled: false, severity: "pass", finding: "Projects is disabled (correct)"}'
+        elif [ "$PROJECTS_ENABLED" = "true" ]; then
+          jq -n '{projects_enabled: true, severity: "error", finding: "Projects is enabled - should be disabled"}'
+        else
+          jq -n --arg status "$PROJECTS_ENABLED" '{projects_enabled: null, severity: "unknown", finding: ("Unable to determine projects status: " + $status)}'
+        fi
+      fi
+    output: "projects_check"
+    timeout: 30
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 7d: Check Branch Protection
+  # ==========================================================================
+  # Probes TWO independent branch-protection mechanisms and cross-references
+  # them, because they are invisible to each other:
+  #   1. Repository rulesets, via `rules/branches/*` (rules-in-effect).
+  #   2. CLASSIC branch protection, via `branches/*/protection` (legacy API).
+  # The rules-in-effect endpoint surfaces RULESET-derived rules ONLY -- a repo
+  # hand-remediated with classic protection (instead of the canonical ruleset)
+  # never appears there, so without the second probe this check would report
+  # "no branch protection" on a repo that actually has protection -- just the
+  # wrong, over-tight kind. This is exactly what happened on
+  # microsoft/amplifier-bundle-dot-runner: classic protection required 1
+  # code-owner review with bypass_pull_request_allowances empty, which blocks
+  # EVERY merge (including by maintainers/admins) unless GitHub admin
+  # elevation is used, and the audit was blind to it. See
+  # NOTES-dot-runner-protection.md for the full incident writeup.
+  #
+  # Finding classes (additive `classic_protection` field on every verdict):
+  #   - error:   classic protection requires reviews with an empty/absent
+  #              bypass_pull_request_allowances list, AND no ruleset supplies
+  #              a passing pull_request rule. The anti-pattern above -- names
+  #              it explicitly and points at the ruleset-based fix.
+  #   - warning: classic protection present ALONGSIDE a passing ruleset.
+  #              Redundant dual enforcement (most-restrictive wins); not a
+  #              blocker but exactly the kind of drift that led to the
+  #              anti-pattern above. Notes which classic bits (e.g. required
+  #              status checks) the ruleset does not carry.
+  #   - warning: classic protection requires reviews AND has an explicit
+  #              bypass_pull_request_allowances list, with no ruleset in
+  #              effect. Functional (not the "unrestricted" case below) but
+  #              non-canonical - bypass here is enumerated by user/team/app
+  #              IDs on the legacy API and drifts silently, unlike the
+  #              ruleset's role+team bypass_actors model.
+  #   - pass/error (unchanged): existing ruleset-only verdicts when classic
+  #              protection is absent.
+  - id: "check-branch-protection"
+    type: "bash"
+    parse_json: true
+    command: |
+      cat << 'REPO_JSON_EOF' > /tmp/repo_bp_$$.json
+      {{repo_info_raw}}
+      REPO_JSON_EOF
+
+      DEFAULT_BRANCH=$(jq -r '.defaultBranchRef.name // "main"' /tmp/repo_bp_$$.json)
+      IS_PRIVATE=$(jq -r '.isPrivate // false' /tmp/repo_bp_$$.json)
+      rm -f /tmp/repo_bp_$$.json
+
+      # Private repos are out of scope for the canonical ruleset / branch
+      # protection policy. Auditing them against public-repo expectations
+      # produces 100% false-positive findings (every private repo flags the
+      # same way) and obscures real issues. Emit a single "pass" verdict
+      # noting the skip and exit early.
+      if [ "$IS_PRIVATE" = "true" ]; then
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{has_protection: null, severity: "pass", classic_protection: null, finding: ("Branch protection check skipped: private repo (canonical ruleset is not applied to private repos per policy)")}'
+        exit 0
+      fi
+
+      REPO="{{repo_owner}}/{{repo_name}}"
+
+      # Probe 1: rules-in-effect on the default branch (ruleset-derived only).
+      RULES_RAW=$(gh api "repos/$REPO/rules/branches/$DEFAULT_BRANCH" 2>&1 || echo "FETCH_FAILED")
+      RULESET_FETCH_OK="true"
+      if [ "$RULES_RAW" = "FETCH_FAILED" ] || echo "$RULES_RAW" | grep -qE "Not Found"; then
+        RULESET_FETCH_OK="false"
+        PR_RULE_COUNT=0
+      else
+        PR_RULE_COUNT=$(echo "$RULES_RAW" | jq -r '[.[] | select(.type == "pull_request" and ((.parameters.required_approving_review_count // 0) >= 1))] | length' 2>/dev/null || echo "0")
+      fi
+      RULESET_HAS_PR_RULE="false"
+      [ "${PR_RULE_COUNT:-0}" -ge 1 ] 2>/dev/null && RULESET_HAS_PR_RULE="true"
+      RULESET_HAS_STATUS_CHECKS_COUNT=0
+      if [ "$RULESET_FETCH_OK" = "true" ]; then
+        RULESET_HAS_STATUS_CHECKS_COUNT=$(echo "$RULES_RAW" | jq -r '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo "0")
+      fi
+
+      # Probe 2: CLASSIC branch protection (legacy API - invisible to Probe 1).
+      CLASSIC_RAW=$(gh api "repos/$REPO/branches/$DEFAULT_BRANCH/protection" 2>&1 || echo "FETCH_FAILED")
+      CLASSIC_PRESENT="false"
+      CLASSIC_REQUIRES_REVIEWS="false"
+      CLASSIC_BYPASS_COUNT=0
+      CLASSIC_STATUS_CONTEXTS="[]"
+      if [ "$CLASSIC_RAW" != "FETCH_FAILED" ] && ! echo "$CLASSIC_RAW" | grep -qE "Not Found|Branch not protected"; then
+        CLASSIC_PRESENT="true"
+        CLASSIC_REQUIRES_REVIEWS=$(echo "$CLASSIC_RAW" | jq -r '(.required_pull_request_reviews != null)' 2>/dev/null || echo "false")
+        CLASSIC_BYPASS_COUNT=$(echo "$CLASSIC_RAW" | jq -r '
+          ((.required_pull_request_reviews.bypass_pull_request_allowances.users // [])
+           + (.required_pull_request_reviews.bypass_pull_request_allowances.teams // [])
+           + (.required_pull_request_reviews.bypass_pull_request_allowances.apps // [])) | length
+        ' 2>/dev/null || echo "0")
+        CLASSIC_STATUS_CONTEXTS=$(echo "$CLASSIC_RAW" | jq -c '(.required_status_checks.contexts // [])' 2>/dev/null || echo "[]")
+      fi
+      CLASSIC_HAS_BYPASS="false"
+      [ "${CLASSIC_BYPASS_COUNT:-0}" -ge 1 ] 2>/dev/null && CLASSIC_HAS_BYPASS="true"
+
+      if [ "$RULESET_HAS_PR_RULE" = "true" ] && [ "$CLASSIC_PRESENT" = "true" ]; then
+        # Finding class: redundant dual enforcement (warning).
+        MISSING_NOTE=""
+        CLASSIC_STATUS_COUNT=$(echo "$CLASSIC_STATUS_CONTEXTS" | jq 'length' 2>/dev/null || echo "0")
+        if [ "${CLASSIC_STATUS_COUNT:-0}" -gt 0 ] 2>/dev/null && [ "${RULESET_HAS_STATUS_CHECKS_COUNT:-0}" -eq 0 ]; then
+          MISSING_NOTE=" Classic protection carries required status checks ($(echo "$CLASSIC_STATUS_CONTEXTS" | jq -r 'join(", ")')) that the ruleset does not enforce - migrate them into the ruleset's required_status_checks rule before removing classic protection."
+        fi
+        jq -n --arg branch "$DEFAULT_BRANCH" --arg note "$MISSING_NOTE" \
+          '{has_protection: true, severity: "warning", classic_protection: true, finding: ("Branch protection on default branch (" + $branch + ") is enforced by BOTH a passing repository ruleset AND classic branch protection - redundant dual enforcement (most-restrictive wins). Canonical setup is ruleset-only; remove the classic branch protection." + $note)}'
+      elif [ "$RULESET_HAS_PR_RULE" = "true" ]; then
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{has_protection: true, severity: "pass", classic_protection: false, finding: ("Branch protection on default branch (" + $branch + ") configured via repository ruleset (pull_request rule with required reviews active)")}'
+      elif [ "$CLASSIC_PRESENT" = "true" ] && [ "$CLASSIC_REQUIRES_REVIEWS" = "true" ] && [ "$CLASSIC_HAS_BYPASS" = "false" ]; then
+        # Finding class: the dot-runner anti-pattern (error). Classic
+        # protection requires reviews with NO bypass path at all - classic
+        # protection has no concept of bypass actors, so every merge
+        # (including by maintainers/admins acting through normal means) is
+        # blocked unless GitHub admin elevation is used.
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{has_protection: true, severity: "error", classic_protection: true, finding: ("classic branch protection requires reviews with no bypass path - maintainers cannot merge; canonical setup is a ruleset with bypass actors (migrate). Classic branch protection on " + $branch + " requires pull request reviews with an empty/absent bypass_pull_request_allowances list, and no repository ruleset supplies a passing pull_request rule. Migrate to a repository ruleset (deletion, non_fast_forward, required_linear_history, pull_request) with bypass_actors {RepositoryRole Admin, Team octo-made-amplifier-maintainers}, then delete the classic protection. Set apply_fixes=true on this recipe to migrate automatically on microsoft/* public repos.")}'
+      elif [ "$CLASSIC_PRESENT" = "true" ] && [ "$CLASSIC_REQUIRES_REVIEWS" = "true" ] && [ "$CLASSIC_HAS_BYPASS" = "true" ]; then
+        # Finding class: functional-but-non-canonical (warning). Classic
+        # protection requires reviews AND has an explicit
+        # bypass_pull_request_allowances list (users/teams/apps) - so it IS
+        # restricted (this is NOT the "push/merge is unrestricted" case
+        # below), but the bypass path here is enumerated by individual
+        # user/team/app IDs on the legacy API rather than the ruleset's
+        # role+team bypass_actors model, which drifts silently (e.g. a
+        # departed maintainer's account remains on the allowance list) and
+        # has none of check-bypass-actors' error/warning drift detection.
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{has_protection: true, severity: "warning", classic_protection: true, finding: ("Classic branch protection on default branch (" + $branch + ") requires pull request reviews and has explicit bypass_pull_request_allowances (users/teams/apps) - functional but non-canonical, no repository ruleset is in effect. Bypass allowances on classic protection are enumerated by individual user/team/app IDs and drift silently (e.g. a departed maintainer remains listed); the canonical ruleset expresses bypass via role+team actors instead. Recommend migrating to the canonical repository ruleset (deletion, non_fast_forward, required_linear_history, pull_request) with bypass_actors {RepositoryRole Admin, Team octo-made-amplifier-maintainers}. Set apply_fixes=true on this recipe to migrate automatically on microsoft/* public repos.")}'
+      elif [ "$RULESET_FETCH_OK" = "true" ]; then
+        jq -n --arg branch "$DEFAULT_BRANCH" --arg classic "$CLASSIC_PRESENT" \
+          '{has_protection: false, severity: "error", classic_protection: ($classic == "true"), finding: ("Repository ruleset present on default branch (" + $branch + ") but no pull_request rule requires approving reviews. Update the ruleset to require at least 1 approving review before merge.")}'
+      else
+        jq -n --arg branch "$DEFAULT_BRANCH" --arg classic "$CLASSIC_PRESENT" \
+          '{has_protection: false, severity: "error", classic_protection: ($classic == "true"), finding: ("No branch protection on default branch (" + $branch + ") - no repository ruleset is in effect, push/merge is unrestricted")}'
+      fi
+    output: "branch_protection_check"
+    timeout: 60
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 7e: Check Bypass Actors (mixed severity: error / warning / pass)
+  # ==========================================================================
+  # Verifies that the maintainer/owner bypass model is configured correctly so
+  # that trusted contributors can self-merge their own PRs without external
+  # review, AND that the bypass mode does not silently undermine the security
+  # floor enforced by check-branch-protection.
+  #
+  # For microsoft/* repos, this step also validates that the RepositoryRole
+  # actor_id matches the canonical value (5 = Admin). GitHub does not officially
+  # document the RepositoryRole actor_id mapping, but it has been confirmed
+  # empirically and via github/rest-api-description#4406:
+  #
+  #   actor_id 1 = Read, 2 = Triage, 3 = Write, 4 = Maintain, 5 = Admin
+  #
+  # A repo with actor_id 2 (Triage) instead of 5 (Admin) means the wrong
+  # role has bypass capability. This check catches that drift.
+  #
+  # Severity model:
+  #   - error:   any bypass actor uses bypass_mode=always. This permits direct
+  #              pushes to the default branch, bypassing the pull_request rule
+  #              entirely and leaving no audit trail. Bypass mode must be
+  #              pull_request so that bypass remains a recorded action on PR
+  #              merges and direct pushes stay blocked.
+  #   - error:   ruleset present but no bypass actors configured, AND the repo
+  #              is owned by microsoft. The canonical bypass pattern is the
+  #              org-wide convention for amplifier-* repos; absence is a
+  #              deviation (not merely a convenience issue). PRs cannot be
+  #              admin-merged on repos missing this configuration.
+  #   - error:   bypass actors configured on a microsoft/* repo but the
+  #              RepositoryRole actor_id is not 5 (Admin). The wrong
+  #              repository role has bypass capability — likely drift from
+  #              a misconfigured ruleset apply.
+  #   - warning: ruleset present but no bypass actors configured, for repos NOT
+  #              owned by microsoft (forks, personal projects). Maintainers and
+  #              owners will be required to wait for external review on their
+  #              own PRs. Convenience issue, not a security violation.
+  #   - pass:    at least one bypass actor configured, all using bypass_mode
+  #              of pull_request (none using always). For microsoft/* repos,
+  #              also confirms RepositoryRole actor_id 5 (Admin).
+  - id: "check-bypass-actors"
+    type: "bash"
+    parse_json: true
+    command: |
+      cat << 'REPO_JSON_EOF' > /tmp/repo_bypass_$$.json
+      {{repo_info_raw}}
+      REPO_JSON_EOF
+
+      DEFAULT_BRANCH=$(jq -r '.defaultBranchRef.name // "main"' /tmp/repo_bypass_$$.json)
+      IS_PRIVATE=$(jq -r '.isPrivate // false' /tmp/repo_bypass_$$.json)
+      rm -f /tmp/repo_bypass_$$.json
+
+      # Private repos are out of scope for the canonical ruleset / bypass
+      # actor policy (the canonical ruleset is not applied to private repos).
+      # Without a ruleset there are no bypass actors to evaluate, and the
+      # check would otherwise emit a misleading "no ruleset configured"
+      # warning that adds noise without surfacing actionable information.
+      # Emit a "not_applicable" verdict noting the skip and exit early.
+      # NOTE: this must never be "pass" -- the check was never evaluated,
+      # so reporting "pass" would make an unevaluated repo look clean
+      # (a false negative if the repo genuinely has zero bypass actors).
+      if [ "$IS_PRIVATE" = "true" ]; then
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{has_bypass: null, severity: "not_applicable", finding: ("Not applicable: bypass actors check skipped for private repo (canonical ruleset is not applied to private repos per policy)")}'
+        exit 0
+      fi
+
+      REPO="{{repo_owner}}/{{repo_name}}"
+
+      # GitHub redacts ruleset bypass_actors to null for non-admin viewers.
+      # Probe our own access level so we can distinguish "genuinely empty"
+      # from "hidden from us" and avoid reporting a false positive.
+      HAS_ADMIN=$(gh api "repos/$REPO" --jq '.permissions.admin // false' 2>/dev/null || echo "false")
+
+      # Enumerate active branch rulesets and check bypass_actors on those that target the default branch.
+      RULESETS_RAW=$(gh api "repos/$REPO/rulesets" 2>&1 || echo "FETCH_FAILED")
+      RULESET_PRESENT=false
+      RULESET_BYPASS_TOTAL=0
+      RULESET_ALWAYS_TOTAL=0
+      REPO_ROLE_IDS=""
+      if [ "$RULESETS_RAW" != "FETCH_FAILED" ] && ! echo "$RULESETS_RAW" | grep -qE "Not Found"; then
+        RULESET_IDS=$(echo "$RULESETS_RAW" | jq -r '.[] | select(.enforcement == "active" and .target == "branch") | .id' 2>/dev/null || echo "")
+        for RID in $RULESET_IDS; do
+          DETAIL=$(gh api "repos/$REPO/rulesets/$RID" 2>&1 || echo "FETCH_FAILED")
+          [ "$DETAIL" = "FETCH_FAILED" ] && continue
+          MATCHES=$(echo "$DETAIL" | jq --arg branch "$DEFAULT_BRANCH" '(.conditions.ref_name.include // []) | any(. == "~DEFAULT_BRANCH" or . == ("refs/heads/" + $branch))' 2>/dev/null || echo "false")
+          if [ "$MATCHES" = "true" ]; then
+            RULESET_PRESENT=true
+            COUNT=$(echo "$DETAIL" | jq -r '(.bypass_actors // []) | length' 2>/dev/null || echo "0")
+            RULESET_BYPASS_TOTAL=$((RULESET_BYPASS_TOTAL + COUNT))
+            ALWAYS_COUNT=$(echo "$DETAIL" | jq -r '[(.bypass_actors // [])[] | select(.bypass_mode == "always")] | length' 2>/dev/null || echo "0")
+            RULESET_ALWAYS_TOTAL=$((RULESET_ALWAYS_TOTAL + ALWAYS_COUNT))
+            # Collect RepositoryRole actor_ids for canonical config validation (microsoft/* repos)
+            ROLE_ACTORS=$(echo "$DETAIL" | jq -r '[(.bypass_actors // [])[] | select(.actor_type == "RepositoryRole") | .actor_id] | map(tostring) | join(",")' 2>/dev/null || echo "")
+            if [ -n "$ROLE_ACTORS" ]; then
+              REPO_ROLE_IDS="${REPO_ROLE_IDS:+$REPO_ROLE_IDS,}$ROLE_ACTORS"
+            fi
+          fi
+        done
+      fi
+
+      if [ "$RULESET_ALWAYS_TOTAL" -ge 1 ]; then
+        jq -n --arg branch "$DEFAULT_BRANCH" --arg count "$RULESET_ALWAYS_TOTAL" \
+          '{has_bypass: true, severity: "error", finding: ("Repository ruleset on " + $branch + " has " + $count + " bypass actor(s) with bypass_mode=always. This permits direct pushes to the default branch, bypassing the pull_request rule entirely and leaving no audit trail. Change bypass_mode to pull_request for all bypass actors so that bypass remains an explicit, recorded action on PR merges only.")}'
+      elif [ "$RULESET_BYPASS_TOTAL" -ge 1 ]; then
+        # For microsoft/* repos, verify RepositoryRole actor_id matches canonical (5 = Admin).
+        # GitHub does not document RepositoryRole actor_id values, but empirical testing
+        # and github/rest-api-description#4406 confirm: 1=Read, 2=Triage, 3=Write, 4=Maintain, 5=Admin.
+        if [ "{{repo_owner}}" = "microsoft" ] && [ -n "$REPO_ROLE_IDS" ]; then
+          if echo ",$REPO_ROLE_IDS," | grep -q ",5,"; then
+            jq -n --arg branch "$DEFAULT_BRANCH" --arg count "$RULESET_BYPASS_TOTAL" \
+              '{has_bypass: true, severity: "pass", finding: ("Bypass actors configured on " + $branch + " via repository ruleset (" + $count + " bypass actors, RepositoryRole=Admin, bypass_mode=pull_request) - matches canonical amplifier-* configuration")}'
+          else
+            jq -n --arg branch "$DEFAULT_BRANCH" --arg count "$RULESET_BYPASS_TOTAL" --arg ids "$REPO_ROLE_IDS" \
+              '{has_bypass: true, severity: "error", finding: ("Bypass actors configured on " + $branch + " but RepositoryRole actor_id is " + $ids + " instead of canonical 5 (Admin role). The wrong repository role has bypass capability. Update the ruleset bypass_actors to use RepositoryRole actor_id 5 (Admin).")}'
+          fi
+        else
+          jq -n --arg branch "$DEFAULT_BRANCH" --arg count "$RULESET_BYPASS_TOTAL" \
+            '{has_bypass: true, severity: "pass", finding: ("Bypass actors configured on " + $branch + " via repository ruleset (" + $count + " bypass actors with bypass_mode=pull_request) - maintainers/owners can self-merge")}'
+        fi
+      elif [ "$RULESET_PRESENT" = "true" ]; then
+        if [ "$HAS_ADMIN" != "true" ]; then
+          jq -n --arg branch "$DEFAULT_BRANCH" \
+            '{has_bypass: null, severity: "warning", finding: ("Bypass actors on " + $branch + " are INDETERMINATE - GitHub redacts the bypass_actors field for viewers without admin on this repository, so an empty result cannot be distinguished from a genuinely unconfigured one. Re-run this check with admin access to confirm. Not treated as a finding.")}'
+        elif [ "{{repo_owner}}" = "microsoft" ]; then
+          jq -n --arg branch "$DEFAULT_BRANCH" \
+            '{has_bypass: false, severity: "error", finding: ("Bypass actors not configured on " + $branch + ". Canonical pattern for microsoft/amplifier-* repos: {actor_id: 5, actor_type: RepositoryRole, bypass_mode: pull_request} (Admin role can bypass review on PR merge); {actor_id: 16902513, actor_type: Team, bypass_mode: pull_request} (octo-made-amplifier-maintainers Team can bypass review on PR merge). Configure both on the default-branch ruleset to match org-wide convention.")}'
+        else
+          jq -n --arg branch "$DEFAULT_BRANCH" \
+            '{has_bypass: false, severity: "warning", finding: ("Repository ruleset on " + $branch + " has no bypass actors configured. Maintainers and owners will be required to get external review on their own PRs (convenience issue, not security).")}'
+        fi
+      else
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{has_bypass: false, severity: "warning", finding: ("Cannot evaluate bypass actors - no repository ruleset configured on " + $branch + " (see Branch Protection check above)")}'
+      fi
+    output: "bypass_actors_check"
+    timeout: 60
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 7e-apply: Apply the Canonical Branch-Protection Ruleset (opt-in)
+  # ==========================================================================
+  # Audit-only remains the default. This step is gated behind the "apply_fixes"
+  # context var (default "false") and ALWAYS runs (no top-level `condition:`)
+  # so it can emit an explicit, structured skip verdict for every reason it
+  # declines to act - never a silent no-op, and never leaves
+  # {{apply_protection_check}} undefined for the report step below.
+  #
+  # Gate order (first failing gate wins, nothing after it is touched):
+  #   1. apply_fixes != "true"            -> {applied:false, reason:"audit-only..."}
+  #   2. repo owner != microsoft, or private -> skip verdict (never touches non-MS/private)
+  #   3. neither branch-protection nor bypass-actors verdict was "error" -> skip verdict
+  #      (nothing to fix)
+  #
+  # When all gates pass, this migrates a repo stuck on the classic-protection
+  # anti-pattern (see check-branch-protection above / NOTES-dot-runner-protection.md)
+  # to the canonical repository ruleset:
+  #   a. Capture classic protection's required_status_checks.contexts (if any)
+  #      so the CI requirement survives the migration.
+  #   b. Create-or-update (idempotent, by name) the repo ruleset
+  #      "amplifier-default-branch-protection": target ~DEFAULT_BRANCH,
+  #      enforcement active, rules deletion/non_fast_forward/
+  #      required_linear_history/pull_request (1 review, dismiss-stale,
+  #      code-owner review, thread resolution) plus required_status_checks
+  #      carrying the captured contexts (omitted entirely if none captured),
+  #      bypass_actors {RepositoryRole 5 (Admin), Team 16902513
+  #      (octo-made-amplifier-maintainers)}, both bypass_mode=pull_request.
+  #   c. GET the ruleset back and verify the rules + bypass_actors round-trip
+  #      BEFORE ever deleting the classic protection. Any failure here (create,
+  #      verify, or delete) is reported as {applied:false, error:...} with
+  #      classic_deleted:false - nothing is removed unless the replacement is
+  #      confirmed live.
+  #   d. Re-probes both protection mechanisms post-apply (the same logic as
+  #      check-branch-protection) and reports post_apply_check: pass|error, so
+  #      the recipe run itself proves the fix landed rather than merely
+  #      asserting it.
+  - id: "apply-protection-fix"
+    type: "bash"
+    parse_json: true
+    command: |
+      cat << 'REPO_JSON_EOF' > /tmp/repo_apply_$$.json
+      {{repo_info_raw}}
+      REPO_JSON_EOF
+
+      DEFAULT_BRANCH=$(jq -r '.defaultBranchRef.name // "main"' /tmp/repo_apply_$$.json)
+      IS_PRIVATE=$(jq -r '.isPrivate // false' /tmp/repo_apply_$$.json)
+      rm -f /tmp/repo_apply_$$.json
+
+      REPO="{{repo_owner}}/{{repo_name}}"
+      APPLY_FIXES="{{apply_fixes}}"
+
+      # Gate 1: never trigger without an explicit apply_fixes=true.
+      if [ "$APPLY_FIXES" != "true" ]; then
+        jq -n '{applied: false, reason: "audit-only (apply_fixes not set)", severity: "recommendation", finding: "Apply mode not requested (apply_fixes=false) - audit-only, no changes made. Set apply_fixes=true to migrate a classic-protection anti-pattern to the canonical ruleset on microsoft/* public repos."}'
+        exit 0
+      fi
+
+      # Gate 2: microsoft/* public repos only - never touch anything else in apply mode.
+      if [ "{{repo_owner}}" != "microsoft" ]; then
+        jq -n --arg owner "{{repo_owner}}" \
+          '{applied: false, reason: ("skip: apply mode is restricted to microsoft/* repos (owner=" + $owner + ")"), severity: "pass", finding: "Apply mode skipped: non-microsoft owner"}'
+        exit 0
+      fi
+      if [ "$IS_PRIVATE" = "true" ]; then
+        jq -n '{applied: false, reason: "skip: apply mode is restricted to public repos (this repo is private)", severity: "pass", finding: "Apply mode skipped: private repo"}'
+        exit 0
+      fi
+
+      # Gate 3: only act when there is an actual error finding to fix.
+      cat << 'BP_JSON_EOF' > /tmp/apply_bp_$$.json
+      {{branch_protection_check}}
+      BP_JSON_EOF
+      cat << 'BA_JSON_EOF' > /tmp/apply_ba_$$.json
+      {{bypass_actors_check}}
+      BA_JSON_EOF
+      BP_SEV=$(jq -r '.severity // "pass"' /tmp/apply_bp_$$.json 2>/dev/null || echo "pass")
+      BA_SEV=$(jq -r '.severity // "pass"' /tmp/apply_ba_$$.json 2>/dev/null || echo "pass")
+      rm -f /tmp/apply_bp_$$.json /tmp/apply_ba_$$.json
+
+      if [ "$BP_SEV" != "error" ] && [ "$BA_SEV" != "error" ]; then
+        jq -n --arg bp "$BP_SEV" --arg ba "$BA_SEV" \
+          '{applied: false, reason: ("skip: no error verdict to fix (branch_protection=" + $bp + ", bypass_actors=" + $ba + ")"), severity: "pass", finding: "Apply mode skipped: nothing to fix"}'
+        exit 0
+      fi
+
+      # ---- All gates passed. Capture classic protection before touching anything. ----
+      CLASSIC_RAW=$(gh api "repos/$REPO/branches/$DEFAULT_BRANCH/protection" 2>&1 || echo "FETCH_FAILED")
+      CLASSIC_PRESENT="false"
+      STATUS_CHECK_CONTEXTS="[]"
+      STRICT_POLICY="false"
+      if [ "$CLASSIC_RAW" != "FETCH_FAILED" ] && ! echo "$CLASSIC_RAW" | grep -qE "Not Found|Branch not protected"; then
+        CLASSIC_PRESENT="true"
+        STATUS_CHECK_CONTEXTS=$(echo "$CLASSIC_RAW" | jq -c '(.required_status_checks.contexts // [])' 2>/dev/null || echo "[]")
+        STRICT_POLICY=$(echo "$CLASSIC_RAW" | jq -r '.required_status_checks.strict // false' 2>/dev/null || echo "false")
+
+        # Fix (a): the STATUS_CHECK_CONTEXTS parse above silently degrades to
+        # "[]" on a jq failure (via `// []` / the `|| echo "[]"` fallback), so
+        # a classic protection that genuinely HAS required checks could
+        # migrate to a ruleset that silently drops them. Detect that failure
+        # mode loudly: if required_status_checks is non-null in the raw
+        # classic-protection JSON (i.e. it really is configured) but we could
+        # not positively confirm a parsed contexts list for it (jq itself
+        # failed, or the parse produced an empty list despite the object
+        # being present), refuse to migrate rather than risk silent data
+        # loss. exit 0 BEFORE any mutation (ruleset create/update, delete).
+        RSC_NON_NULL=$(echo "$CLASSIC_RAW" | jq -r '(.required_status_checks != null)' 2>/dev/null)
+        RSC_NON_NULL_RC=$?
+        STATUS_CHECK_COUNT=$(echo "$STATUS_CHECK_CONTEXTS" | jq -r 'length' 2>/dev/null)
+        STATUS_CHECK_COUNT_RC=$?
+        if [ $RSC_NON_NULL_RC -ne 0 ] || { [ "$RSC_NON_NULL" = "true" ] && { [ $STATUS_CHECK_COUNT_RC -ne 0 ] || [ "${STATUS_CHECK_COUNT:-0}" -eq 0 ]; }; }; then
+          jq -n '{applied: false, error: "could not parse classic required_status_checks — refusing to migrate", classic_deleted: false, severity: "error", finding: "Classic branch protection appears to have required_status_checks configured, but this recipe could not confirm a non-empty set of captured contexts (jq parse failure on the classic-protection response, or an unexpectedly empty contexts list on a non-null required_status_checks object). Refusing to migrate to avoid silently dropping a required CI check - investigate the classic protection response manually."}'
+          exit 0
+        fi
+      fi
+
+      # Build the canonical ruleset payload.
+      RULESET_NAME="amplifier-default-branch-protection"
+      # NOTE: the ruleset API's pull_request parameters schema REQUIRES all five
+      # fields -- omitting require_last_push_approval yields HTTP 422
+      # "Invalid property /rules/N: data matches no possible input".
+      PR_PARAMS='{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_code_owner_review":true,"require_last_push_approval":false,"required_review_thread_resolution":true}'
+
+      RULES_JSON=$(jq -n \
+        --argjson pr_params "$PR_PARAMS" \
+        --argjson contexts "$STATUS_CHECK_CONTEXTS" \
+        --argjson strict "$STRICT_POLICY" \
+        '[
+          {"type":"deletion"},
+          {"type":"non_fast_forward"},
+          {"type":"required_linear_history"},
+          {"type":"pull_request","parameters":$pr_params}
+        ]
+        + (if ($contexts | length) > 0 then
+            [{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":$strict,"do_not_enforce_on_create":false,"required_status_checks":[$contexts[] | {context: .}]}}]
+          else [] end)')
+
+      BYPASS_JSON='[{"actor_type":"RepositoryRole","actor_id":5,"bypass_mode":"pull_request"},{"actor_type":"Team","actor_id":16902513,"bypass_mode":"pull_request"}]'
+
+      RULESET_PAYLOAD=$(jq -n \
+        --arg name "$RULESET_NAME" \
+        --argjson rules "$RULES_JSON" \
+        --argjson bypass "$BYPASS_JSON" \
+        '{
+          name: $name,
+          target: "branch",
+          enforcement: "active",
+          conditions: {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}},
+          rules: $rules,
+          bypass_actors: $bypass
+        }')
+
+      # Idempotent: PUT-update an existing repo ruleset of this name, else POST-create.
+      EXISTING_RULESETS=$(gh api "repos/$REPO/rulesets" 2>&1 || echo "FETCH_FAILED")
+      EXISTING_ID=""
+      if [ "$EXISTING_RULESETS" != "FETCH_FAILED" ] && ! echo "$EXISTING_RULESETS" | grep -qE "Not Found"; then
+        EXISTING_ID=$(echo "$EXISTING_RULESETS" | jq -r --arg name "$RULESET_NAME" '[.[] | select(.name == $name)][0].id // empty' 2>/dev/null || echo "")
+      fi
+
+      if [ -n "$EXISTING_ID" ]; then
+        API_OUT=$(echo "$RULESET_PAYLOAD" | gh api -X PUT "repos/$REPO/rulesets/$EXISTING_ID" --input - 2>&1)
+        API_RC=$?
+        RULESET_ID="$EXISTING_ID"
+      else
+        API_OUT=$(echo "$RULESET_PAYLOAD" | gh api -X POST "repos/$REPO/rulesets" --input - 2>&1)
+        API_RC=$?
+        RULESET_ID=$(echo "$API_OUT" | jq -r '.id // empty' 2>/dev/null || echo "")
+      fi
+
+      if [ "$API_RC" -ne 0 ] || [ -z "$RULESET_ID" ]; then
+        jq -n --arg err "$API_OUT" \
+          '{applied: false, error: ("ruleset create/update failed - nothing deleted: " + $err), classic_deleted: false, severity: "error", finding: "Ruleset create/update failed; classic protection left untouched"}'
+        exit 0
+      fi
+
+      # Verify the ruleset round-trips BEFORE ever deleting classic protection.
+      VERIFY_RAW=$(gh api "repos/$REPO/rulesets/$RULESET_ID" 2>&1 || echo "FETCH_FAILED")
+      if [ "$VERIFY_RAW" = "FETCH_FAILED" ]; then
+        jq -n --argjson id "$RULESET_ID" \
+          '{applied: false, error: "ruleset verify GET failed after create/update - nothing deleted", ruleset_id: $id, classic_deleted: false, severity: "error", finding: "Could not verify newly-created/updated ruleset; classic protection left untouched"}'
+        exit 0
+      fi
+
+      HAS_ALL_RULES=$(echo "$VERIFY_RAW" | jq -r '
+        ([.rules[]?.type]) as $t
+        | (["deletion","non_fast_forward","required_linear_history","pull_request"] | all(. as $r | ($t | index($r)) != null))
+      ' 2>/dev/null || echo "false")
+      BYPASS_OK=$(echo "$VERIFY_RAW" | jq -r '
+        (.bypass_actors // []) as $b
+        | ( ($b | any(.actor_type == "RepositoryRole" and .actor_id == 5 and .bypass_mode == "pull_request"))
+            and ($b | any(.actor_type == "Team" and .actor_id == 16902513 and .bypass_mode == "pull_request")) )
+      ' 2>/dev/null || echo "false")
+
+      # Fix (b): when classic protection carried captured required_status_checks
+      # contexts, the round-trip verify must also confirm the ruleset's own
+      # required_status_checks rule exists AND its parameters.required_status_checks[]
+      # context set is a superset of every captured context - otherwise a
+      # "successful" migration could silently drop the CI requirement. When no
+      # contexts were captured, this check is vacuously true (nothing to carry).
+      CONTEXTS_COUNT=$(echo "$STATUS_CHECK_CONTEXTS" | jq 'length' 2>/dev/null || echo "0")
+      STATUS_CHECKS_OK="true"
+      if [ "${CONTEXTS_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+        STATUS_CHECKS_OK=$(echo "$VERIFY_RAW" | jq --argjson contexts "$STATUS_CHECK_CONTEXTS" -r '
+          ([.rules[]? | select(.type == "required_status_checks")]) as $rsc_rules
+          | (($rsc_rules | length) > 0)
+            and ([$rsc_rules[].parameters.required_status_checks[]?.context] as $ruleset_contexts
+                 | ($contexts | all(. as $c | ($ruleset_contexts | index($c)) != null)))
+        ' 2>/dev/null || echo "false")
+      fi
+
+      if [ "$HAS_ALL_RULES" != "true" ] || [ "$BYPASS_OK" != "true" ] || [ "$STATUS_CHECKS_OK" != "true" ]; then
+        jq -n --argjson id "$RULESET_ID" \
+          '{applied: false, error: "ruleset round-trip verification failed (rules or bypass_actors did not match canonical) - nothing deleted", ruleset_id: $id, classic_deleted: false, severity: "error", finding: "Newly-created/updated ruleset failed round-trip verification; classic protection left untouched"}'
+        exit 0
+      fi
+
+      # Verified live. Now (and only now) delete the classic protection.
+      CLASSIC_DELETED="false"
+      if [ "$CLASSIC_PRESENT" = "true" ]; then
+        DELETE_OUT=$(gh api -X DELETE "repos/$REPO/branches/$DEFAULT_BRANCH/protection" 2>&1)
+        DELETE_RC=$?
+        if [ "$DELETE_RC" -eq 0 ]; then
+          CLASSIC_DELETED="true"
+        else
+          jq -n --argjson id "$RULESET_ID" --arg err "$DELETE_OUT" \
+            '{applied: false, error: ("ruleset verified but classic protection delete failed: " + $err), ruleset_id: $id, classic_deleted: false, severity: "error", finding: "Ruleset verified and live, but deleting classic protection failed - repo now has BOTH (most-restrictive wins); retry the delete manually"}'
+          exit 0
+        fi
+      fi
+
+      # Re-run the check-branch-protection probe logic post-apply, so this run
+      # PROVES the fix landed rather than merely asserting it.
+      POST_RULES_RAW=$(gh api "repos/$REPO/rules/branches/$DEFAULT_BRANCH" 2>&1 || echo "FETCH_FAILED")
+      POST_PR_RULE_COUNT=$(echo "$POST_RULES_RAW" | jq -r '[.[] | select(.type == "pull_request" and ((.parameters.required_approving_review_count // 0) >= 1))] | length' 2>/dev/null || echo "0")
+      POST_CLASSIC_RAW=$(gh api "repos/$REPO/branches/$DEFAULT_BRANCH/protection" 2>&1 || echo "FETCH_FAILED")
+      POST_CLASSIC_PRESENT="false"
+      if [ "$POST_CLASSIC_RAW" != "FETCH_FAILED" ] && ! echo "$POST_CLASSIC_RAW" | grep -qE "Not Found|Branch not protected"; then
+        POST_CLASSIC_PRESENT="true"
+      fi
+
+      # Fix (c): when contexts were captured from classic protection, the
+      # post-apply re-check must also confirm the rules-in-effect
+      # (rules/branches/$BRANCH) include a required_status_checks rule -
+      # otherwise a "passing" post-apply check could mask a migration that
+      # silently dropped the CI requirement. Vacuously true when no contexts
+      # were captured (CONTEXTS_COUNT computed during round-trip verify above).
+      POST_STATUS_CHECKS_COUNT=$(echo "$POST_RULES_RAW" | jq -r '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo "0")
+      POST_STATUS_CHECKS_OK="true"
+      if [ "${CONTEXTS_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+        POST_STATUS_CHECKS_OK="false"
+        [ "${POST_STATUS_CHECKS_COUNT:-0}" -ge 1 ] 2>/dev/null && POST_STATUS_CHECKS_OK="true"
+      fi
+
+      POST_APPLY_CHECK="error"
+      POST_APPLY_SEVERITY="error"
+      if [ "$POST_CLASSIC_PRESENT" = "false" ] && [ "${POST_PR_RULE_COUNT:-0}" -ge 1 ] 2>/dev/null && [ "$POST_STATUS_CHECKS_OK" = "true" ]; then
+        POST_APPLY_CHECK="pass"
+        POST_APPLY_SEVERITY="pass"
+      fi
+
+      jq -n \
+        --argjson id "$RULESET_ID" \
+        --argjson contexts "$STATUS_CHECK_CONTEXTS" \
+        --argjson classic_was_present "$CLASSIC_PRESENT" \
+        --argjson classic_deleted "$CLASSIC_DELETED" \
+        --arg post_apply_check "$POST_APPLY_CHECK" \
+        --arg severity "$POST_APPLY_SEVERITY" \
+        '{
+          applied: true,
+          ruleset_id: $id,
+          ruleset_name: "amplifier-default-branch-protection",
+          carried_status_checks: $contexts,
+          classic_protection_was_present: $classic_was_present,
+          classic_deleted: $classic_deleted,
+          post_apply_check: $post_apply_check,
+          severity: $severity,
+          finding: ("Applied canonical branch-protection ruleset (id " + ($id|tostring) + "); classic protection " + (if $classic_deleted then "deleted" elif $classic_was_present then "present but NOT deleted (see error)" else "was not present" end) + "; post-apply re-check: " + $post_apply_check)
+        }'
+    output: "apply_protection_check"
+    timeout: 180
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 7f: Check PR Rule Strictness (microsoft/* repos — warning severity)
+  # ==========================================================================
+  # Verifies that the three supplemental PR review settings used by the
+  # canonical microsoft/amplifier-* convention are in place.  These are recommended but not as critical
+  # as bypass actor configuration (hence warning, not error):
+  #   - dismiss_stale_reviews_on_push: true  (reviews reset on new commits)
+  #   - required_review_thread_resolution: true  (threads must be resolved)
+  #   - required_linear_history rule present  (no merge commits on main)
+  #
+  # Severity model:
+  #   - pass:    all three match the canonical configuration, OR this is a
+  #              non-microsoft / private repo (check not applicable)
+  #   - warning: one or more settings deviate from the canonical configuration
+  - id: "check-pr-rule-strictness"
+    type: "bash"
+    parse_json: true
+    command: |
+      cat << 'REPO_JSON_EOF' > /tmp/repo_prstrictness_$$.json
+      {{repo_info_raw}}
+      REPO_JSON_EOF
+
+      DEFAULT_BRANCH=$(jq -r '.defaultBranchRef.name // "main"' /tmp/repo_prstrictness_$$.json)
+      IS_PRIVATE=$(jq -r '.isPrivate // false' /tmp/repo_prstrictness_$$.json)
+      rm -f /tmp/repo_prstrictness_$$.json
+
+      # This check only applies to microsoft/* public repos.
+      # The canonical amplifier-* convention does not govern non-microsoft repos.
+      if [ "{{repo_owner}}" != "microsoft" ]; then
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{severity: "pass", finding: "PR rule strictness check not applicable (non-microsoft repo)"}'
+        exit 0
+      fi
+
+      # Private repos are out of scope for the canonical ruleset policy.
+      if [ "$IS_PRIVATE" = "true" ]; then
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{severity: "pass", finding: "PR rule strictness check skipped: private repo (canonical ruleset is not applied to private repos per policy)"}'
+        exit 0
+      fi
+
+      REPO="{{repo_owner}}/{{repo_name}}"
+
+      # Enumerate active branch rulesets targeting the default branch.
+      RULESETS_RAW=$(gh api "repos/$REPO/rulesets" 2>&1 || echo "FETCH_FAILED")
+      if [ "$RULESETS_RAW" = "FETCH_FAILED" ] || echo "$RULESETS_RAW" | grep -qE "Not Found"; then
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{severity: "warning", finding: ("Cannot evaluate PR rule strictness - no rulesets accessible on " + $branch + " (see Branch Protection check above)")}'
+        exit 0
+      fi
+
+      DISMISS_STALE="false"
+      THREAD_RESOLUTION="false"
+      LINEAR_HISTORY="false"
+
+      RULESET_IDS=$(echo "$RULESETS_RAW" | jq -r '.[] | select(.enforcement == "active" and .target == "branch") | .id' 2>/dev/null || echo "")
+      for RID in $RULESET_IDS; do
+        DETAIL=$(gh api "repos/$REPO/rulesets/$RID" 2>&1 || echo "FETCH_FAILED")
+        [ "$DETAIL" = "FETCH_FAILED" ] && continue
+        MATCHES=$(echo "$DETAIL" | jq --arg branch "$DEFAULT_BRANCH" '(.conditions.ref_name.include // []) | any(. == "~DEFAULT_BRANCH" or . == ("refs/heads/" + $branch))' 2>/dev/null || echo "false")
+        if [ "$MATCHES" = "true" ]; then
+          # Check dismiss_stale_reviews_on_push in pull_request rule parameters
+          DS=$(echo "$DETAIL" | jq -r '[.rules[] | select(.type == "pull_request") | .parameters.dismiss_stale_reviews_on_push // false] | any' 2>/dev/null || echo "false")
+          [ "$DS" = "true" ] && DISMISS_STALE="true"
+          # Check required_review_thread_resolution in pull_request rule parameters
+          TR=$(echo "$DETAIL" | jq -r '[.rules[] | select(.type == "pull_request") | .parameters.required_review_thread_resolution // false] | any' 2>/dev/null || echo "false")
+          [ "$TR" = "true" ] && THREAD_RESOLUTION="true"
+          # Check for presence of a required_linear_history rule
+          LH=$(echo "$DETAIL" | jq -r '[.rules[] | select(.type == "required_linear_history")] | length' 2>/dev/null || echo "0")
+          [ "$LH" -ge 1 ] && LINEAR_HISTORY="true"
+        fi
+      done
+
+      MISSING=""
+      [ "$DISMISS_STALE" != "true" ] && MISSING="${MISSING:+$MISSING, }dismiss_stale_reviews_on_push=true"
+      [ "$THREAD_RESOLUTION" != "true" ] && MISSING="${MISSING:+$MISSING, }required_review_thread_resolution=true"
+      [ "$LINEAR_HISTORY" != "true" ] && MISSING="${MISSING:+$MISSING, }required_linear_history rule"
+
+      if [ -z "$MISSING" ]; then
+        jq -n --arg branch "$DEFAULT_BRANCH" \
+          '{severity: "pass", finding: ("PR rule strictness matches canonical amplifier-* configuration on " + $branch + " (dismiss_stale_reviews_on_push=true, required_review_thread_resolution=true, required_linear_history rule present)")}'
+      else
+        jq -n --arg branch "$DEFAULT_BRANCH" --arg missing "$MISSING" \
+          '{severity: "warning", finding: ("PR rule strictness deviates from canonical amplifier-* configuration on " + $branch + ". Missing: " + $missing + ". Canonical pattern: dismiss_stale_reviews_on_push=true, required_review_thread_resolution=true, required_linear_history rule present.")}'
+      fi
+    output: "pr_rule_strictness_check"
+    timeout: 90
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 8: Get Repository Stats
+  # ==========================================================================
+  - id: "get-repo-stats"
+    type: "bash"
+    parse_json: true
+    command: |
+      REPO="{{repo_owner}}/{{repo_name}}"
+      
+      # Get open PRs
+      OPEN_PRS=$(gh pr list -R "$REPO" --state open --limit 200 --json number,title,author,createdAt,url 2>/dev/null || echo "[]")
+      PR_COUNT=$(echo "$OPEN_PRS" | jq 'length')
+      
+      # Get recent commits (last 7 days) - handle both Linux and macOS date
+      SINCE_DATE=$(date -d '7 days ago' -Iseconds 2>/dev/null || date -v-7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "2024-01-01T00:00:00Z")
+      RECENT_COMMITS=$(gh api "repos/$REPO/commits?since=$SINCE_DATE" 2>/dev/null | jq 'length' || echo "0")
+      
+      # Get last push date - use heredoc to handle special characters
+      cat << 'REPO_PUSH_EOF' > /tmp/repo_push_$$.json
+      {{repo_info_raw}}
+      REPO_PUSH_EOF
+      LAST_PUSH=$(jq -r '.pushedAt // "unknown"' /tmp/repo_push_$$.json)
+      rm -f /tmp/repo_push_$$.json
+      
+      jq -n \
+        --argjson open_prs "$PR_COUNT" \
+        --argjson recent_commits "${RECENT_COMMITS:-0}" \
+        --arg last_push "$LAST_PUSH" \
+        --argjson pr_details "$OPEN_PRS" \
+        '{
+          open_prs: $open_prs,
+          recent_commits_7d: $recent_commits,
+          last_push: $last_push,
+          pr_details: $pr_details
+        }'
+    output: "repo_stats"
+    timeout: 120
+    retry:
+      max_attempts: 2
+      backoff: "linear"
+      initial_delay: 3
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 8b: Check Dependabot PRs (READ-ONLY / ADVISORY)
+  # ==========================================================================
+  # This step is strictly read-only and advisory. It lists open Dependabot PRs,
+  # inspects each (bump type, CI status, mergeability, security signal), and
+  # emits a per-PR recommendation FOR A HUMAN to act on. It does NOT merge,
+  # approve, close, or modify any PR - consistent with this recipe's existing
+  # "never auto-act" philosophy. Even a "MERGE" recommendation means
+  # "recommended for a human to merge", not an action the recipe performs.
+  - id: "check-dependabot-prs"
+    type: "bash"
+    parse_json: true
+    command: |
+      REPO="{{repo_owner}}/{{repo_name}}"
+
+      # List open Dependabot PRs. Dependabot authors as the GitHub App "app/dependabot".
+      PRS=$(gh pr list -R "$REPO" --author "app/dependabot" --state open --limit 200 --json number,title,url,headRefName,createdAt,labels 2>/dev/null || echo "[]")
+      COUNT=$(echo "$PRS" | jq 'length' 2>/dev/null || echo "0")
+
+      if [ "$COUNT" -eq 0 ]; then
+        echo '{"count":0,"security_count":0,"prs":[],"severity":"pass","finding":"No open Dependabot PRs"}'
+        exit 0
+      fi
+
+      RESULTS="[]"
+      NUMBERS=$(echo "$PRS" | jq -r '.[].number' 2>/dev/null)
+
+      for NUM in $NUMBERS; do
+        [ -z "$NUM" ] && continue
+
+        DETAIL=$(gh pr view "$NUM" -R "$REPO" --json number,title,url,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,labels,createdAt,headRefName,body 2>/dev/null || echo "{}")
+        [ -z "$DETAIL" ] && DETAIL="{}"
+
+        TITLE=$(echo "$DETAIL" | jq -r '.title // ""')
+        URL=$(echo "$DETAIL" | jq -r '.url // ""')
+        MERGEABLE=$(echo "$DETAIL" | jq -r '.mergeable // "UNKNOWN"')
+        MERGE_STATE=$(echo "$DETAIL" | jq -r '.mergeStateStatus // "UNKNOWN"')
+        REVIEW_DECISION=$(echo "$DETAIL" | jq -r '.reviewDecision // ""')
+
+        # ---- bump_type: parse "from A to B" out of the Dependabot title ----
+        # Handles "Bump <dep> from A to B" and "build(deps): bump <dep> from A to B".
+        FROM_V=$(echo "$TITLE" | sed -nE 's/.*[Bb]ump .* from ([0-9][0-9A-Za-z._-]*) to ([0-9][0-9A-Za-z._-]*).*/\1/p')
+        TO_V=$(echo "$TITLE"   | sed -nE 's/.*[Bb]ump .* from ([0-9][0-9A-Za-z._-]*) to ([0-9][0-9A-Za-z._-]*).*/\2/p')
+        BUMP_TYPE="unknown"
+        if [ -n "$FROM_V" ] && [ -n "$TO_V" ]; then
+          # Strip leading v/V, then extract leading numeric part of each component.
+          FV=$(echo "$FROM_V" | sed 's/^[vV]//')
+          TV=$(echo "$TO_V"   | sed 's/^[vV]//')
+          FMAJ=$(echo "$FV" | cut -d. -f1 | sed 's/[^0-9].*$//')
+          FMIN=$(echo "$FV" | cut -d. -f2 | sed 's/[^0-9].*$//')
+          FPAT=$(echo "$FV" | cut -d. -f3 | sed 's/[^0-9].*$//')
+          TMAJ=$(echo "$TV" | cut -d. -f1 | sed 's/[^0-9].*$//')
+          TMIN=$(echo "$TV" | cut -d. -f2 | sed 's/[^0-9].*$//')
+          TPAT=$(echo "$TV" | cut -d. -f3 | sed 's/[^0-9].*$//')
+          if [ -n "$FMAJ" ] && [ -n "$TMAJ" ]; then
+            FMIN=${FMIN:-0}; FPAT=${FPAT:-0}; TMIN=${TMIN:-0}; TPAT=${TPAT:-0}
+            if [ "$FMAJ" != "$TMAJ" ]; then BUMP_TYPE="major"
+            elif [ "$FMIN" != "$TMIN" ]; then BUMP_TYPE="minor"
+            elif [ "$FPAT" != "$TPAT" ]; then BUMP_TYPE="patch"
+            else BUMP_TYPE="unknown"; fi
+          fi
+        fi
+
+        # ---- is_security: label contains "security" OR body mentions vuln/CVE/advisory ----
+        LABELS_SEC=$(echo "$DETAIL" | jq -r '[(.labels // [])[].name // ""] | map(ascii_downcase) | any(contains("security"))' 2>/dev/null || echo "false")
+        BODY_SEC=$(echo "$DETAIL" | jq -r '((.body // "") | ascii_downcase) | (contains("vulnerab") or contains("cve") or contains("security advisory"))' 2>/dev/null || echo "false")
+        if [ "$LABELS_SEC" = "true" ] || [ "$BODY_SEC" = "true" ]; then IS_SECURITY="true"; else IS_SECURITY="false"; fi
+
+        # ---- ci_status: aggregate over statusCheckRollup ----
+        ROLLUP_LEN=$(echo "$DETAIL" | jq -r '(.statusCheckRollup // []) | length' 2>/dev/null || echo "0")
+        if [ "$ROLLUP_LEN" -eq 0 ]; then
+          CI_STATUS="none"
+        else
+          # One effective token per check: prefer conclusion, then state, then status.
+          TOKENS=$(echo "$DETAIL" | jq -r '
+            [ .statusCheckRollup[]?
+              | (if ((.conclusion // "") != "") then .conclusion
+                 elif ((.state // "") != "") then .state
+                 elif ((.status // "") != "") then .status
+                 else "UNKNOWN" end)
+            ] | map(ascii_upcase) | join(" ")' 2>/dev/null || echo "")
+          if echo " $TOKENS " | grep -qE ' (FAILURE|ERROR|CANCELLED|TIMED_OUT) '; then
+            CI_STATUS="failing"
+          elif echo " $TOKENS " | grep -qE ' (PENDING|QUEUED|IN_PROGRESS|EXPECTED) '; then
+            CI_STATUS="pending"
+          else
+            ALL_OK="true"
+            for t in $TOKENS; do
+              case "$t" in
+                SUCCESS|NEUTRAL|SKIPPED) ;;
+                *) ALL_OK="false" ;;
+              esac
+            done
+            if [ "$ALL_OK" = "true" ] && [ -n "$TOKENS" ]; then CI_STATUS="passing"; else CI_STATUS="unknown"; fi
+          fi
+        fi
+
+        # ---- recommendation + reason (top-down cascade, first match wins; all advisory FOR A HUMAN) ----
+        # Gates 1-7 guarantee that by the time a MERGE branch (8/9) is reached the PR has:
+        # CI passing, no conflict, no changes-requested, not a major bump, a determined bump
+        # type, and GitHub-confirmed mergeable==MERGEABLE. No PR can reach MERGE otherwise.
+        if [ "$CI_STATUS" = "failing" ]; then
+          RECO="REVIEW"; REASON="CI checks are failing - do not merge until green"
+        elif [ "$MERGEABLE" = "CONFLICTING" ]; then
+          RECO="REVIEW"; REASON="merge conflict - needs rebase"
+        elif [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ]; then
+          RECO="REVIEW"; REASON="changes requested by a reviewer - resolve before merging"
+        elif [ "$BUMP_TYPE" = "major" ]; then
+          RECO="REVIEW"; REASON="major version bump - review changelog for breaking changes"
+        elif [ "$BUMP_TYPE" = "unknown" ]; then
+          RECO="REVIEW"; REASON="bump type undetermined (e.g. grouped/multi-dependency update) - review contents manually"
+        elif [ "$CI_STATUS" = "pending" ] || [ "$CI_STATUS" = "unknown" ] || [ "$CI_STATUS" = "none" ]; then
+          RECO="WAIT"; REASON="checks still running or absent - re-evaluate when status is known"
+        elif [ "$MERGEABLE" != "MERGEABLE" ]; then
+          RECO="WAIT"; REASON="GitHub has not yet confirmed mergeability - re-evaluate shortly"
+        elif [ "$IS_SECURITY" = "true" ]; then
+          RECO="MERGE (priority)"; REASON="security update with green checks, mergeable - merge promptly"
+        elif [ "$BUMP_TYPE" = "patch" ] || [ "$BUMP_TYPE" = "minor" ]; then
+          RECO="MERGE"; REASON="low-risk $BUMP_TYPE update, checks green, no conflicts"
+        else
+          RECO="REVIEW"; REASON="does not meet auto-safe criteria - needs human judgment"
+        fi
+
+        PR_OBJ=$(jq -n \
+          --argjson number "$NUM" \
+          --arg title "$TITLE" \
+          --arg url "$URL" \
+          --arg bump_type "$BUMP_TYPE" \
+          --argjson is_security "$IS_SECURITY" \
+          --arg ci_status "$CI_STATUS" \
+          --arg mergeable "$MERGEABLE" \
+          --arg merge_state "$MERGE_STATE" \
+          --arg review_decision "$REVIEW_DECISION" \
+          --arg recommendation "$RECO" \
+          --arg reason "$REASON" \
+          '{number:$number,title:$title,url:$url,bump_type:$bump_type,is_security:$is_security,ci_status:$ci_status,mergeable:$mergeable,merge_state:$merge_state,review_decision:$review_decision,recommendation:$recommendation,reason:$reason}')
+        RESULTS=$(echo "$RESULTS" | jq --argjson obj "$PR_OBJ" '. + [$obj]')
+      done
+
+      SEC_COUNT=$(echo "$RESULTS" | jq '[.[] | select(.is_security == true)] | length')
+      MERGE_COUNT=$(echo "$RESULTS" | jq '[.[] | select(.recommendation == "MERGE" or .recommendation == "MERGE (priority)")] | length')
+      REVIEW_COUNT=$(echo "$RESULTS" | jq '[.[] | select(.recommendation == "REVIEW")] | length')
+      ANY_REVIEW_OR_SEC=$(echo "$RESULTS" | jq 'any(.[]; .recommendation == "REVIEW" or .is_security == true)')
+
+      if [ "$ANY_REVIEW_OR_SEC" = "true" ]; then SEVERITY="warning"; else SEVERITY="recommendation"; fi
+      FINDING="$COUNT open Dependabot PR(s): $MERGE_COUNT recommend MERGE, $REVIEW_COUNT need REVIEW, $SEC_COUNT security"
+
+      jq -n \
+        --argjson count "$COUNT" \
+        --argjson security_count "$SEC_COUNT" \
+        --argjson prs "$RESULTS" \
+        --arg severity "$SEVERITY" \
+        --arg finding "$FINDING" \
+        '{count:$count,security_count:$security_count,prs:$prs,severity:$severity,finding:$finding}'
+    output: "dependabot_check"
+    timeout: 180
+    retry:
+      max_attempts: 2
+      backoff: "linear"
+      initial_delay: 3
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 9: Generate Audit Report (LLM generates content only)
+  # ==========================================================================
+  # NOTE: Boilerplate match/status verdicts (CODE_OF_CONDUCT.md, SECURITY.md,
+  # SUPPORT.md, LICENSE) are computed deterministically in bash by the
+  # compare-boilerplate step above (byte-for-byte, whitespace-normalized
+  # diff -- not LLM judgment) and must be reported verbatim by the prompt
+  # below. A prior version of this recipe let this agent judge file
+  # equivalence itself, which hallucinated "Mismatch" findings on files
+  # that were byte-identical to the reference. See prompt instructions.
+  - id: "generate-report"
+    agent: "foundation:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Generate a comprehensive audit report for the repository. Return ONLY the markdown report content - do NOT write to any files.
+      
+      ## Repository Information
+      
+      - **Repository**: {{repo_owner}}/{{repo_name}}
+      - **Validation**: {{repo_validation}}
+      
+      ## Audit Results
+      
+      ### 1. MODULES.md Listing
+      {{modules_listing}}
+      
+      ### 2. Boilerplate Files Check
+      {{boilerplate_check}}
+      
+      IMPORTANT: The match/status/severity values above were computed by an
+      exact byte-for-byte (whitespace-normalized) diff comparison in bash,
+      not by you. Report them VERBATIM in the summary table below -- do NOT
+      open, re-read, or re-compare CODE_OF_CONDUCT.md, SECURITY.md,
+      SUPPORT.md, or LICENSE yourself, and do NOT second-guess or override
+      this computed verdict. A prior version of this recipe let the LLM
+      judge file equivalence itself and it hallucinated "Mismatch" results
+      on files that were byte-identical to the reference.
+      
+      ### 3. README.md Sections Check
+      {{readme_check}}
+      
+      ### 4. GitHub Issues Status
+      {{issues_check}}
+      
+      ### 5. Wiki Status
+      {{wiki_check}}
+      
+      ### 6. Projects Status
+      {{projects_check}}
+      
+      ### 7. Branch Protection (default branch)
+      {{branch_protection_check}}
+      
+      ### 8. Bypass Actors
+      {{bypass_actors_check}}
+      
+      ### 9. PR Rule Strictness (microsoft/* repos)
+      {{pr_rule_strictness_check}}
+      
+      ### 9b. Apply Protection Fix (opt-in, apply_fixes context var)
+      {{apply_protection_check}}
+      
+      ### 10. Repository Stats
+      {{repo_stats}}
+      
+      ### 11. Dependabot Pull Requests
+      {{dependabot_check}}
+      
+      ## Report Format
+      
+      Generate a markdown report following this structure:
+      
+      # Repository Audit Report: {{repo_owner}}/{{repo_name}}
+      
+      **Audit Date**: [use current date]
+      **Repository URL**: https://github.com/{{repo_owner}}/{{repo_name}}
+      
+      ## Summary
+      
+      | Check | Status | Severity |
+      |-------|--------|----------|
+      | Listed in MODULES.md | [Pass/Fail/Recommendation] | [pass/warning/error/recommendation] |
+      | CODE_OF_CONDUCT.md | [Match/Mismatch/Missing] | [pass/error] |
+      | SECURITY.md | [Match/Mismatch/Missing] | [pass/error] |
+      | SUPPORT.md | [Match/Mismatch/Missing] | [pass/error] |
+      | LICENSE | [Match/Mismatch/Missing] | [pass/error] |
+      | README Contributing | [Match/Mismatch/Missing] | [pass/warning/error] |
+      | README Trademarks | [Match/Mismatch/Missing] | [pass/warning/error] |
+      | GitHub Issues | [Disabled/Enabled] | [pass/recommendation] |
+      | Wiki | [Disabled/Enabled] | [pass/error] |
+      | Projects | [Disabled/Enabled] | [pass/error] |
+      | Branch Protection | [Configured/Misconfigured/Missing] | [pass/error] |
+      | Bypass Actors | [Configured/Empty/N-A] | [pass/warning/error] |
+      | PR Rule Strictness | [Pass/Deviates/N-A] | [pass/warning] |
+      | Apply Protection Fix | [Applied/Skipped/Failed — see {{apply_protection_check}}] | [pass/recommendation/error] |
+      | Dependabot PRs | [N open — see below] | [pass/recommendation/warning] |
+      
+      **Overall Status**: [PASS / NEEDS ATTENTION / CRITICAL]
+      - Critical issues (errors): N
+      - Warnings: N  
+      - Recommendations: N
+      
+      ## Detailed Findings
+      
+      [Provide details for each check, explaining what was found]
+      
+      ## Repository Activity
+      
+      - **Open PRs**: N
+      - **Recent commits (7d)**: N
+      - **Last push**: [date]
+      
+      [If there are open PRs, list them with titles and links]
+      
+      ## Dependabot Pull Requests
+      
+      [If count is 0, print "No open Dependabot PRs." Otherwise render this table using the entries in {{dependabot_check}}.prs:]
+      
+      | PR | Update | Security | CI | Mergeable | Recommendation | Reason |
+      |----|--------|----------|----|-----------|----------------|--------|
+      | [#number](url) | [bump_type] | [yes/no] | [ci_status] | [mergeable] | **[recommendation]** | [reason] |
+      
+      Recommendations are advisory — a human decides and performs any merge. This recipe does not merge PRs.
+      
+      ## Remediation Steps
+      
+      [For each non-passing issue, provide specific steps to fix]
+      
+      ---
+      *Generated by Amplifier repo-audit recipe v1.9.0*
+    output: "audit_report_content"
+    timeout: 300
+    on_error: "fail"
+
+  # ==========================================================================
+  # STEP 10: Write Report to File (Bash - reliable file write)
+  # ==========================================================================
+  - id: "write-report"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      REPORT_PATH="{{working_dir}}/{{repo_name}}/audit-report.md"
+      mkdir -p "$(dirname "$REPORT_PATH")"
+      
+      cat << 'REPORT_CONTENT_EOF' > "$REPORT_PATH.tmp"
+      {{audit_report_content}}
+      REPORT_CONTENT_EOF
+      
+      mv "$REPORT_PATH.tmp" "$REPORT_PATH"
+      echo "Report written: $REPORT_PATH ($(wc -c < "$REPORT_PATH") bytes)"
+    output: "report_write_result"
+    timeout: 30
+    on_error: "fail"
+
+  # ==========================================================================
+  # STEP 10b: Write Dependabot Summary JSON (machine-readable rollup handoff)
+  # ==========================================================================
+  # The per-repo audit-report.md renders the full Dependabot table (Section 11),
+  # but the ecosystem-level rollup needs machine-readable numbers, not prose.
+  # This step writes a tiny dependabot.json next to audit-report.md in the same
+  # per-repo output dir that ecosystem-audit-batch.yaml's flush-batch-findings
+  # step already reads from. flush-batch-findings picks up these fields and
+  # embeds them in the per-repo JSONL line so they aggregate to the top-level
+  # report. Defensive: any missing/errored field defaults to 0 / "pass".
+  - id: "write-dependabot-summary"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      TARGET_DIR="{{working_dir}}/{{repo_name}}"
+      mkdir -p "$TARGET_DIR"
+
+      # Capture the dependabot check output (parsed JSON object) to a temp file.
+      cat << 'DEPENDABOT_JSON_EOF' > /tmp/dependabot_$$.json
+      {{dependabot_check}}
+      DEPENDABOT_JSON_EOF
+
+      # Extract the three machine-readable fields the ecosystem rollup needs,
+      # defaulting safely if the check errored or produced no object.
+      COUNT=$(jq -r '.count // 0' /tmp/dependabot_$$.json 2>/dev/null || echo 0)
+      SEC=$(jq -r '.security_count // 0' /tmp/dependabot_$$.json 2>/dev/null || echo 0)
+      SEV=$(jq -r '.severity // "pass"' /tmp/dependabot_$$.json 2>/dev/null || echo "pass")
+      rm -f /tmp/dependabot_$$.json
+
+      # Guard against non-numeric / empty values before serialising.
+      [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
+      [[ "$SEC" =~ ^[0-9]+$ ]] || SEC=0
+      [ -n "$SEV" ] || SEV="pass"
+
+      jq -n \
+        --argjson count "$COUNT" \
+        --argjson security_count "$SEC" \
+        --arg severity "$SEV" \
+        '{dependabot_count:$count, dependabot_security_count:$security_count, dependabot_severity:$severity}' \
+        > "$TARGET_DIR/dependabot.json"
+
+      echo "Dependabot summary written: $TARGET_DIR/dependabot.json (count=$COUNT security=$SEC severity=$SEV)"
+    output: "dependabot_summary_write_result"
+    timeout: 30
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 11: Prepare Fix PR (Conditional)
+  # ==========================================================================
+  - id: "prepare-fixes"
+    condition: "{{create_fix_pr}} == 'true' or {{dry_run}} == 'true'"
+    agent: "foundation:zen-architect"
+    mode: "ARCHITECT"
+    prompt: |
+      Analyze the audit findings and prepare fix recommendations. Return ONLY text output - do NOT write files.
+      
+      ## Audit Results
+      
+      Boilerplate check: {{boilerplate_check}}
+      README check: {{readme_check}}
+      
+      ## Reference Files Location
+      
+      Reference files are available at: {{working_dir}}/reference/
+      
+      ## Tasks
+      
+      1. Identify which files need to be fixed based on the audit results
+      
+      2. For boilerplate files (CODE_OF_CONDUCT.md, SECURITY.md, SUPPORT.md, LICENSE):
+         - List which ones need to be copied from reference
+      
+      3. For README.md sections:
+         - Describe what sections need to be updated
+         - Note that README content varies so manual integration is needed
+      
+      4. Create a PR description summarizing what needs to be fixed
+      
+      5. Provide shell commands that could be used to prepare the fixes
+      
+      Output a structured summary of what needs to be fixed and how.
+    output: "fix_preparation"
+    timeout: 300
+    on_error: "continue"
+
+  - id: "create-fix-instructions"
+    condition: "{{create_fix_pr}} == 'true' or {{dry_run}} == 'true'"
+    type: "bash"
+    command: |
+      REPO="{{repo_owner}}/{{repo_name}}"
+      TARGET_DIR="{{working_dir}}/{{repo_name}}"
+      REF_DIR="{{working_dir}}/reference"
+      FIXES_DIR="$TARGET_DIR/fixes"
+      DRY_RUN="{{dry_run}}"
+      CREATE_PR="{{create_fix_pr}}"
+      
+      mkdir -p "$FIXES_DIR"
+      
+      # Check if there's an existing PR (skip if so)
+      cat << 'EXISTING_PR_JSON' > /tmp/existing_pr_$$.json
+      {{existing_pr_check}}
+      EXISTING_PR_JSON
+      
+      EXISTING_PR=$(jq -r '.existing_pr // false' /tmp/existing_pr_$$.json 2>/dev/null || echo "false")
+      rm -f /tmp/existing_pr_$$.json
+      
+      if [ "$EXISTING_PR" = "true" ] && [ "$DRY_RUN" != "true" ]; then
+        echo "Skipping fix preparation - existing PR found"
+        echo "Run with dry_run=true to see what would be fixed"
+        exit 0
+      fi
+      
+      # Copy non-matching boilerplate files to fixes dir
+      BOILERPLATE='{{boilerplate_check}}'
+      FILES_TO_FIX=""
+      for file in CODE_OF_CONDUCT.md SECURITY.md SUPPORT.md LICENSE; do
+        STATUS=$(echo "$BOILERPLATE" | jq -r --arg f "$file" '.files[] | select(.name == $f) | .severity')
+        if [ "$STATUS" = "error" ]; then
+          cp "$REF_DIR/$file" "$FIXES_DIR/$file"
+          FILES_TO_FIX="$FILES_TO_FIX $file"
+          echo "Prepared fix: $file"
+        fi
+      done
+      
+      # Check if README was fixed (file would already be in fixes dir from write-fixed-readme step)
+      README_FIXED="false"
+      if [ -f "$FIXES_DIR/README.md" ]; then
+        README_FIXED="true"
+        FILES_TO_FIX="$FILES_TO_FIX README.md"
+        echo "Prepared fix: README.md (Contributing/Trademarks sections)"
+      fi
+      
+      # Create PR instructions/preview
+      if [ "$DRY_RUN" = "true" ]; then
+        echo ""
+        echo "========================================"
+        echo "DRY-RUN: PR PREVIEW for $REPO"
+        echo "========================================"
+        echo ""
+        
+        if [ "$EXISTING_PR" = "true" ]; then
+          echo "NOTE: An existing PR was found. If not in dry-run mode,"
+          echo "      PR creation would be skipped to avoid duplicates."
+          echo ""
+        fi
+        
+        if [ -z "$FILES_TO_FIX" ]; then
+          echo "✓ No fixes needed - all checks passed"
+        else
+          echo "Files that WOULD be fixed:"
+          for f in $FILES_TO_FIX; do
+            echo "  - $f"
+          done
+          echo ""
+          echo "PR that WOULD be created:"
+          echo "  Title: fix: Update Microsoft OSS compliance files"
+          echo "  Branch: fix/compliance-boilerplate-update"
+          echo "  Body: Updates compliance files to match Microsoft OSS standards"
+          echo ""
+          if [ "$README_FIXED" = "true" ]; then
+            echo "README.md changes:"
+            echo "  - Contributing section: updated to standard template"
+            echo "  - Trademarks section: updated to standard template"
+            echo ""
+          fi
+          echo "Fix files prepared at: $FIXES_DIR"
+        fi
+        echo ""
+        echo "[DRY-RUN MODE - No PR was created]"
+        echo "========================================"
+      fi
+      
+      # Create PR instructions file
+      cat << 'PR_INSTRUCTIONS' > "$TARGET_DIR/pr-instructions.md"
+      # Fix PR Instructions for {{repo_owner}}/{{repo_name}}
+      
+      ## Files to Update
+      
+      Copy these files from the `fixes/` directory:
+      - Boilerplate: CODE_OF_CONDUCT.md, SECURITY.md, SUPPORT.md, LICENSE (if present)
+      - README.md (if present - includes updated Contributing & Trademarks sections)
+      
+      ## Steps to Create Fix PR
+      
+      1. Clone the repository:
+         ```bash
+         git clone https://github.com/{{repo_owner}}/{{repo_name}}.git
+         cd {{repo_name}}
+         ```
+      
+      2. Create a branch:
+         ```bash
+         git checkout -b fix/compliance-boilerplate-update
+         ```
+      
+      3. Copy fixed files:
+         ```bash
+         cp {{working_dir}}/{{repo_name}}/fixes/* .
+         ```
+      
+      4. Review changes (especially README.md):
+         ```bash
+         git diff
+         ```
+      
+      5. Commit and push:
+         ```bash
+         git add .
+         git commit -m "fix: Update Microsoft OSS compliance files"
+         git push origin fix/compliance-boilerplate-update
+         ```
+      
+      6. Create PR:
+         ```bash
+         gh pr create \
+           --title "fix: Update Microsoft OSS compliance files" \
+           --body "Updates compliance files to match Microsoft OSS standards.
+      
+      Generated by Amplifier repo-audit recipe."
+         ```
+      PR_INSTRUCTIONS
+      
+      echo ""
+      echo "Fix instructions written to: $TARGET_DIR/pr-instructions.md"
+      echo ""
+      echo "Files prepared for PR:"
+      ls -la "$FIXES_DIR" 2>/dev/null || echo "No fix files generated (all checks may have passed)"
+    output: "pr_creation_result"
+    timeout: 120
+    on_error: "continue"
+
+  # ==========================================================================
+  # STEP 12: Final Summary
+  # ==========================================================================
+  - id: "final-summary"
+    type: "bash"
+    command: |
+      REPORT_PATH="{{working_dir}}/{{repo_name}}/audit-report.md"
+      
+      echo "========================================"
+      echo "AUDIT COMPLETE: {{repo_owner}}/{{repo_name}}"
+      echo "========================================"
+      echo ""
+      echo "Report: $REPORT_PATH"
+      echo ""
+      
+      if [ -f "$REPORT_PATH" ]; then
+        cat "$REPORT_PATH"
+      else
+        echo "ERROR: Report file not found"
+        exit 1
+      fi
+    output: "final_output"
+    timeout: 30
+    on_error: "continue"
