@@ -385,6 +385,17 @@ class RunResult:
     pending_approval: str | None = None
     """Stage awaiting approval when ``status`` is :attr:`RunStatus.PAUSED`."""
 
+    provider: Mapping[str, Any] | None = None
+    """Which layer supplied this run's model provider, and what it resolved to.
+
+    ``{"provider_source": "recipe-closure" | "host-port" | "injected-backend" |
+    "none", "provider": <instance>, "model": <model>, ...}`` -- see
+    :class:`~amplifier_recipe_runner.execution.ProviderResolution`. ``None``
+    only when no session was composed (a refusal before the session build), so
+    a run that executed an agent step always says where its model came from
+    (executor-parity delta 10).
+    """
+
     @property
     def succeeded(self) -> bool:
         return self.status is RunStatus.SUCCEEDED

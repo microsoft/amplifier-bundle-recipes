@@ -1,0 +1,32 @@
+# A recipe that says NOTHING about which model it runs on.
+#
+# It declares an agent-bearing dependency and an agent step, and no provider --
+# so the answer to "where does the model come from?" is supplied by the layer
+# OUTSIDE the recipe (executor-parity delta 10). Its recipe-visible outcome must
+# be identical whichever layer that is, which is exactly what the fixture diffs.
+#
+# Workspace-independent on purpose (echo only, no file writes, no network): the
+# runs happen in different temporary directories, so a difference in the diff
+# must mean a difference in SEMANTICS.
+schema_version: 2
+
+dependencies:
+  - source: bundles/supplier
+    kind: bundle
+    required_agents:
+      - "supplier:reviewer"
+
+name: provider-agnostic
+description: An agent step, and nothing that names a provider.
+version: "1.0.0"
+
+steps:
+  - id: state
+    type: bash
+    command: echo ready
+    output: state
+
+  - id: review
+    agent: "supplier:reviewer"
+    prompt: Review the change.
+    output: verdict

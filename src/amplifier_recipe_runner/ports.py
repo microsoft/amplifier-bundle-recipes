@@ -43,8 +43,10 @@ __all__ = [
     "HostServices",
     "ProviderAccess",
     "ProviderHandle",
+    "ProviderSpec",
     "RunEvent",
     "WorkspacePath",
+    "provider_specs",
 ]
 
 
@@ -62,10 +64,114 @@ HOST_PORTS: Final[tuple[str, ...]] = (
 # Port 1: provider access
 # --------------------------------------------------------------------------
 
-#: An opaque, host-owned provider client. The runner passes it through and
-#: never introspects it, so hosts stay free to hand over whatever their
-#: provider layer uses.
+#: A host-owned provider client. Still typed as ``object``: a host stays free
+#: to hand over whatever its provider layer uses, and the runner carries an
+#: uninterpretable handle through untouched exactly as before.
+#:
+#: **One shape is now understood.** A handle that IS a :class:`ProviderSpec`
+#: (or a sequence of them, or a mapping shaped like one) says enough for the
+#: runner to *mount* that provider into a recipe's composed session -- which is
+#: what lets the ``provider_access`` port serve a recipe whose own closure pins
+#: no provider. :func:`provider_specs` is the one place that interpretation
+#: happens, and it returns ``()`` for anything else rather than guessing.
 ProviderHandle = NewType("ProviderHandle", object)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSpec:
+    """One host provider, in the shape a composed bundle can mount.
+
+    Deliberately the same four keys a bundle's own ``providers:`` entry and an
+    Amplifier settings ``config.providers`` entry already use, so bridging is a
+    copy rather than a translation:
+
+    ``module``
+        The provider module's id (e.g. ``provider-anthropic``).
+    ``source``
+        Where that module comes from (e.g. a ``git+https://`` URI).
+    ``config``
+        The module's own configuration -- model, endpoint, credentials.
+        Carried verbatim; the runner reads only :attr:`model` out of it, for
+        provenance.
+    ``id``
+        Optional instance name, when a host runs several instances of one
+        provider module (``sonnet`` and ``opus``, both ``provider-anthropic``).
+
+    Nothing here is an agent, an agent map, or a session: a spec names a model
+    provider and its configuration, which is exactly what the port is for.
+    """
+
+    module: str
+    source: str
+    config: Mapping[str, Any] = field(default_factory=dict)
+    id: str | None = None
+
+    @property
+    def instance(self) -> str:
+        """How this provider is named in provenance: instance id, else module."""
+        return self.id or self.module
+
+    @property
+    def model(self) -> str | None:
+        """The model this instance resolves to, when its config names one."""
+        for key in ("default_model", "model"):
+            value = self.config.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    def to_mount(self) -> dict[str, Any]:
+        """The bundle mount-plan entry for this provider."""
+        entry: dict[str, Any] = {"module": self.module, "source": self.source}
+        if self.config:
+            entry["config"] = dict(self.config)
+        if self.id:
+            entry["id"] = self.id
+        return entry
+
+    @classmethod
+    def coerce(cls, value: Any) -> ProviderSpec | None:
+        """``value`` as a spec, or ``None`` when it is not one.
+
+        Accepts a :class:`ProviderSpec` and a mapping carrying ``module`` and
+        ``source``. Anything else -- a bare string, a provider-preference chain
+        (``{"provider": ..., "model": ...}``, which names no module source) --
+        is *not* coerced: inventing a module source from a provider nickname
+        would be a guess, and a guessed provider is exactly the silent
+        substitution this port refuses to make.
+        """
+        if isinstance(value, ProviderSpec):
+            return value
+        if not isinstance(value, Mapping):
+            return None
+        module = value.get("module")
+        source = value.get("source")
+        if not isinstance(module, str) or not module or not isinstance(source, str) or not source:
+            return None
+        config = value.get("config")
+        identifier = value.get("id")
+        return cls(
+            module=module,
+            source=source,
+            config=dict(config) if isinstance(config, Mapping) else {},
+            id=identifier if isinstance(identifier, str) and identifier else None,
+        )
+
+
+def provider_specs(handle: Any) -> tuple[ProviderSpec, ...]:
+    """Every mountable :class:`ProviderSpec` inside ``handle``, in order.
+
+    The single interpretation point for a :data:`ProviderHandle`. Returns an
+    empty tuple when the handle carries nothing mountable -- which the caller
+    must report, never paper over.
+    """
+    single = ProviderSpec.coerce(handle)
+    if single is not None:
+        return (single,)
+    if isinstance(handle, (str, bytes)) or not isinstance(handle, Sequence):
+        return ()
+    specs = tuple(spec for spec in (ProviderSpec.coerce(item) for item in handle) if spec is not None)
+    return specs
 
 
 @runtime_checkable
@@ -77,7 +183,11 @@ class ProviderAccess(Protocol):
         ...
 
     def resolve(self, role: str) -> ProviderHandle:
-        """Return an opaque provider handle for ``role``.
+        """Return the provider handle for ``role``.
+
+        Return a :class:`ProviderSpec` (or a sequence of them) for a handle the
+        runner can mount into a recipe's own session; anything else is carried
+        through uninterpreted.
 
         Raise ``KeyError`` if the host does not serve that role -- an
         unavailable provider is a real failure, never a silent downgrade.

@@ -3220,6 +3220,45 @@ Correspondingly, a **caller agent with a colliding name can never satisfy,
 alter, or override a recipe dependency** (`manifest.v1` Core 5,
 Conformance/BAD). Caller-side composition cannot influence a recipe's result.
 
+### Where the model comes from
+
+A dependency closure decides which **agents** a recipe may run. It does not, by
+itself, decide which **model** they run on — that is an execution resource, and
+the runner resolves it in layers, recipe first:
+
+1. **The recipe's closure declares a provider** — that provider is used, and it
+   is **pinned**: the host cannot override it. Declare one the same way you
+   declare an agent-bearing dependency, as a behavior partial from a pinned
+   source:
+
+   ```yaml
+   dependencies:
+     - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+       kind: behavior
+       subdirectory: providers/anthropic-sonnet.yaml
+   ```
+
+   In an Amplifier session that line is inert; standalone, it is what makes an
+   agent step real. Pin it when the recipe is written *for* a particular model,
+   or when it must reproduce identically wherever it runs.
+
+2. **The closure declares none** — the host's approved-provider port supplies
+   one, if it offers a mountable provider. From the CLI that is
+   `recipe-runner run --host-providers`, which serves the providers in the
+   host's own Amplifier settings. A step's `model_role:` then selects among the
+   roles the host serves, and a role it does not serve is refused by name
+   rather than run on a different model.
+
+3. **Neither** — the run **refuses** when an agent step actually reaches for a
+   model, naming both remedies above. It does not run the step and report
+   success with an error string as its output.
+
+Which layer answered is recorded: on each agent step's event, on the run's
+result, and in the run manifest, as
+`provider_source: recipe-closure | host-port`. Full rules, including model-role
+behavior, are in
+[docs/EXECUTOR_PARITY.md](EXECUTOR_PARITY.md) delta 10.
+
 ### Preflight
 
 Preflight runs **before any side effects** (`manifest.v1` Core 6):

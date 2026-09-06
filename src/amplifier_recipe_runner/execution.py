@@ -51,6 +51,7 @@ fabricated success (lib Core 8).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from collections.abc import Iterator
@@ -88,19 +89,29 @@ from .manifest import ManifestError
 from .manifest import parse_manifest_file
 from .planner import plan as plan_dependencies
 from .ports import HostServices
+from .ports import ProviderSpec
 from .ports import RunEvent
 from .ports import WorkspacePath
+from .ports import provider_specs
 from .resolver import DependencyResolver
 
 __all__ = [
     "CONTRACTS",
+    "DEFAULT_ROLE_PREFERENCE",
+    "PROVIDER_SOURCE_HOST",
+    "PROVIDER_SOURCE_INJECTED",
+    "PROVIDER_SOURCE_NONE",
+    "PROVIDER_SOURCE_RECIPE",
     "AmbiguousCompletedStepError",
     "ExecutionError",
     "SPAWN_CAPABILITY",
     "FoundationSessionFactory",
     "FoundationSpawnBackend",
+    "ModelRoleUnavailableError",
+    "NoProviderError",
     "PlanCatalog",
     "PlanCatalogSpawnAdapter",
+    "ProviderResolution",
     "RecipeExecutionSession",
     "RunStateStore",
     "SessionBuild",
@@ -189,6 +200,219 @@ class MissingHostServicesError(ExecutionError):
             "run requires host services; `RunRequest.services` was None.",
             remedy="Pass HostServices(provider_access=..., workspace=...) on the RunRequest.",
         )
+
+
+# --------------------------------------------------------------------------
+# Where the model comes from (parity delta 10)
+# --------------------------------------------------------------------------
+#
+# A recipe's closed world is its AGENTS, tools, context and hooks -- those must
+# come from the declared closure and nowhere else (manifest Core 3, Core 4). A
+# model provider is not one of those: it is an execution resource, like the
+# workspace directory, and it already has a host port of its own
+# (``provider_access``). So the rule is LAYERED, and the recipe wins:
+#
+# 1. The composed closure declares providers -> use them. Pinned; the host
+#    cannot override a provider the recipe chose.
+# 2. It declares none and the host's port offers a mountable provider -> bridge
+#    the host's providers in, and its model-role routing with them.
+# 3. Neither -> refuse, naming BOTH remedies.
+#
+# Every branch is recorded (:meth:`ProviderResolution.record`) so a reader never
+# has to infer which one happened.
+
+#: The recipe's own declared closure configured the provider. Pinned.
+PROVIDER_SOURCE_RECIPE: Final[str] = "recipe-closure"
+
+#: The host's ``provider_access`` port supplied it, because the closure did not.
+PROVIDER_SOURCE_HOST: Final[str] = "host-port"
+
+#: A caller injected its own ``spawn_backend``, so the library resolved nothing.
+PROVIDER_SOURCE_INJECTED: Final[str] = "injected-backend"
+
+#: Neither source produced one. An agent step reaching for a model refuses.
+PROVIDER_SOURCE_NONE: Final[str] = "none"
+
+#: Role names tried, in order, as the default for a step that names no
+#: ``model_role:`` when the host serves more than one. A host serving exactly
+#: one role needs none of this: that role IS the default.
+DEFAULT_ROLE_PREFERENCE: Final[tuple[str, ...]] = ("default", "general")
+
+
+class NoProviderError(ExecutionError):
+    """An agent step reached for a model and neither layer supplied one.
+
+    Raised at SPAWN time, not at composition: a recipe whose agent steps are
+    all skipped by conditions never needs a provider, and failing it up front
+    would be a false alarm.
+
+    Names both remedies, because both are real. Reporting only the recipe-side
+    one would hide the host port that exists precisely to serve this case.
+    """
+
+    def __init__(
+        self,
+        *,
+        step_id: str | None,
+        agent: str,
+        offered_roles: Sequence[str] = (),
+        uninterpretable_roles: Sequence[str] = (),
+    ) -> None:
+        self.step_id = step_id
+        self.agent = agent
+        self.offered_roles = tuple(offered_roles)
+        self.uninterpretable_roles = tuple(uninterpretable_roles)
+        where = f"Step {step_id!r}" if step_id else "A step"
+        offered = ", ".join(self.offered_roles) or "none"
+        detail = ""
+        if self.uninterpretable_roles:
+            detail = (
+                f" The handle(s) returned for {', '.join(self.uninterpretable_roles)} name no "
+                "mountable provider module -- a `ProviderSpec` (module + source + config), or a "
+                "mapping carrying `module` and `source`, is what can be bridged. Nothing was "
+                "guessed from them."
+            )
+        super().__init__(
+            f"{where} needs agent {agent!r}, but no model provider is available: this recipe's "
+            f"declared closure configures none, and the host's provider access offers nothing "
+            f"mountable (roles offered: {offered}).{detail}",
+            remedy=(
+                "Either (a) declare one in the recipe's `dependencies:` block -- e.g. a provider "
+                "partial from the same pinned source, `kind: behavior` with "
+                "`#subdirectory=providers/<provider>.yaml` -- which pins it so no host can "
+                "override it; or (b) supply it on the host's `provider_access` port, whose "
+                "`resolve(role)` returns a `ProviderSpec` the run can mount (the standalone CLI "
+                "does this with `--host-providers`). The calling environment's providers are "
+                "never borrowed implicitly (recipe-dependency-manifest.v1 Core 4)."
+            ),
+        )
+
+
+class ModelRoleUnavailableError(ExecutionError):
+    """A step asked for a model role this run cannot serve.
+
+    An unavailable role is a real failure, never a silent downgrade onto some
+    other provider (lib Core 4, Core 8) -- so it is named, together with what
+    this run actually serves and why.
+    """
+
+    def __init__(
+        self,
+        role: str | None,
+        *,
+        step_id: str | None,
+        source: str,
+        served: Sequence[str],
+    ) -> None:
+        self.role = role
+        self.step_id = step_id
+        self.source = source
+        self.served = tuple(served)
+        where = f"Step {step_id!r}" if step_id else "A step"
+        if source == PROVIDER_SOURCE_RECIPE:
+            message = (
+                f"{where} requests model role {role!r}, but this recipe's own closure PINS its "
+                "provider, so there is no role routing to resolve it against."
+            )
+            remedy = (
+                "Remove the step's `model_role:` (the pinned provider is what it runs on), or "
+                "drop the provider from the recipe's `dependencies:` and supply the host's "
+                "providers instead, whose roles a step may then name."
+            )
+        elif role is None:
+            message = (
+                f"{where} names no `model_role:`, and the host serves several roles "
+                f"({', '.join(self.served) or 'none'}) with no obvious default, so which model "
+                "to run on cannot be known."
+            )
+            remedy = (
+                "Give the step an explicit `model_role:`, or have the host serve a role named "
+                f"{' or '.join(repr(name) for name in DEFAULT_ROLE_PREFERENCE)}."
+            )
+        else:
+            message = (
+                f"{where} requests model role {role!r}, which this run's host does not serve; "
+                f"it serves {', '.join(self.served) or 'no roles at all'}."
+            )
+            remedy = (
+                f"Serve {role!r} from the host's `provider_access` port, or remove the step's "
+                "`model_role:` so it runs on the default role."
+            )
+        super().__init__(message, remedy=remedy)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderResolution:
+    """Which layer supplied this run's model provider, and what it resolved to.
+
+    Built once per session build and carried onto every agent step's record, so
+    "where did the model come from?" is answered by the run rather than
+    reconstructed from configuration afterwards.
+    """
+
+    source: str
+    specs: tuple[ProviderSpec, ...] = ()
+    """What a step with no ``model_role:`` mounts."""
+
+    by_role: Mapping[str, tuple[ProviderSpec, ...]] = MappingProxyType({})
+    """Role -> providers. Populated for :data:`PROVIDER_SOURCE_HOST` only."""
+
+    default_role: str | None = None
+    offered_roles: tuple[str, ...] = ()
+    """Every role the host's port named, mountable or not."""
+
+    uninterpretable_roles: tuple[str, ...] = ()
+    """Roles whose handle carried no mountable provider spec."""
+
+    @property
+    def mount_specs(self) -> tuple[ProviderSpec, ...]:
+        """Every provider the composed bundle must ACTIVATE, deduplicated.
+
+        The union across roles, not just the default role's: a module that was
+        never activated cannot be mounted later, so a step naming a non-default
+        role would fail for a reason that has nothing to do with the role.
+        """
+        seen: dict[tuple[str, str, str], ProviderSpec] = {}
+        for specs in self.by_role.values():
+            for spec in specs:
+                seen.setdefault((spec.instance, spec.module, spec.source), spec)
+        return tuple(seen.values())
+
+    def resolve_for(self, model_role: str | None, *, step_id: str | None) -> tuple[ProviderSpec, ...]:
+        """The providers one invocation runs on, or a named refusal."""
+        if self.source == PROVIDER_SOURCE_RECIPE:
+            if model_role is not None:
+                raise ModelRoleUnavailableError(
+                    model_role, step_id=step_id, source=self.source, served=()
+                )
+            return self.specs
+        role = model_role or self.default_role
+        if role is None or role not in self.by_role:
+            raise ModelRoleUnavailableError(
+                role if model_role is not None else None,
+                step_id=step_id,
+                source=self.source,
+                served=tuple(sorted(self.by_role)),
+            )
+        return self.by_role[role]
+
+    def record(self, *, model_role: str | None = None) -> dict[str, Any]:
+        """This run's provider provenance, for a step record or a run manifest."""
+        role: str | None = None
+        specs: tuple[ProviderSpec, ...] = self.specs
+        if self.source == PROVIDER_SOURCE_HOST:
+            role = model_role or self.default_role
+            specs = self.by_role.get(role or "", ())
+        head = specs[0] if specs else None
+        record: dict[str, Any] = {
+            "provider_source": self.source,
+            "provider": head.instance if head is not None else None,
+            "model": head.model if head is not None else None,
+        }
+        if self.source == PROVIDER_SOURCE_HOST:
+            record["model_role"] = role
+            record["roles"] = tuple(sorted(self.by_role))
+        return record
 
 
 # --------------------------------------------------------------------------
@@ -333,6 +557,11 @@ class SpawnRequest:
     context: Mapping[str, Any] = MappingProxyType({})
     step_id: str | None = None
 
+    model_role: str | None = None
+    """The step's declared ``model_role:``, carried so a backend that bridges
+    the host's role routing can honour it (parity delta 10). Not an agent, not
+    a session -- a routing key the recipe itself wrote."""
+
 
 @runtime_checkable
 class SpawnBackend(Protocol):
@@ -368,6 +597,7 @@ class PlanCatalogSpawnAdapter:
         "_event_sink",
         "_ignored_arguments",
         "_ignored_host_agents",
+        "_provider",
         "_run_id",
         "_workspace",
     )
@@ -380,18 +610,25 @@ class PlanCatalogSpawnAdapter:
         run_id: str,
         workspace: Path,
         event_sink: Any | None = None,
+        provider: ProviderResolution | None = None,
     ) -> None:
         self._catalog = catalog
         self._backend = backend
         self._run_id = run_id
         self._workspace = workspace
         self._event_sink = event_sink
+        self._provider = provider or ProviderResolution(source=PROVIDER_SOURCE_INJECTED)
         self._ignored_host_agents: list[str] = []
         self._ignored_arguments: list[str] = []
 
     @property
     def catalog(self) -> PlanCatalog:
         return self._catalog
+
+    @property
+    def provider(self) -> ProviderResolution:
+        """Which layer supplied this run's model provider (parity delta 10)."""
+        return self._provider
 
     @property
     def ignored_host_agents(self) -> tuple[str, ...]:
@@ -416,6 +653,7 @@ class PlanCatalogSpawnAdapter:
         *,
         context: Mapping[str, Any] | None = None,
         step_id: str | None = None,
+        model_role: str | None = None,
         **host_arguments: Any,
     ) -> Mapping[str, Any]:
         """Resolve ``agent_name`` in the closure and run it."""
@@ -432,16 +670,21 @@ class PlanCatalogSpawnAdapter:
             definition=self._catalog.definition(agent_name),
             context=MappingProxyType(dict(context or {})),
             step_id=step_id,
+            model_role=model_role,
         )
-        self._emit("agent:start", {"agent": provenance.agent, "step_id": step_id})
+        # Recorded on BOTH ends of the step, so a truncated event stream still
+        # says which layer the model came from (parity delta 10).
+        provider = self._provider.record(model_role=model_role)
+        self._emit("agent:start", {"agent": provenance.agent, "step_id": step_id, **provider})
         output = await self._backend.spawn(request)
-        self._emit("agent:complete", {"agent": provenance.agent, "step_id": step_id})
+        self._emit("agent:complete", {"agent": provenance.agent, "step_id": step_id, **provider})
         return MappingProxyType(
             {
                 "output": output,
                 "agent": provenance.agent,
                 "supplied_by": provenance.supplied_by,
                 "session_id": f"{self._run_id}:{provenance.agent}",
+                "provider": MappingProxyType(provider),
             }
         )
 
@@ -521,6 +764,11 @@ class RecipeExecutionSession:
     def spawn_adapter(self) -> PlanCatalogSpawnAdapter:
         return self._adapter
 
+    @property
+    def provider(self) -> ProviderResolution:
+        """Which layer supplied this run's model provider (parity delta 10)."""
+        return self._adapter.provider
+
     def available_agents(self) -> Sequence[str]:
         """Canonical names from the plan's closure. Read-only, closed-world."""
         return self._catalog.names
@@ -532,13 +780,16 @@ class RecipeExecutionSession:
         *,
         context: Mapping[str, Any] | None = None,
         step_id: str | None = None,
+        model_role: str | None = None,
     ) -> str:
         """Run one agent from the closure.
 
         Raises:
             UndeclaredAgentError: ``agent`` is outside the plan.
         """
-        result = await self._adapter(agent, instruction, context=context, step_id=step_id)
+        result = await self._adapter(
+            agent, instruction, context=context, step_id=step_id, model_role=model_role
+        )
         return str(result["output"])
 
     async def aclose(self) -> None:
@@ -567,6 +818,9 @@ class SessionBuild:
     closers: tuple[Any, ...] = ()
     session: Any | None = None
     """The host-layer session object, when one was built. Never public API."""
+
+    provider: ProviderResolution | None = None
+    """Which layer supplied the model provider this backend runs on."""
 
 
 @runtime_checkable
@@ -622,6 +876,9 @@ async def create_execution_session(
 
     closers: tuple[Any, ...] = ()
     session: Any | None = None
+    # A caller-injected backend resolved its own provider, wherever that came
+    # from; the library did not, and says so rather than claiming a layer.
+    provider: ProviderResolution | None = None
     if spawn_backend is None:
         if not len(catalog):
             # The plan resolved no agents, so there is nothing an agent
@@ -635,6 +892,7 @@ async def create_execution_session(
             factory = session_factory or FoundationSessionFactory()
             build = await factory.create(plan, catalog, services, run_id=identifier)
             spawn_backend, closers, session = build.backend, build.closers, build.session
+            provider = build.provider
 
     adapter = PlanCatalogSpawnAdapter(
         catalog,
@@ -642,6 +900,7 @@ async def create_execution_session(
         run_id=identifier,
         workspace=workspace,
         event_sink=services.event_sink,
+        provider=provider,
     )
     if session is not None:
         _register_spawn_capability(session, adapter)
@@ -765,29 +1024,53 @@ class FoundationSessionFactory:
             )
 
         bundle = await self.compose(plan, catalog)
+
+        # The layered rule (parity delta 10), decided BEFORE prepare so a
+        # bridged provider's module is activated with everything else.
+        provider = self._resolve_providers(bundle, services)
+        if provider.source == PROVIDER_SOURCE_HOST:
+            bundle.providers = [spec.to_mount() for spec in provider.mount_specs]
+
         prepared = await bundle.prepare(install_deps=self._install_deps)
         workspace = Path(services.workspace)
         session = await prepared.create_session(session_cwd=workspace)
 
-        # Measured off the COMPOSED closure, not off the host's port. The port
-        # says which roles a host is willing to serve; this says whether the
-        # recipe's own world can actually reach a model. Without it, an agent
-        # step returns the sub-session's "No providers available" string AS ITS
-        # OUTPUT -- a run that exits 0 with that text written into its report is
-        # the fabricated success lib Core 8 forbids.
-        #
-        # A bundle that does not expose `providers` at all has made no claim,
-        # so it is not treated as a denial -- only an explicitly EMPTY list is.
-        # Refusing on an un-measurable absence would fail an embedder whose
-        # bundle object simply has a different shape.
-        declared_providers = getattr(bundle, "providers", None)
-        has_providers = True if declared_providers is None else bool(declared_providers)
-        backend = FoundationSpawnBackend(prepared, workspace=workspace, has_providers=has_providers)
+        backend = FoundationSpawnBackend(prepared, workspace=workspace, provider=provider)
         return SessionBuild(
             backend=backend,
             closers=(session.cleanup,),
             session=session,
+            provider=provider,
         )
+
+    def _resolve_providers(self, bundle: Any, services: HostServices) -> ProviderResolution:
+        """Decide which layer supplies this run's model provider.
+
+        Layer 1 -- the composed closure. Measured off the COMPOSED bundle, not
+        off the host's port: the port says which roles a host is *willing* to
+        serve; this says whether the recipe's own world can reach a model. A
+        recipe that declares one has PINNED it, and no host may override that.
+
+        A bundle that does not expose ``providers`` at all has made no claim,
+        so it is not treated as a denial -- only an explicitly EMPTY list is.
+        Refusing on an un-measurable absence would fail an embedder whose
+        bundle object simply has a different shape.
+
+        Layer 2 -- the ``provider_access`` port, bridged in. Only reached when
+        the closure declared nothing, which is why "recipe-declared wins" needs
+        no tie-breaking anywhere else.
+
+        Neither -- reported as :data:`PROVIDER_SOURCE_NONE`. The refusal fires
+        at spawn, not here: a recipe whose agent steps are all skipped by
+        conditions never needs a provider.
+        """
+        declared = getattr(bundle, "providers", None)
+        if declared is None or declared:
+            specs = tuple(
+                spec for spec in (ProviderSpec.coerce(entry) for entry in (declared or ())) if spec is not None
+            )
+            return ProviderResolution(source=PROVIDER_SOURCE_RECIPE, specs=specs)
+        return _bridge_host_providers(services)
 
     async def compose(self, plan: ExecutionPlan, catalog: PlanCatalog) -> Any:
         """Compose the plan's dependencies into one bundle, narrowed to ``catalog``.
@@ -865,34 +1148,127 @@ class FoundationSpawnBackend:
     backends instead.
     """
 
-    __slots__ = ("_has_providers", "_prepared", "_workspace")
+    __slots__ = ("_prepared", "_provider", "_workspace")
 
-    def __init__(self, prepared: Any, *, workspace: Path, has_providers: bool = True) -> None:
+    def __init__(
+        self,
+        prepared: Any,
+        *,
+        workspace: Path,
+        provider: ProviderResolution | None = None,
+    ) -> None:
         self._prepared = prepared
         self._workspace = workspace
-        self._has_providers = has_providers
+        self._provider = provider or ProviderResolution(source=PROVIDER_SOURCE_RECIPE)
+
+    @property
+    def provider(self) -> ProviderResolution:
+        return self._provider
 
     async def spawn(self, request: SpawnRequest) -> str:
-        if not self._has_providers:
+        if self._provider.source == PROVIDER_SOURCE_NONE:
             # Refused HERE, not at composition: a recipe whose agent steps are
             # all skipped by conditions never needs a provider, and failing it
             # up front would be a false alarm. This fires only when a step
             # really reaches for a model.
-            raise ExecutionError(
-                f"Step {request.step_id!r} needs agent {request.canonical!r}, but this recipe's "
-                "declared closure configures no model provider, so the agent has nothing to run on.",
-                remedy=(
-                    "Declare one in the recipe's `dependencies:` block -- e.g. a provider partial "
-                    "from the same pinned source, `kind: behavior` with "
-                    "`#subdirectory=providers/<provider>.yaml`. The calling environment's providers "
-                    "are deliberately not borrowed (recipe-dependency-manifest.v1 Core 4)."
-                ),
+            raise NoProviderError(
+                step_id=request.step_id,
+                agent=request.canonical,
+                offered_roles=self._provider.offered_roles,
+                uninterpretable_roles=self._provider.uninterpretable_roles,
             )
-        session = await self._prepared.create_session(session_cwd=self._workspace)
+        specs = self._provider.resolve_for(request.model_role, step_id=request.step_id)
+        prepared = self._prepared_for(specs, step_id=request.step_id)
+        session = await prepared.create_session(session_cwd=self._workspace)
         try:
             return str(await session.execute(request.instruction))
         finally:
             await session.cleanup()
+
+    def _prepared_for(self, specs: tuple[ProviderSpec, ...], *, step_id: str | None) -> Any:
+        """The prepared closure, narrowed to ``specs`` when a role selects fewer.
+
+        Every bridged role's module was activated at ``prepare`` time (see
+        :attr:`ProviderResolution.mount_specs`), so selecting a role is a
+        narrowing of the mount plan, not a second preparation. A single-role
+        host -- the common case, and the only one the standalone CLI produces --
+        never reaches the narrowing at all.
+        """
+        if self._provider.source != PROVIDER_SOURCE_HOST:
+            return self._prepared
+        wanted = [spec.to_mount() for spec in specs]
+        mount_plan = getattr(self._prepared, "mount_plan", None)
+        if not isinstance(mount_plan, Mapping) or list(mount_plan.get("providers") or ()) == wanted:
+            return self._prepared
+        if not dataclasses.is_dataclass(self._prepared):  # pragma: no cover - shape guard
+            raise ExecutionError(
+                f"Step {step_id!r} selected a model role whose providers differ from the "
+                "prepared closure's, but the prepared bundle cannot be narrowed to them.",
+                remedy=(
+                    "Serve one model role from the host's `provider_access` port, or supply a "
+                    "spawn_backend that performs its own role routing."
+                ),
+            )
+        return dataclasses.replace(self._prepared, mount_plan={**dict(mount_plan), "providers": wanted})
+
+
+def _bridge_host_providers(services: HostServices) -> ProviderResolution:
+    """The host's ``provider_access`` port, as providers a recipe can mount.
+
+    Every role the port names is resolved once here, and only handles carrying
+    a :class:`~amplifier_recipe_runner.ports.ProviderSpec` are bridged. A role
+    whose handle names no module source is recorded as uninterpretable rather
+    than guessed at -- inventing a module source from a provider nickname is
+    exactly the silent substitution lib Core 4 forbids, and the refusal names
+    those roles so the host can see why its port did not take effect.
+    """
+    access = services.provider_access
+    offered = tuple(str(role) for role in access.roles())
+    by_role: dict[str, tuple[ProviderSpec, ...]] = {}
+    uninterpretable: list[str] = []
+    for role in offered:
+        try:
+            handle = access.resolve(role)
+        except KeyError:
+            # The host named a role it then refused to resolve. Recorded, not
+            # smoothed over: the run says which roles never materialised.
+            uninterpretable.append(role)
+            continue
+        specs = provider_specs(handle)
+        if specs:
+            by_role[role] = specs
+        else:
+            uninterpretable.append(role)
+    if not by_role:
+        return ProviderResolution(
+            source=PROVIDER_SOURCE_NONE,
+            offered_roles=offered,
+            uninterpretable_roles=tuple(uninterpretable),
+        )
+    default_role = _default_role(tuple(by_role))
+    return ProviderResolution(
+        source=PROVIDER_SOURCE_HOST,
+        specs=by_role.get(default_role or "", ()),
+        by_role=MappingProxyType(dict(by_role)),
+        default_role=default_role,
+        offered_roles=offered,
+        uninterpretable_roles=tuple(uninterpretable),
+    )
+
+
+def _default_role(roles: Sequence[str]) -> str | None:
+    """Which role a step with no ``model_role:`` runs on, or ``None``.
+
+    One role is unambiguous. Several are not, so a conventional name is
+    required rather than picking the first alphabetically -- a run must never
+    quietly choose which model it costs money on.
+    """
+    if len(roles) == 1:
+        return roles[0]
+    for candidate in DEFAULT_ROLE_PREFERENCE:
+        if candidate in roles:
+            return candidate
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -1171,6 +1547,10 @@ async def _execute_program(
         )
 
     completed = tuple(outcome.completed_steps)
+    # Recorded on EVERY terminal status: a run that failed at a provider
+    # refusal is precisely the one whose reader needs to see which layer was
+    # consulted (executor-parity delta 10).
+    provider = MappingProxyType(session.provider.record())
     if outcome.status == "paused":
         return RunResult(
             run_id=session.run_id,
@@ -1180,6 +1560,7 @@ async def _execute_program(
             context=MappingProxyType(dict(outcome.context)),
             completed_steps=completed,
             pending_approval=outcome.pending_approval,
+            provider=provider,
         )
     if outcome.status == "cancelled":
         return RunResult(
@@ -1189,6 +1570,7 @@ async def _execute_program(
             outputs=MappingProxyType(dict(outcome.outputs)),
             context=MappingProxyType(dict(outcome.context)),
             completed_steps=completed,
+            provider=provider,
         )
     if outcome.status == "failed":
         return RunResult(
@@ -1199,6 +1581,7 @@ async def _execute_program(
             context=MappingProxyType(dict(outcome.context)),
             completed_steps=completed,
             error=outcome.error,
+            provider=provider,
         )
     return RunResult(
         run_id=session.run_id,
@@ -1207,6 +1590,7 @@ async def _execute_program(
         outputs=MappingProxyType(dict(outcome.outputs)),
         context=MappingProxyType(dict(outcome.context)),
         completed_steps=completed,
+        provider=provider,
     )
 
 
@@ -1237,7 +1621,13 @@ def _build_engine(
 
     async def invoke_agent(step: StepSpec, instruction: str, context: Mapping[str, Any]) -> Any:
         assert step.agent is not None
-        return await session.invoke(step.agent, instruction, context=context, step_id=step.id)
+        return await session.invoke(
+            step.agent,
+            instruction,
+            context=context,
+            step_id=step.id,
+            model_role=step.model_role,
+        )
 
     async def run_sub_recipe(
         path: Path,

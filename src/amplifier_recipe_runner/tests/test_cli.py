@@ -1091,7 +1091,9 @@ def test_cli_imports_only_the_librarys_own_modules() -> None:
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             external.add(node.module.split(".")[0])
 
-    # Standard library plus exactly two third-party packages.
+    # Standard library plus exactly two third-party packages. `os` and `re`
+    # serve `--host-providers`, which reads the host's own settings file and
+    # expands its ${VAR} placeholders from the environment.
     assert external <= {
         "__future__",
         "asyncio",
@@ -1099,7 +1101,9 @@ def test_cli_imports_only_the_librarys_own_modules() -> None:
         "collections",
         "dataclasses",
         "json",
+        "os",
         "pathlib",
+        "re",
         "typing",
         "uuid",
         "yaml",
