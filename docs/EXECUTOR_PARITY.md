@@ -28,6 +28,7 @@ this matrix is the evidence it will be decided on.
 | Step semantics match end to end | `conformance/kit` fixture `good-full-step-vocabulary-matches-the-legacy-engine`: one full-vocabulary recipe, run on **both** engines, every recipe-visible context variable diffed. |
 | Individual behaviours match | `src/amplifier_recipe_runner/tests/test_engine.py` — scenario-for-scenario ports of the legacy step tests, each class naming the legacy file it mirrors. |
 | Mid-loop resume means the same thing | `conformance/kit` fixture `good-checkpointed-foreach-resumes-mid-loop-on-both-engines`: one `checkpoint_iterations:` foreach, interrupted at item 3 and resumed, on **both** engines — comparing *which items each engine actually re-executed*, not just the final result. |
+| Where the model comes from does not change the outcome | `conformance/kit` fixture `good-provider-agnostic-recipe-runs-on-either-layer-and-refuses-on-neither`: one recipe naming no provider, run with the host's port supplying it, with the recipe pinning it, and with neither — all three diffed against each other **and** against the legacy engine (Δ10). |
 
 The kit fixture is **self-discriminating**: it compares the library against the
 other implementation rather than against an authored expectation, so a drift in
@@ -374,39 +375,110 @@ prompt, provider/model reached, timing and status.
 differently-shaped log file would freeze a shape the contract has not agreed
 yet. A host that wants a file writes one from the events.
 
-### Δ10 — An agent step needs a provider the RECIPE declares, not the environment's
+### Δ10 — The recipe's provider wins; the host's port is the fallback, not the default
 
 *Legacy:* an agent step spawns through the calling Amplifier session, which
 brings the user's configured providers with it (`~/.amplifier/settings.yaml`).
-*Library:* the composed closure is the recipe's declared dependencies and
-nothing else. If none of them configures a provider, the agent has nothing to
-run on.
+*Library:* **layered**, and the recipe wins:
 
-Measured on `recipes/repo-audit.yaml` during this lane: with the original
+| # | Composed closure | Host `provider_access` port | What happens | `provider_source` |
+|---|---|---|---|---|
+| 1 | declares providers | anything | the closure's providers are used, **pinned** | `recipe-closure` |
+| 2 | declares none | offers a mountable `ProviderSpec` | the host's providers are bridged into the composed session | `host-port` |
+| 3 | declares none | offers nothing mountable | the run **refuses**, naming both remedies | `none` |
+
+**Why layered, and why the recipe wins.** A recipe's closed world is its
+**agents, tools, context and hooks** — those must come from the declared
+closure and nowhere else, because a recipe that silently rebinds to whatever
+agents the caller happens to have is the exact failure schema v2 exists to end
+(`recipe-dependency-manifest.v1` Core 3, Core 4). A **model provider is not one
+of those**. It is an execution *resource*, like the workspace directory or the
+approval callback — which is precisely why the contract already gives it a host
+port of its own (`recipe-runner-lib.v1` Core 4, port 1). Refusing to use that
+port would leave a named port that never did anything, and would force every
+recipe to hard-code a model even where the operator is entitled to choose one.
+
+But a recipe that *does* declare a provider has made a real statement — "this
+recipe is written for this model" — and a pin a host could quietly override is
+not a pin. So layer 1 is authoritative and the port is not even consulted when
+it applies. That precedence is asserted, not assumed: the kit fixture
+`good-provider-agnostic-recipe-runs-on-either-layer-and-refuses-on-neither`
+fails if the port is read while a closure is pinned.
+
+**What "mountable" means (`ProviderSpec`).** `ProviderHandle` stays opaque by
+default; the runner now understands exactly **one** shape — `ProviderSpec`
+(`module`, `source`, `config`, optional instance `id`), the same four keys a
+bundle's own `providers:` entry and an Amplifier settings `config.providers`
+entry already use. A handle that is *not* that shape is bridged nowhere and
+recorded as uninterpretable. In particular a provider-*preference* chain
+(`{provider: anthropic, model: claude-sonnet-5}`) names no module source, and
+inventing one from the nickname would be a guess — so it is refused rather than
+guessed at. **Consequence, stated plainly:** the in-session adapter's
+`CoordinatorProviderAccess` hands over preference chains, so an in-session v2
+run does **not** bridge today; it still needs the recipe to declare a provider
+(remedy 1). Making it bridge is a one-call change in
+`modules/tool-recipes` — hand `ProviderSpec`s instead — which this lane did not
+make.
+
+**Model roles.** When the port is bridged, its **roles come with it**: every
+role is resolved once at composition and each role's module is activated, so a
+step's `model_role:` selects that role's provider at spawn. A role the host
+does not serve is refused by name (`ModelRoleUnavailableError`) — never
+silently downgraded onto another provider. With no `model_role:`, a single-role
+host is unambiguous; several roles require a conventional name (`default`, then
+`general`), and a host serving several with none of those refuses rather than
+choosing which model to spend money on. Under a **pinned** closure there is no
+role routing at all, so a step naming `model_role:` is refused too — running it
+on the pinned provider would be the same silent downgrade.
+
+**The refusal (case 3) is loud and fires at spawn.** `FoundationSpawnBackend`
+raises `NoProviderError` naming the step, the agent, the roles the host *did*
+offer, and **both** remedies. It fires when a step actually reaches for a model,
+not at composition, so a recipe whose agent steps are all skipped by conditions
+is not failed for a provider it never needed.
+
+Measured on `recipes/repo-audit.yaml` during recipes-xov: with the original
 manifest, the run exited 0, 23 steps ran, provenance was correct — and the one
 agent step wrote the literal text `Error: No providers available` into the
-audit report. Green, and worthless.
+audit report. Green, and worthless. That is what these three cases replace.
 
-Two things follow, both now in place:
+**Provenance.** Every agent step's record (the `agent:start` / `agent:complete`
+events on the `event_sink` port — see Δ9) carries `provider_source`, the
+provider instance, the model and the `model_role`; `RunResult.provider` carries
+the same for the run, on **every** terminal status; and the run manifest
+(`run-manifest.json`, and the `v2_provenance` an Amplifier session records)
+gains a `provider` field. The manifest is written at preflight, before a
+session exists, so the standalone CLI re-writes just that field once the run has
+resolved it. `provider` is recorded, never **compared** on resume: the resolved
+dependency graph is what Core 8 pins, and a host that has since rotated its
+model must not be refused for that.
 
-1. **The refusal is loud.** `FoundationSpawnBackend` measures the composed
-   bundle's `providers` and, when a step actually reaches for a model with none
-   configured, raises naming the step, the agent, and the remedy — instead of
-   returning the sub-session's error string as the step's *output*. It fires at
-   spawn time, not at composition, so a recipe whose agent steps are all
-   skipped by conditions is not failed for a provider it never needed.
-2. **A recipe can declare one.** `recipes/repo-audit.yaml` now declares
-   `git+…/amplifier-foundation@v2.1.2#subdirectory=providers/anthropic-sonnet.yaml`
-   (`kind: behavior`) — the *same pinned source* as its agents, so the closure
-   is unchanged in identity. In-session the line is inert; standalone it is what
-   makes the agent step real. Verified: the audit report is now 3,352 bytes of
-   model-written findings, at a metered cost.
+**Supplying the host's providers from the CLI.** `recipe-runner run
+--host-providers` reads the host's own Amplifier settings
+(`$AMPLIFIER_HOME/settings.yaml`, or `--host-settings PATH`) and serves its
+`config.providers` on the port — a copy, not a translation, since the shapes
+already match. `${VAR}` placeholders are expanded from the environment and an
+unresolved one is reported, never passed through silently. `--provider-id ID`
+(repeatable) narrows to named instances in the order given; otherwise the
+file's own `config.priority` order is used and the head is what provenance
+records. One role is served, named `default`, because a settings file
+configures providers and not *routing* — synthesizing several roles from a
+priority list would be routing this CLI cannot actually perform.
 
-Loading such a partial required a fix in `FoundationSessionFactory._load`: a
-`#subdirectory=` that names a *file* resolves to the file's parent **directory**
-in `local_path`, which is not a bundle. The declared `subdirectory` is now
-consulted when it names a `.yaml`/`.yml`; directory-style partials are
-unaffected.
+Without the flag the port names roles (`provider_roles`, default `general`)
+without saying what serves them, which is exactly case 3: honest, and refused.
+
+Loading a provider partial required a fix in `FoundationSessionFactory._load`:
+a `#subdirectory=` that names a *file* resolves to the file's parent
+**directory** in `local_path`, which is not a bundle. The declared
+`subdirectory` is now consulted when it names a `.yaml`/`.yml`; directory-style
+partials are unaffected.
+
+`recipes/repo-audit.yaml` keeps its pinned
+`git+…/amplifier-foundation@v2.1.2#subdirectory=providers/anthropic-sonnet.yaml`
+(`kind: behavior`) dependency. The pin is **not** made redundant by the host
+port: it is what makes the recipe reproducible on a host that supplies nothing,
+and case 1 is what guarantees it still wins where a host does.
 
 ### Δ11 — A nested `steps:` body without `foreach:`/`while_condition:` is refused
 
@@ -437,9 +509,13 @@ These legacy behaviours have no library counterpart because they are properties
 of the Amplifier session, not of the step vocabulary:
 
 - `spawn_mode: subprocess` (process isolation for a spawned agent)
-- `agent_config:` overlays, `provider_preferences` instance pinning, and
-  `model_role` routing-matrix resolution — the library carries the fields
-  through to the host's spawn seam and lets the host decide
+- `agent_config:` overlays and `provider_preferences` instance pinning — the
+  library carries the fields through to the host's spawn seam and lets the host
+  decide
+- Amplifier's `model_role_resolver` **routing matrix** — the library does not
+  compute a role's preference chain. It does now *honour* a role the host's
+  `provider_access` port serves, and refuses one it does not (Δ10); what a role
+  means is still the host's to say
 - progress/`recipe:*` event emission into Amplifier's hook system
 - session adoption (`attach_session_id`) and parent/child session graphs
 

@@ -4,7 +4,7 @@
 # The kit does NOT edit the ledger; the reconciler consumes this map and
 # decides dispositions. `coverage: partial` always names what is NOT covered.
 #
-# fixtures: 19 (12 GOOD, 7 BAD)
+# fixtures: 20 (13 GOOD, 7 BAD)
 kit:
   entrypoint: conformance/kit/kit.py
   run: python3 conformance/kit/kit.py --run
@@ -221,6 +221,27 @@ fixtures:
     the library against the other implementation rather than against an authored expectation, so a drift
     in EITHER engine fails it. Requires the legacy engine to be importable and refuses to run against
     a stand-in.'
+- id: good-provider-agnostic-recipe-runs-on-either-layer-and-refuses-on-neither
+  polarity: GOOD
+  title: A recipe naming no provider runs identically on the host port and on a pinned closure
+  clauses:
+  - lib.v1 Core 4
+  - lib.v1 Core 8
+  - manifest.v1 Core 4
+  satisfies:
+  - RCP-104
+  - RCP-108
+  - RCP-004
+  notes: 'PARITY FIXTURE for executor-parity delta 10. Runs conformance/kit/fixtures/recipes/provider-agnostic.yaml
+    -- an agent step and no provider -- three ways through the library''s own `run()` and the REAL FoundationSessionFactory
+    (only composition is stubbed): (a) closure declares none and the host''s provider_access port offers
+    a mountable ProviderSpec, (b) the closure PINS one and the same port is offered, (c) neither. It then
+    diffs every recipe-visible context variable of (a) against (b) AND against the LEGACY in-session engine''s
+    run of the same file. Self-discriminating: (a) and (b) are compared against each other and against
+    the other implementation, not against an authored expectation. Asserts the pinned run never consults
+    the port (a pin a host could override is not a pin), that both runs record which layer they used,
+    and that (c) refuses naming BOTH remedies instead of returning the sub-session''s error string as
+    the step''s output.'
 - id: good-checkpointed-foreach-resumes-mid-loop-on-both-engines
   polarity: GOOD
   title: An interrupted `checkpoint_iterations:` foreach resumes mid-loop identically on BOTH engines
@@ -268,6 +289,7 @@ rows:
     coverage: full
     fixtures:
     - good-declared-dependency-runs-from-lean-caller
+    - good-provider-agnostic-recipe-runs-on-either-layer-and-refuses-on-neither
     - probe-host-surface-is-exactly-the-five-ports
     - probe-ports-are-the-five-contract-names-and-carry-no-agent-map
     covered: 'Behaviourally: the execution session is built from the plan catalog alone; every host argument
@@ -385,6 +407,7 @@ rows:
     fixtures:
     - bad-colliding-caller-agent-cannot-alter-the-result
     - good-declared-dependency-runs-from-lean-caller
+    - good-provider-agnostic-recipe-runs-on-either-layer-and-refuses-on-neither
     - probe-host-surface-is-exactly-the-five-ports
     - probe-ports-are-the-five-contract-names-and-carry-no-agent-map
     covered: 'Behaviourally: no port carries agents in practice -- the spawn adapter discards and records
@@ -427,6 +450,7 @@ rows:
     - bad-undeclared-agent-fails-preflight-before-side-effects
     - good-checkpointed-foreach-resumes-mid-loop-on-both-engines
     - good-full-step-vocabulary-matches-the-legacy-engine
+    - good-provider-agnostic-recipe-runs-on-either-layer-and-refuses-on-neither
     covered: 'All four named preflight classes are asserted by type, not by exit code: UndeclaredAgentError,
       AgentCollisionError, TrustRefusedError, ProvenanceMismatchError. ''Never a fabricated success''
       is asserted in BOTH directions: before preflight, as FAILED status with 0 completed steps and 0

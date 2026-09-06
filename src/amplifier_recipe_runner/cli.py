@@ -72,10 +72,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 import uuid
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from typing import Final
@@ -104,6 +107,7 @@ from .lockfile import lock_path_for
 from .manifest import ManifestError
 from .ports import HostServices
 from .ports import ProviderHandle
+from .ports import ProviderSpec
 from .ports import WorkspacePath
 from .provenance import check_resume_provenance
 from .provenance import read_run_manifest
@@ -154,6 +158,8 @@ USER_CONFIG: Final[Path] = Path("~/.config/recipe-runner/config.yaml")
 CONFIG_KEYS: Final[frozenset[str]] = frozenset(
     {
         "dry_run",
+        "host_providers",
+        "host_settings",
         "json",
         "lock_mode",
         "offline",
@@ -163,6 +169,9 @@ CONFIG_KEYS: Final[frozenset[str]] = frozenset(
         "workspace",
     }
 )
+
+#: ``${VAR}`` placeholders in a host settings provider config.
+_ENV_PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 #: Where run state lives, relative to the workspace, unless overridden.
 DEFAULT_STATE_DIR: Final[str] = ".recipe-runner/runs"
@@ -334,9 +343,12 @@ def _resolver(flag: bool | None, config: Mapping[str, Any]) -> DependencyResolve
 class _ConfiguredProviderAccess:
     """The provider-access port, populated from config.
 
-    A :class:`~amplifier_recipe_runner.ports.ProviderHandle` is opaque to the
-    runner, so this host hands back the role name itself. Which roles exist is
-    a host decision, which is exactly why it comes from config.
+    Hands back the role name itself as the handle -- which names no provider
+    module, so the runner cannot mount it. That is the honest default: this
+    host has declared which roles it is *willing* to serve without saying what
+    would serve them, so a recipe that pins no provider of its own is refused
+    naming both remedies rather than run on a guess. ``--host-providers``
+    (:class:`_HostSettingsProviderAccess`) is the second remedy.
     """
 
     __slots__ = ("_roles",)
@@ -353,12 +365,201 @@ class _ConfiguredProviderAccess:
         return ProviderHandle(role)
 
 
-def _services(runtime: Runtime) -> HostServices:
-    roles = _pick(None, runtime.config, "provider_roles", ["general"])
-    if isinstance(roles, str):
-        roles = [roles]
+class _HostSettingsProviderAccess:
+    """The host's own Amplifier settings, as the provider-access port.
+
+    The least-magic reading of "supply the host's providers": an Amplifier
+    settings file's ``config.providers`` entries are already exactly the
+    ``{id, module, source, config}`` shape a bundle mounts, so this reads them
+    and hands them over as :class:`~amplifier_recipe_runner.ports.ProviderSpec`
+    values. Nothing is inferred and no provider is invented -- what the file
+    says is what the run gets.
+
+    **One role, named** :data:`ROLE`. A settings file configures providers, not
+    routing: model *roles* come from a bundle-registered capability inside a
+    live Amplifier session, which this CLI is not. Synthesizing several roles
+    from a priority list would be routing this host cannot actually perform, so
+    exactly one is served -- and a step naming any other ``model_role:`` is
+    refused by name rather than quietly run on this one.
+
+    Ordering is the file's own ``config.priority`` (ascending, unset last), so
+    the head is the provider the host itself prefers; that head is what the
+    run's provenance records.
+
+    ``${VAR}`` placeholders are expanded from THIS process's environment, the
+    same resolution the Amplifier CLI performs. An unresolved one is reported
+    (:attr:`unresolved`), never silently passed through as a literal.
+    """
+
+    #: The single role this port serves.
+    ROLE: Final[str] = "default"
+
+    __slots__ = ("_path", "_specs", "_unresolved")
+
+    def __init__(self, specs: Sequence[ProviderSpec], *, path: Path, unresolved: Sequence[str] = ()) -> None:
+        self._specs = tuple(specs)
+        self._path = path
+        self._unresolved = tuple(dict.fromkeys(unresolved))
+
+    @classmethod
+    def load(cls, path: Path, *, only: Sequence[str] = ()) -> _HostSettingsProviderAccess:
+        """Read ``path``'s ``config.providers``, optionally narrowed to ``only``."""
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except OSError as exc:
+            raise click.UsageError(f"--host-providers could not read {path}: {exc}") from exc
+        except yaml.YAMLError as exc:
+            raise click.UsageError(f"--host-providers could not parse {path}: {exc}") from exc
+        if not isinstance(data, Mapping):
+            raise click.UsageError(f"--host-providers expected a mapping at the top of {path}.")
+        entries = (data.get("config") or {}).get("providers") if isinstance(data.get("config"), Mapping) else None
+        if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)) or not entries:
+            raise click.UsageError(
+                f"--host-providers found no `config.providers` in {path}, so there is nothing to bridge."
+            )
+
+        unresolved: list[str] = []
+        specs: list[ProviderSpec] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            spec = ProviderSpec.coerce(
+                {
+                    "module": entry.get("module"),
+                    "source": entry.get("source"),
+                    "id": entry.get("id"),
+                    "config": _expand_env(entry.get("config"), unresolved),
+                }
+            )
+            if spec is not None:
+                specs.append(spec)
+        specs.sort(key=_provider_priority)
+
+        if only:
+            by_id = {spec.instance: spec for spec in specs}
+            missing = [name for name in only if name not in by_id]
+            if missing:
+                raise click.UsageError(
+                    f"--provider-id named {', '.join(repr(name) for name in missing)}, which "
+                    f"{path} does not configure; it configures {', '.join(sorted(by_id)) or 'none'}."
+                )
+            specs = [by_id[name] for name in only]
+
+        if not specs:
+            raise click.UsageError(
+                f"--host-providers read {path} but none of its `config.providers` entries carries "
+                "both `module` and `source`, so none can be mounted."
+            )
+        return cls(specs, path=path, unresolved=unresolved)
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def specs(self) -> tuple[ProviderSpec, ...]:
+        return self._specs
+
+    @property
+    def unresolved(self) -> tuple[str, ...]:
+        """``${VAR}`` names this environment did not define."""
+        return self._unresolved
+
+    def roles(self) -> Sequence[str]:
+        return (self.ROLE,)
+
+    def resolve(self, role: str) -> ProviderHandle:
+        if role != self.ROLE:
+            raise KeyError(role)
+        return ProviderHandle(self._specs)
+
+
+def _provider_priority(spec: ProviderSpec) -> tuple[int, float, str]:
+    """Settings order: ``config.priority`` ascending, unset last, then by name."""
+    raw = spec.config.get("priority")
+    try:
+        return (0, float(raw), spec.instance)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return (1, 0.0, spec.instance)
+
+
+def _expand_env(config: Any, unresolved: list[str]) -> dict[str, Any]:
+    """``${VAR}`` -> its environment value; unresolved names are recorded.
+
+    A setting that is *entirely* an unresolved placeholder is DROPPED rather
+    than handed to the provider as the literal string ``${VAR}`` -- which is
+    never a valid endpoint or credential, and would fail somewhere far away
+    from the cause. The Amplifier CLI treats an unset placeholder as absent in
+    the same way. Either way the variable's name is recorded, so "this setting
+    did not come across" is reported rather than discovered.
+    """
+    if not isinstance(config, Mapping):
+        return {}
+    expanded: dict[str, Any] = {}
+    for key, value in config.items():
+        if not isinstance(value, str):
+            expanded[str(key)] = value
+            continue
+        replaced = _ENV_PLACEHOLDER.sub(lambda m: os.environ.get(m.group(1), m.group(0)), value)
+        missing = _ENV_PLACEHOLDER.findall(replaced)
+        unresolved.extend(missing)
+        if missing and _ENV_PLACEHOLDER.fullmatch(replaced):
+            continue
+        expanded[str(key)] = replaced
+    return expanded
+
+
+def _host_settings_path(flag: Path | None, config: Mapping[str, Any]) -> Path:
+    """Where the host's Amplifier settings live: flag, config, then convention."""
+    raw = _pick(flag, config, "host_settings", None)
+    if raw is not None:
+        return Path(raw).expanduser()
+    home = os.environ.get("AMPLIFIER_HOME")
+    base = Path(home).expanduser() if home else Path("~/.amplifier").expanduser()
+    return base / "settings.yaml"
+
+
+def _services(
+    runtime: Runtime,
+    *,
+    host_providers: bool | None = None,
+    host_settings: Path | None = None,
+    provider_ids: Sequence[str] = (),
+    as_json: bool = False,
+) -> HostServices:
+    """The five ports, built from the CLI's own configuration.
+
+    Only ``provider_access`` has a choice to make (executor-parity delta 10):
+    by default it names roles without saying what serves them, and with
+    ``--host-providers`` it hands over the host's real, mountable providers.
+    """
+    if bool(_pick(host_providers, runtime.config, "host_providers", False)):
+        path = _host_settings_path(host_settings, runtime.config)
+        if not path.is_file():
+            raise click.UsageError(
+                f"--host-providers found no Amplifier settings at {path}. "
+                "Pass --host-settings PATH, or set AMPLIFIER_HOME."
+            )
+        access: Any = _HostSettingsProviderAccess.load(path, only=tuple(provider_ids))
+        _note(
+            f"host_providers: {path} -> "
+            f"{', '.join(f'{spec.instance}({spec.model or 'unset model'})' for spec in access.specs)}",
+            as_json=as_json,
+        )
+        if access.unresolved:
+            _note(
+                f"host_providers: {', '.join(access.unresolved)} is not set in this environment, "
+                "so the setting referencing it was omitted; export it (the Amplifier CLI keeps "
+                "these in ~/.amplifier/keys.env) if the provider needs it.",
+                as_json=as_json,
+            )
+    else:
+        roles = _pick(None, runtime.config, "provider_roles", ["general"])
+        if isinstance(roles, str):
+            roles = [roles]
+        access = _ConfiguredProviderAccess(roles)
     return HostServices(
-        provider_access=_ConfiguredProviderAccess(roles),  # type: ignore[arg-type]
+        provider_access=access,  # type: ignore[arg-type]
         workspace=WorkspacePath(runtime.workspace),
     )
 
@@ -411,9 +612,14 @@ def _request(
 # --------------------------------------------------------------------------
 
 
-def _plan_mapping(plan: ExecutionPlan, *, run_id: str) -> dict[str, Any]:
+def _plan_mapping(
+    plan: ExecutionPlan,
+    *,
+    run_id: str,
+    provider: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """The plan in the library's documented run-manifest shape (lib Core 7)."""
-    return run_manifest_from_plan(plan, run_id=run_id).to_mapping()
+    return run_manifest_from_plan(plan, run_id=run_id, provider=provider).to_mapping()
 
 
 def _note(message: str, *, as_json: bool) -> None:
@@ -534,6 +740,20 @@ def _echo_run(result: RunResult) -> None:
         click.echo(f"completed_steps: {', '.join(result.completed_steps)}")
     if result.pending_approval:
         click.echo(f"pending_approval: {result.pending_approval}")
+    if result.provider is not None:
+        click.echo(f"provider: {_provider_line(result.provider)}")
+
+
+def _provider_line(provider: Mapping[str, Any]) -> str:
+    """``<source> (<instance> / <model>)`` -- which layer, and what it resolved to."""
+    parts = [str(provider.get("provider_source"))]
+    detail = " / ".join(str(provider[key]) for key in ("provider", "model") if provider.get(key))
+    if detail:
+        parts.append(f"({detail})")
+    role = provider.get("model_role")
+    if role:
+        parts.append(f"role={role}")
+    return " ".join(parts)
 
 
 def _echo_run_json(
@@ -560,8 +780,9 @@ def _echo_run_json(
                 "completed_steps": list(result.completed_steps) if result is not None else [],
                 "pending_approval": result.pending_approval if result is not None else None,
                 "provenance": str(provenance),
+                "provider": dict(result.provider) if result is not None and result.provider else None,
                 "lock": _lock_mapping(lock_result),
-                "plan": _plan_mapping(plan, run_id=run_id),
+                "plan": _plan_mapping(plan, run_id=run_id, provider=result.provider if result else None),
             },
             indent=2,
             sort_keys=True,
@@ -596,6 +817,38 @@ def lock_options(command: Any) -> Any:
         flag_value=LockMode.LOCKED.value,
         default=None,
         help="Require exact lock entries (default; mandatory for CI).",
+    )(command)
+    return command
+
+
+def provider_options(command: Any) -> Any:
+    """Where this run's model provider comes from (executor-parity delta 10).
+
+    Off by default, and deliberately so: borrowing the host's providers is a
+    thing the operator asks for, never something a run helps itself to. A
+    recipe that pins its own provider is unaffected either way -- the recipe
+    always wins.
+    """
+    command = click.option(
+        "--provider-id",
+        "provider_ids",
+        multiple=True,
+        metavar="ID",
+        help="With --host-providers: use only these provider instances, in this order.",
+    )(command)
+    command = click.option(
+        "--host-settings",
+        "host_settings",
+        type=click.Path(exists=False, dir_okay=False, path_type=Path),
+        default=None,
+        help="Amplifier settings file --host-providers reads (default: $AMPLIFIER_HOME/settings.yaml).",
+    )(command)
+    command = click.option(
+        "--host-providers",
+        "host_providers",
+        is_flag=True,
+        default=None,
+        help="Serve the host's configured providers to a recipe that declares none of its own.",
     )(command)
     return command
 
@@ -809,6 +1062,7 @@ def lock_command(ctx: click.Context, recipe: Path, trust: str | None, offline: b
 @click.argument("recipe", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @lock_options
 @resolution_options
+@provider_options
 @click.option("--run-id", "run_id", default=None, help="Run identifier; generated when omitted.")
 @click.option(
     "--state-dir",
@@ -826,6 +1080,9 @@ def run_command(
     lock_mode: str | None,
     trust: str | None,
     offline: bool | None,
+    host_providers: bool | None,
+    host_settings: Path | None,
+    provider_ids: tuple[str, ...],
     run_id: str | None,
     state_dir: Path | None,
     dry_run: bool | None,
@@ -848,7 +1105,13 @@ def run_command(
         runtime=runtime,
         lock_mode=mode,
         trust=_trust_policy(trust, runtime.config),
-        services=_services(runtime),
+        services=_services(
+            runtime,
+            host_providers=host_providers,
+            host_settings=host_settings,
+            provider_ids=provider_ids,
+            as_json=as_json,
+        ),
         context=_context(context_pairs),
         run_id=identifier,
         # The run owns this directory: it is where an approval gate leaves the
@@ -939,12 +1202,39 @@ def _record_outcome(run_dir: Path, result: RunResult) -> None:
 
     Values are copied verbatim off :class:`RunResult`; nothing here decides
     what ran. The library owns that and already said so.
+
+    The run manifest is re-written with the run's provider provenance for the
+    same reason: which layer supplied the model is only knowable once the
+    session has been composed, and the manifest written at preflight could not
+    have carried it (executor-parity delta 10). Nothing else in the manifest
+    changes, and ``provider`` is not compared on resume.
     """
     context = dict(_run_context(run_dir))
     context["status"] = result.status.value
     context["completed_steps"] = list(result.completed_steps)
     context["pending_approval"] = result.pending_approval
+    context["provider"] = dict(result.provider) if result.provider else None
     _write_run_context(run_dir, context)
+    _record_provider_provenance(run_dir, result)
+
+
+def _record_provider_provenance(run_dir: Path, result: RunResult) -> None:
+    """Attach ``result``'s provider record to the run manifest already on disk.
+
+    Best-effort by construction: a bookkeeping write that fails must not turn a
+    run that happened into a run that failed. The outcome was already reported.
+    """
+    if result.provider is None:
+        return
+    path = run_manifest_path_for(run_dir)
+    try:
+        manifest = read_run_manifest(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+    try:
+        write_run_manifest(path, replace(manifest, provider=dict(result.provider)))
+    except OSError:
+        return
 
 
 def _write_run_context(run_dir: Path, context: Mapping[str, Any]) -> None:
@@ -963,6 +1253,7 @@ def _write_run_context(run_dir: Path, context: Mapping[str, Any]) -> None:
 @click.argument("run_id")
 @lock_options
 @resolution_options
+@provider_options
 @click.option(
     "--state-dir",
     type=click.Path(file_okay=False, path_type=Path),
@@ -983,6 +1274,9 @@ def resume_command(
     lock_mode: str | None,
     trust: str | None,
     offline: bool | None,
+    host_providers: bool | None,
+    host_settings: Path | None,
+    provider_ids: tuple[str, ...],
     state_dir: Path | None,
     recipe: Path | None,
     dry_run: bool | None,
@@ -1026,7 +1320,12 @@ def resume_command(
         runtime=runtime,
         lock_mode=_lock_mode(lock_mode or recorded_context.get("lock_mode"), runtime.config),
         trust=_trust_policy(trust or recorded_context.get("trust"), runtime.config),
-        services=_services(runtime),
+        services=_services(
+            runtime,
+            host_providers=host_providers,
+            host_settings=host_settings,
+            provider_ids=provider_ids,
+        ),
         run_id=run_id,
         state_dir=run_dir,
     )

@@ -104,6 +104,22 @@ class RunManifest:
     created_at: str | None = None
     """UTC ISO-8601 timestamp; recorded, never compared."""
 
+    provider: Mapping[str, Any] | None = None
+    """Which layer supplied the run's model provider, and what it resolved to.
+
+    ``{"provider_source": "recipe-closure" | "host-port" | ..., "provider":
+    <instance>, "model": <model>}`` -- see
+    :class:`~amplifier_recipe_runner.execution.ProviderResolution`.
+
+    Recorded, never compared on resume. The provider is an execution resource,
+    not part of the resolved dependency graph Core 8 pins: a run resumed on a
+    host that has since rotated its model must not be refused for that, and a
+    change here is visible in the record either way.
+
+    ``None`` until the run has actually composed its session -- the manifest is
+    written at preflight, when nothing has been resolved yet.
+    """
+
     # -- Core 7 views ------------------------------------------------------
 
     @property
@@ -144,6 +160,7 @@ class RunManifest:
             "agents": {name: _agent_to_mapping(prov) for name, prov in sorted(self.agents.items())},
             "partials": list(self.partials),
             "step_ids": list(self.step_ids),
+            "provider": dict(self.provider) if self.provider is not None else None,
         }
 
     @classmethod
@@ -164,6 +181,7 @@ class RunManifest:
             foundation_version=_opt_str(data.get("foundation_version")),
             manifest_version=int(data.get("manifest_version") or RUN_MANIFEST_VERSION),
             created_at=_opt_str(data.get("created_at")),
+            provider=dict(data["provider"]) if isinstance(data.get("provider"), Mapping) else None,
         )
 
 
@@ -177,8 +195,14 @@ def run_manifest_from_plan(
     *,
     run_id: str,
     created_at: str | None = None,
+    provider: Mapping[str, Any] | None = None,
 ) -> RunManifest:
-    """Record ``plan`` as the run manifest for ``run_id`` (Core 7)."""
+    """Record ``plan`` as the run manifest for ``run_id`` (Core 7).
+
+    ``provider`` is the run's resolved provider provenance when the caller
+    already has it (after the run); at preflight it is unknown and stays
+    ``None`` rather than being guessed from configuration.
+    """
     return RunManifest(
         run_id=run_id,
         recipe_digest=plan.recipe_digest,
@@ -191,6 +215,7 @@ def run_manifest_from_plan(
         foundation_version=plan.foundation_version,
         manifest_version=plan.manifest_version,
         created_at=created_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        provider=dict(provider) if provider is not None else None,
     )
 
 

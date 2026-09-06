@@ -1990,6 +1990,13 @@ async def probe_ports_carry_no_agent_map() -> str:
 
     # 3. The exported port vocabulary itself. A sixth port type would arrive
     #    here even if HOST_PORTS were left alone.
+    #
+    #    `ProviderSpec` / `provider_specs` are NOT a sixth port: they are the
+    #    shape port 1's existing `ProviderHandle` may take, and the one place
+    #    that shape is interpreted (executor-parity delta 10). Step 2 above is
+    #    what proves no port was added -- HostServices still has exactly five
+    #    fields -- and step 4b below is what proves this shape carries no agent
+    #    map.
     expect_eq(
         sorted(ports_module.__all__),
         sorted(
@@ -2003,8 +2010,10 @@ async def probe_ports_carry_no_agent_map() -> str:
                 "HostServices",
                 "ProviderAccess",
                 "ProviderHandle",
+                "ProviderSpec",
                 "RunEvent",
                 "WorkspacePath",
+                "provider_specs",
             )
         ),
         "ports.__all__",
@@ -2013,6 +2022,7 @@ async def probe_ports_carry_no_agent_map() -> str:
     # 4. No port protocol or payload names, accepts, or returns an agent map.
     port_types = (
         ports_module.ProviderAccess,
+        ports_module.ProviderSpec,
         ports_module.ApprovalCallback,
         ports_module.ApprovalRequest,
         ports_module.ApprovalDecision,
@@ -2222,6 +2232,276 @@ async def good_full_vocabulary_parity() -> str:
         f"(covering {len(expected_variables)} named step outputs: bash, parse_json, conditions, "
         f"on_error, foreach sequential + parallel, compound body, convergence loop, sub-recipe, "
         f"templated timeout, agent step)"
+    )
+
+
+# ==========================================================================
+# WHERE THE MODEL COMES FROM -- one provider-agnostic recipe, three layers
+# ==========================================================================
+
+
+class _StubProviderSession:
+    """A composed session that answers without a model call."""
+
+    def __init__(self, mount_plan: Mapping[str, Any]) -> None:
+        self.mount_plan = dict(mount_plan)
+        self.coordinator = _StubCoordinator()
+
+    async def execute(self, instruction: str) -> str:
+        return _AGENT_REPLY
+
+    async def cleanup(self) -> None:
+        return None
+
+
+class _StubCoordinator:
+    def __init__(self) -> None:
+        self.capabilities: dict[str, Any] = {}
+
+    def register_capability(self, name: str, value: Any) -> None:
+        self.capabilities[name] = value
+
+
+@dataclasses.dataclass
+class _StubPrepared:
+    mount_plan: dict[str, Any]
+    sessions: list[_StubProviderSession] = dataclasses.field(default_factory=list)
+
+    async def create_session(self, session_cwd: Any = None) -> _StubProviderSession:
+        session = _StubProviderSession(self.mount_plan)
+        self.sessions.append(session)
+        return session
+
+
+class _StubComposedBundle:
+    """Foundation's ``Bundle``, reduced to what the provider decision reads."""
+
+    def __init__(self, providers: list[dict[str, Any]]) -> None:
+        self.providers = providers
+        self.agents: dict[str, Any] = {}
+        self.name = "stub"
+        self.prepared: _StubPrepared | None = None
+
+    async def prepare(self, install_deps: bool = True) -> _StubPrepared:
+        self.prepared = _StubPrepared(mount_plan={"providers": list(self.providers)})
+        return self.prepared
+
+
+def _stub_session_factory(bundle: _StubComposedBundle) -> Any:
+    """The REAL FoundationSessionFactory, composing ``bundle`` instead of fetching.
+
+    Composition is stubbed; the provider decision under test is not. This is
+    the same object the standalone CLI uses.
+    """
+    from amplifier_recipe_runner.execution import FoundationSessionFactory
+
+    class _Factory(FoundationSessionFactory):
+        def __init__(self) -> None:
+            super().__init__(install_deps=False, registry=object())
+
+        async def compose(self, plan: Any, catalog: Any) -> Any:
+            return bundle
+
+    return _Factory()
+
+
+class _MountableProviderAccess:
+    """A host whose port hands over a provider the run can actually mount."""
+
+    def __init__(self) -> None:
+        self.resolved: list[str] = []
+
+    def roles(self) -> tuple[str, ...]:
+        return ("default",)
+
+    def resolve(self, role: str) -> Any:
+        from amplifier_recipe_runner.ports import ProviderSpec
+
+        self.resolved.append(role)
+        return ProviderSpec(
+            module="provider-stub",
+            source="git+https://example.invalid/provider-stub@v1",
+            config={"default_model": "stub-model-1"},
+            id="host-instance",
+        )
+
+
+#: What a recipe pins when it declares its own provider.
+_PINNED_PROVIDER: dict[str, Any] = {
+    "module": "provider-stub",
+    "source": "git+https://example.invalid/provider-stub@v1",
+    "config": {"default_model": "stub-model-1"},
+}
+
+
+async def _run_with_provider_layer(
+    recipe_path: Path,
+    project_path: Path,
+    *,
+    declared: list[dict[str, Any]],
+    access: Any,
+) -> tuple[Any, _StubComposedBundle]:
+    """Run ``recipe_path`` with a given closure/port pair, through ``run()``."""
+    from amplifier_recipe_runner.api import RunRequest
+    from amplifier_recipe_runner.execution import run as run_recipe
+    from amplifier_recipe_runner.ports import HostServices
+
+    bundle = _StubComposedBundle(list(declared))
+    request = RunRequest(
+        recipe=recipe_path,
+        services=HostServices(provider_access=access, workspace=project_path),
+    )
+    result = await run_recipe(
+        request,
+        resolver=local_resolver(),
+        session_factory=_stub_session_factory(bundle),
+    )
+    return result, bundle
+
+
+@fixture(
+    id="good-provider-agnostic-recipe-runs-on-either-layer-and-refuses-on-neither",
+    polarity="GOOD",
+    title="A recipe naming no provider runs identically on the host port and on a pinned closure",
+    clauses=("lib.v1 Core 4", "lib.v1 Core 8", "manifest.v1 Core 4"),
+    rows=("RCP-104", "RCP-108", "RCP-004"),
+    notes=(
+        "PARITY FIXTURE for executor-parity delta 10. Runs "
+        "conformance/kit/fixtures/recipes/provider-agnostic.yaml -- an agent step and no "
+        "provider -- three ways through the library's own `run()` and the REAL "
+        "FoundationSessionFactory (only composition is stubbed): (a) closure declares none "
+        "and the host's provider_access port offers a mountable ProviderSpec, (b) the closure "
+        "PINS one and the same port is offered, (c) neither. It then diffs every "
+        "recipe-visible context variable of (a) against (b) AND against the LEGACY in-session "
+        "engine's run of the same file. Self-discriminating: (a) and (b) are compared against "
+        "each other and against the other implementation, not against an authored "
+        "expectation. Asserts the pinned run never consults the port (a pin a host could "
+        "override is not a pin), that both runs record which layer they used, and that (c) "
+        "refuses naming BOTH remedies instead of returning the sub-session's error string as "
+        "the step's output."
+    ),
+)
+async def good_provider_layers_are_interchangeable_and_recorded() -> str:
+    from amplifier_recipe_runner.api import RunStatus
+    from amplifier_recipe_runner.execution import PROVIDER_SOURCE_HOST
+    from amplifier_recipe_runner.execution import PROVIDER_SOURCE_NONE
+    from amplifier_recipe_runner.execution import PROVIDER_SOURCE_RECIPE
+    from amplifier_recipe_runner.execution import NoProviderError
+
+    recipe_path = RECIPES / "provider-agnostic.yaml"
+    expect(recipe_path.is_file(), f"missing provider-agnostic recipe {recipe_path}")
+
+    # (a) The host's port supplies it, because the recipe did not.
+    host = _MountableProviderAccess()
+    bridged, bridged_bundle = await _run_with_provider_layer(
+        recipe_path,
+        Path(tempfile.mkdtemp(prefix="recipes-provider-host-")),
+        declared=[],
+        access=host,
+    )
+    expect(
+        bridged.status is RunStatus.SUCCEEDED,
+        f"the host-port run did not succeed: {bridged.status.value} -- {bridged.error!r}",
+    )
+    expect_eq(bridged.provider["provider_source"], PROVIDER_SOURCE_HOST, "bridged provider_source")
+    expect_eq(bridged.provider["provider"], "host-instance", "bridged provider instance")
+    expect_eq(bridged.provider["model"], "stub-model-1", "bridged model")
+    expect_eq(
+        bridged_bundle.providers,
+        [
+            {
+                "module": "provider-stub",
+                "source": "git+https://example.invalid/provider-stub@v1",
+                "config": {"default_model": "stub-model-1"},
+                "id": "host-instance",
+            }
+        ],
+        "the host's provider as mounted into the composed closure",
+    )
+    expect(host.resolved == ["default"], f"the port was consulted {host.resolved} times, expected once")
+
+    # (b) The recipe pins one. The SAME port is offered and must be ignored.
+    pinning_host = _MountableProviderAccess()
+    pinned, pinned_bundle = await _run_with_provider_layer(
+        recipe_path,
+        Path(tempfile.mkdtemp(prefix="recipes-provider-pinned-")),
+        declared=[_PINNED_PROVIDER],
+        access=pinning_host,
+    )
+    expect(
+        pinned.status is RunStatus.SUCCEEDED,
+        f"the pinned run did not succeed: {pinned.status.value} -- {pinned.error!r}",
+    )
+    expect_eq(pinned.provider["provider_source"], PROVIDER_SOURCE_RECIPE, "pinned provider_source")
+    expect(
+        pinning_host.resolved == [],
+        "the host's port was consulted despite a pinned closure -- a pin a host can override is not a pin",
+    )
+    expect_eq(pinned_bundle.providers, [_PINNED_PROVIDER], "the recipe's own providers, unmodified")
+
+    # (c) Neither. The port names a role but says nothing mountable.
+    class _OpaqueAccess:
+        def roles(self) -> tuple[str, ...]:
+            return ("general",)
+
+        def resolve(self, role: str) -> Any:
+            return role
+
+    refused, _ = await _run_with_provider_layer(
+        recipe_path,
+        Path(tempfile.mkdtemp(prefix="recipes-provider-none-")),
+        declared=[],
+        access=_OpaqueAccess(),
+    )
+    expect(refused.status is RunStatus.FAILED, f"a run with no provider reported {refused.status.value}")
+    expect(
+        isinstance(refused.error, NoProviderError),
+        f"expected NoProviderError, got {type(refused.error).__name__}: {refused.error}",
+    )
+    expect_eq(refused.provider["provider_source"], PROVIDER_SOURCE_NONE, "refused provider_source")
+    remedy = f"{refused.error} {getattr(refused.error, 'remedy', '')}"
+    expect("dependencies:" in remedy, "the refusal does not name the recipe-side remedy")
+    expect("provider_access" in remedy, "the refusal does not name the host-port remedy")
+    expect(
+        "verdict" not in refused.context,
+        "the refused agent step still wrote an output -- an error string reported AS the step's result",
+    )
+
+    # The diff: a provider-agnostic recipe's OUTCOME does not depend on which
+    # layer paid for the model, nor on which engine ran it.
+    legacy_context = await _legacy_run(recipe_path, Path(tempfile.mkdtemp(prefix="recipes-provider-legacy-")))
+    seen = {
+        "host-port": _comparable(bridged.context),
+        "recipe-closure": _comparable(pinned.context),
+        "legacy in-session": _comparable(legacy_context),
+    }
+    expected_variables = {"state", "verdict"}
+    for label, values in seen.items():
+        missing = sorted(expected_variables - set(values))
+        expect(not missing, f"{label} produced none of {missing}; the comparison would be vacuous")
+
+    keys = set().union(*(set(values) for values in seen.values()))
+    differing = sorted(
+        key
+        for key in keys
+        if len({_brief(values.get(key, "<absent>"), 200) for values in seen.values()}) > 1
+    )
+    if differing:
+        detail = "; ".join(
+            f"{key}: " + ", ".join(f"{label}={_brief(values.get(key, '<absent>'), 80)}" for label, values in seen.items())
+            for key in differing
+        )
+        raise KitFailure(
+            f"the three runs disagree on {len(differing)} context variable(s): {detail}. "
+            "A provider-agnostic recipe's outcome must not depend on which layer supplied its model."
+        )
+
+    return (
+        f"{len(keys)} recipe-visible variables identical across host-port, recipe-closure and the "
+        f"legacy in-session engine; provider_source recorded as {PROVIDER_SOURCE_HOST} / "
+        f"{PROVIDER_SOURCE_RECIPE} respectively (instance 'host-instance', model 'stub-model-1'); "
+        f"the pinned run never consulted the port; with neither layer the run FAILED with "
+        f"NoProviderError naming both remedies and wrote no step output"
     )
 
 
