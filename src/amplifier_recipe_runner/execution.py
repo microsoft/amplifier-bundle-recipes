@@ -1133,6 +1133,7 @@ async def _execute_program(
         services=services,
         approvals=approvals,
         store=store,
+        owns_state=True,
     )
 
     outcome = await engine.execute(context, resume=resume_state)
@@ -1195,12 +1196,19 @@ def _build_engine(
     approvals: ApprovalLedger,
     store: RunStateStore | None,
     recursion: RecursionState | None = None,
+    owns_state: bool = False,
 ) -> StepEngine:
     """Assemble the step engine over one recipe-owned session.
 
     The engine never resolves an agent name: it hands the reference to
     ``session.invoke``, which resolves it against the frozen plan catalog and
     nothing else (manifest Core 3, Core 4).
+
+    ``owns_state`` is what makes mid-run checkpointing safe with sub-recipes:
+    only the TOP-LEVEL engine may write the run's ``engine-state.json``. A
+    legacy sub-recipe shares the parent's store, so a checkpointing loop inside
+    one would otherwise overwrite the parent's position with the child's -- and
+    a resume would then continue the wrong recipe.
     """
     workspace = Path(services.workspace)
 
@@ -1228,6 +1236,17 @@ def _build_engine(
     def emit(kind: str, data: Mapping[str, Any]) -> None:
         _emit(services.event_sink, kind, session.run_id, data)
 
+    def checkpoint(state: ResumeState) -> None:
+        """Persist a mid-step position, so a killed run resumes mid-loop.
+
+        Without this the only state a run ever wrote was the one the engine
+        returned -- which a `kill -9` never reaches. A `checkpoint_iterations:`
+        loop is exactly the case where that gap costs real work.
+        """
+        if store is None:
+            return
+        store.save(engine_state=state, approvals=approvals, status="running")
+
     return StepEngine(
         program,
         invoke_agent=invoke_agent,
@@ -1241,6 +1260,7 @@ def _build_engine(
         sub_recipe_runner=run_sub_recipe,
         recursion=recursion,
         scratch_dir=(store.scratch_dir if store is not None else None),
+        checkpoint=checkpoint if (owns_state and store is not None) else None,
     )
 
 

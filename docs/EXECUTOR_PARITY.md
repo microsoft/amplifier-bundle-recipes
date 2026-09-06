@@ -27,6 +27,7 @@ this matrix is the evidence it will be decided on.
 | Conditions mean the same thing | `src/amplifier_recipe_runner/expressions.py` is a **verbatim vendored copy** of the legacy evaluator, and `tests/test_expressions_ported.py` runs the legacy engine's own 28 expression tests against it. |
 | Step semantics match end to end | `conformance/kit` fixture `good-full-step-vocabulary-matches-the-legacy-engine`: one full-vocabulary recipe, run on **both** engines, every recipe-visible context variable diffed. |
 | Individual behaviours match | `src/amplifier_recipe_runner/tests/test_engine.py` — scenario-for-scenario ports of the legacy step tests, each class naming the legacy file it mirrors. |
+| Mid-loop resume means the same thing | `conformance/kit` fixture `good-checkpointed-foreach-resumes-mid-loop-on-both-engines`: one `checkpoint_iterations:` foreach, interrupted at item 3 and resumed, on **both** engines — comparing *which items each engine actually re-executed*, not just the final result. |
 
 The kit fixture is **self-discriminating**: it compares the library against the
 other implementation rather than against an authored expectation, so a drift in
@@ -128,7 +129,11 @@ Legend: **=** identical semantics · **Δ** deliberate difference (see below) ·
 | Parallel iterations get a private context copy; results stay **input-ordered** | yes | yes | = |
 | Parallel gathers with `return_exceptions=True` (no orphaned tasks) then aggregates failures | yes | yes | = |
 | Parallel agent loop pre-checks `max_total_steps` for the whole batch | yes | yes | = |
-| `checkpoint_iterations:` mid-loop resume | **not implemented** | yes | Δ3 |
+| `checkpoint_iterations:` mid-loop resume | yes | yes | = |
+| A checkpoint lands at every iteration boundary, and is cleared when the step completes | yes | yes | = |
+| An `on_error: continue` iteration counts as completed (its index-aligned slot is checkpointed) | yes | yes | = |
+| An empty `foreach` list writes no checkpoint at all | yes | yes | = |
+| `checkpoint_iterations:` **with `parallel:`** | supported, per completed item | validator **rejects the combination** | Δ3 |
 
 ### `while_condition` (convergence loops)
 
@@ -235,19 +240,64 @@ the same repo cannot share" — is met either way. Recipes already fall back to
 the system temp dir when it is unset (that is how they behave on an older
 engine), so absence is a supported state rather than a break.
 
-### Δ3 — `checkpoint_iterations:` is accepted but not honoured
+### Δ3 — `checkpoint_iterations:` with `parallel:` is supported here and refused there
 
-*Legacy:* writes a per-iteration checkpoint so a long `foreach` resumes
-mid-loop.
-*Library:* parses the field and ignores it; a resumed run re-runs the whole
-loop step.
+Mid-loop resume itself is now **=**: both engines write a per-iteration
+checkpoint and skip the completed iterations on resume. What still differs is
+one combination.
 
-**Why:** honest incompleteness. Mid-loop resume needs the iteration results
-*and* the context at each iteration boundary persisted per iteration, which is
-a different state shape from the step-level state this lane added. Claiming
-support and silently restarting the loop would be worse than saying so.
-**Consequence to know:** a `foreach` with expensive iterations restarts from
-item 0 on resume in the standalone runner.
+*Legacy:* `Step.validate` **rejects** `checkpoint_iterations` together with
+`parallel` — "parallel is all-or-nothing"
+(`modules/tool-recipes/amplifier_module_tool_recipes/models.py`).
+*Library:* honours both together, checkpointing **per completed item** and
+re-running only the items that never finished.
+
+**Why:** all-or-nothing is a property of the legacy checkpoint's *shape*, not
+of parallelism. Legacy records a `completed_iterations` **prefix count**, and a
+prefix cannot describe a batch that finished out of order — so refusing the
+combination was the correct call for that shape. The library records the
+completed **indices**, which can. Refusing a combination the state shape
+handles correctly would be an invented limit.
+
+**Consequence to know:** a recipe using both runs on the standalone runner and
+is rejected by the in-session validator. Sequential `checkpoint_iterations:`
+behaves identically on both.
+
+#### The state shape
+
+Legacy writes `foreach_progress` into session state; the library writes it into
+the `ResumeState` it already persists at `<run dir>/engine-state.json`
+(Δ7 — the library has no session). Same three facts, one different field:
+
+| Legacy `foreach_progress` | Library `engine_state.foreach_progress` |
+|---|---|
+| `step_id` | `step_id` — same meaning: progress is applied only to the step that recorded it, and only once |
+| `total_items` | `total_items` — a mismatch on resume is reported (`foreach:items-changed`), never silently trusted |
+| `completed_iterations` (prefix count) | `completed_iterations` — kept, and still the contiguous prefix, but **advisory**: `completed_indices` is what resume reads |
+| `collected_results` (list, only when `collect:` is set) | `results` — **index-keyed** (`{"0": ..., "3": ...}`), and written whether or not `collect:` is set |
+| — | `completed_indices` — every finished index; non-contiguous after a parallel loop |
+
+The context at each iteration boundary rides along in the same write: the
+checkpoint is a whole `ResumeState`, so `context`, `outputs` and
+`completed_steps` are captured with it and get the existing oversized-value
+trimming for free.
+
+Two shape decisions worth naming:
+
+* **Index-keyed, not positional.** A parallel loop finishes out of order; a
+  positional list could not say which slot a value belongs in without
+  inventing one. Restored results are slotted back by index, so
+  `collect:` stays input-ordered exactly as an uninterrupted run would leave it.
+* **Results are persisted even without `collect:`.** Legacy omits them there
+  to save bytes, which is safe only because it resumes a contiguous prefix.
+  It costs the same O(N²) write amplification legacy warns about at 10 MB —
+  the library warns at the same threshold, on the event sink
+  (`foreach:checkpoint-large`) rather than the log, and once per step rather
+  than on every iteration past it.
+
+Only the **top-level** engine writes this file. A sub-recipe shares the
+parent's store, so a checkpointing loop inside one would otherwise overwrite
+the parent's position with the child's.
 
 ### Δ4 — `@mention` sub-recipe paths are refused by name
 

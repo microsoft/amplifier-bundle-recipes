@@ -1,0 +1,44 @@
+# A `checkpoint_iterations:` foreach, for running BOTH engines through the
+# same interrupt-and-resume and diffing what each of them re-executed.
+#
+# Two things this file is shaped around:
+#
+# 1. The body writes to disk on purpose, unlike full-vocabulary.yaml. Mid-loop
+#    resume is a claim about work NOT happening, and a cached result is
+#    indistinguishable from a re-run that produced the same string. The only
+#    evidence that separates them is a side effect. `ran_log` is supplied per
+#    engine, so the two runs still cannot see each other's filesystem -- what
+#    is compared is the SEQUENCE of items, never the path.
+#
+# 2. The failure is triggered by a marker FILE, not by a context variable.
+#    Both engines restore their saved context on resume, so a context flag set
+#    at resume time would be discarded and the same item would fail again.
+#    Deleting the marker between attempts is the "with the error removed" half
+#    of the test, and it works identically on both.
+schema_version: 2
+
+# Declared empty, not omitted: no step here invokes an agent, and
+# `recipe-dependency-manifest.v1` Core 1 wants that said rather than inferred.
+dependencies: []
+
+name: checkpointed-foreach
+description: A foreach that records what it ran and fails at one item while a marker file exists.
+version: "1.0.0"
+
+context:
+  items: [a, b, c, d, e]
+  fail_item: c
+
+steps:
+  - id: loop
+    foreach: "{{items}}"
+    as: it
+    type: bash
+    checkpoint_iterations: true
+    collect: seen
+    command: |
+      echo "{{it}}" >> "{{ran_log}}"
+      if [ "{{it}}" = "{{fail_item}}" ] && [ -f "{{fail_marker}}" ]; then
+        exit 7
+      fi
+      echo "v-{{it}}"
