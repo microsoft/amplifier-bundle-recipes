@@ -1,38 +1,56 @@
-// Validates recipe YAML files for correctness, best practices, and semantic consistency.
 digraph validate_recipes {
     rankdir=TB
     fontname="Helvetica"
     fontsize=12
-    label="Recipe Validation Pipeline\nScans recipe files for structural, semantic, and best-practice issues"
+    label="Validate Recipes — Validates Amplifier recipe YAML files in a bundle repository against:"
     labelloc=t
     labeljust=c
     compound=true
     nodesep=0.6
     ranksep=0.7
     bgcolor="white"
-    source_hash="8249d7c0cc93d3bf2db1bbca169e8d628ed32958e944083cd110343eb75429be"
+    source_hash="8cbfa6378b9d14ef46e535c43b0da1860437088ab885283efadddd59c76c771a"
 
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
     start [label="Start", shape=oval, fillcolor="#e0e0e0"]
-    done  [label="Done", shape=oval, fillcolor="#e0e0e0"]
+    done  [label="Done!", shape=oval, fillcolor="#e0e0e0"]
 
-    step_environment_check [label="Check Environment\n\"Are the required tools installed?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import sys from pathlib import Path  results = {"]
-    step_recipe_discovery [label="Discover Recipes\n\"Scan folders for YAML recipe files\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json from pathlib import Path  def _process_yaml_file"]
-    step_structural_validation [label="Validate Structure\n\"Are the YAML files well-formed?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import re from pathlib import Path  _env_check_r"]
-    step_best_practices_check [label="Check Best Practices\n\"Naming, timeouts, error handling?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import re from pathlib import Path  _recipe_disc"]
-    step_semantic_validation [label="Validate Semantics\n\"Do references and variables resolve?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json from fnmatch import fnmatch from pathlib import "]
-    step_quality_classification [label="Classify Quality\n\"Assign a grade to each recipe\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json  _structural_results_raw = r'''{{structural_resu"]
-    cond_step_quick_approval [label="All clean?", shape=diamond, fillcolor="#fff9c4"]
-    step_quick_approval [label="Quick Approval\n\"No issues found — all pass\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json  _quality_classification_raw = r'''{{quality_cla"]
-    cond_step_synthesize_report [label="Issues found?", shape=diamond, fillcolor="#fff9c4"]
-    step_synthesize_report [label="Compile Report\n\"Combine all findings into one summary\"", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
-    step_dot_freshness_check [label="Check Diagram Freshness\n\"Are the flowcharts up to date?\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import re from pathlib import Path  _recipe_disc"]
-    step_dot_regen_structural [label="Rebuild Stale Diagrams\n\"Generate fresh flowchart skeletons\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json, yaml, sys from pathlib import Path raw = r'''{{"]
-    cond_step_dot_regen_enhance [label="Enhance labels?", shape=diamond, fillcolor="#fff9c4"]
-    step_dot_regen_enhance [label="Enhance Labels\n\"Rewrite for clarity\"\n(for each)", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
-    step_dot_regen_write [label="Write and Render\n\"Save DOT files and generate PNGs\"", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json, subprocess, re, sys from pathlib import Path re"]
+    step_environment_check [label="Environment
+Check", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import sys from pathlib import Path  results = {"]
+    step_recipe_discovery [label="Recipe
+Discovery", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json from pathlib import Path  def _process_yaml_file"]
+    step_structural_validation [label="Structural
+Validation", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import re from pathlib import Path  _env_check_r"]
+    step_best_practices_check [label="Best Practices
+Check", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import re from pathlib import Path  # PAYLOAD SP"]
+    step_semantic_validation [label="Semantic
+Validation", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json from fnmatch import fnmatch from pathlib import "]
+    step_quality_classification [label="Quality
+Classification", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json  from pathlib import Path  # PAYLOAD SPILL (see "]
+    cond_step_quick_approval [label="quality_classification.requ...", shape=diamond, fillcolor="#fff9c4"]
+    step_quick_approval [label="Quick
+Approval", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json  from pathlib import Path  # PAYLOAD SPILL (see "]
+    cond_step_synthesize_report [label="quality_classification.requ...", shape=diamond, fillcolor="#fff9c4"]
+    step_synthesize_report [label="Synthesize
+Report", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_dot_freshness_check [label="Dot Freshness
+Check", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json import re from pathlib import Path  # PAYLOAD SP"]
+    step_dot_regen_structural [label="Dot Regen
+Structural", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json, yaml, sys from pathlib import Path  def _emit(p"]
+    step_set_default_enhanced_dots [label="Set Default
+Enhanced Dots", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="echo '[]' "]
+    cond_step_dot_regen_enhance [label="enhance_diagrams != 'false'", shape=diamond, fillcolor="#fff9c4"]
+    step_dot_regen_enhance [label="Dot Regen
+Enhance
+(for each)", shape=box, fillcolor="#c8e6c9", style="filled,rounded", tooltip="foundation:zen-architect"]
+    step_dot_regen_write [label="Dot Regen
+Write", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="'${AMPLIFIER_PYTHON:-python3}' << 'EOF' import json, shutil, subprocess, sys from pathlib import Pat"]
+    cond_step_dot_regen_enhanced_write [label="enhance_diagrams != 'false'", shape=diamond, fillcolor="#fff9c4"]
+    step_dot_regen_enhanced_write [label="Dot Regen
+Enhanced Write
+(for each)", shape=box, fillcolor="#bbdefb", style="filled,rounded", tooltip="set -uo pipefail AMPLIFIER_ENHANCED_FILE='$(mktemp)' export AMPLIFIER_ENHANCED_FILE cat > '$AMPLIFIE"]
 
     start -> step_environment_check
     step_environment_check -> step_recipe_discovery
@@ -48,12 +66,16 @@ digraph validate_recipes {
     cond_step_synthesize_report -> step_synthesize_report [label="quality_classification.re"]
     step_recipe_discovery -> step_dot_freshness_check
     step_dot_freshness_check -> step_dot_regen_structural
-    step_dot_regen_structural -> cond_step_dot_regen_enhance
+    step_dot_regen_structural -> step_set_default_enhanced_dots
+    step_set_default_enhanced_dots -> cond_step_dot_regen_enhance
     cond_step_dot_regen_enhance -> step_dot_regen_enhance [label="enhance_diagrams != 'fals"]
     step_dot_regen_enhance -> step_dot_regen_write
+    step_dot_regen_write -> cond_step_dot_regen_enhanced_write
+    cond_step_dot_regen_enhanced_write -> step_dot_regen_enhanced_write [label="enhance_diagrams != 'fals"]
     cond_step_quick_approval -> step_dot_freshness_check [label="skip", style=dashed]
     cond_step_synthesize_report -> step_dot_freshness_check [label="skip", style=dashed]
     cond_step_dot_regen_enhance -> step_dot_regen_write [label="skip", style=dashed]
+    cond_step_dot_regen_enhanced_write -> done [label="skip", style=dashed]
     step_dot_regen_write -> done
 
     subgraph cluster_legend {

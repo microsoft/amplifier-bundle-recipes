@@ -1,9 +1,51 @@
 # validate-recipes.yaml
-# Recipe Validator v1.0.5
+# Recipe Validator v1.0.6
 # Validates recipe YAML files in a bundle repository for structural correctness,
 # best practices, and semantic consistency.
 #
+# PAYLOAD FILES (why phase outputs are read from disk, not interpolated):
+#   A rendered bash command reaches the OS as ONE argv entry, and the OS caps a
+#   single entry (MAX_ARG_STRLEN = 128 KB on Linux with 4 KB pages). Every phase
+#   output here grows with the number of recipes in the repo, so interpolating
+#   one into a consumer's command text is a bomb with the repo's size as its
+#   fuse: it works at 10 recipes and dies at 50 with
+#   "[Errno 7] Argument list too long" -- at EXEC time, so there is no exit
+#   code, no stderr, and (before the matching engine fix) no `on_error` either.
+#   Every producing step therefore ALSO writes its payload to
+#   <scratch>/validate-recipes-<repo-hash>/<name>.json and advertises the
+#   location as `payload_path`; every consuming BASH step reads that file.
+#   <scratch> is the engine's per-run AMPLIFIER_RECIPE_SCRATCH_DIR when the
+#   engine sets one (isolating concurrent runs over the same repo), and the
+#   system temp dir otherwise -- so this recipe also runs on an older engine.
+#   Prompts still receive the values directly: an LLM prompt is not argv and
+#   has no such cap. Grep "PAYLOAD SPILL" for each site.
+#
 # CHANGELOG:
+# v1.0.6 - Fix live-confirmed defect: Phase 7 died with [Errno 7] on 50 recipes
+#        - dot-regen-write interpolated {{regen_targets}} -- the full DOT source
+#          for EVERY stale recipe -- into its command. Measured on this repo:
+#          regen_targets = 165 KB, rendered command = 167 KB against a 128 KB
+#          per-argument cap, so /bin/bash was never exec'd and the whole run
+#          failed after phases 0-6 had already succeeded.
+#        - Fixed by the payload-file pattern above, applied to EVERY oversized
+#          interpolation found by auditing the file, not just the one that blew
+#          up: recipe_discovery (4 consumers), structural/practice/semantic
+#          results, quality_classification, dot_freshness, regen_targets.
+#          Largest rendered command on this repo drops 167 KB -> ~15 KB.
+#        - Second instance of the same defect, latent on the DEFAULT path:
+#          dot-regen-write also interpolated the collected {{enhanced_dots}},
+#          which with enhancement ON is larger still. Splitting the write into
+#          dot-regen-write (structural, all targets, reads the payload file)
+#          plus dot-regen-enhanced-write (foreach, ONE diagram per command)
+#          bounds it by a single recipe rather than by repo size.
+#        - Enhanced DOTs now correlate to their file by an explicit DOT_PATH
+#          marker rather than by list position, and are rejected unless the
+#          path is a declared regeneration target.
+#        - Missing graphviz is now a per-file report ("PNG not rendered")
+#          instead of an unhandled FileNotFoundError.
+#        - Payload files prefer the engine's per-run AMPLIFIER_RECIPE_SCRATCH_DIR
+#          (added alongside this fix) and fall back to the system temp dir, so
+#          the recipe still runs on an engine that does not set it.
 # v1.0.5 - Stop reporting the schema v2 header as an unknown recipe key
 #        - VALID_RECIPE_KEYS predated schema v2, so every migrated recipe
 #          drew UNKNOWN_RECIPE_KEY for `schema_version` and `dependencies`:
@@ -112,7 +154,7 @@ description: |
   - Deterministic quality classification with explicit PASS thresholds
   - Quick-approval path for clean repos (no unnecessary LLM analysis)
   - Configurable recipes directory and known agent patterns
-version: "1.0.5"
+version: "1.0.6"
 author: "Amplifier Recipes Collection"
 tags: ["recipes", "validation", "quality", "audit", "structure", "best-practices"]
 
@@ -401,8 +443,32 @@ steps:
           return results
 
 
+      def _emit(payload, name):
+          # PAYLOAD SPILL (see header note): write the payload to a file and
+          # advertise its path, so a consumer step reads the file instead of
+          # interpolating the value into its own command text. A rendered
+          # command is a single argv entry and the OS caps it (128 KB on
+          # Linux) -- interpolating a payload that grows with repo size fails
+          # at exec time with "[Errno 7] Argument list too long".
+          import hashlib
+          import os
+          import tempfile
+          from pathlib import Path as _Path
+          # Prefer the engine's per-run scratch dir (isolates concurrent runs
+          # over the same repo); fall back to a repo-keyed temp dir on an
+          # engine that does not set it.
+          _base = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR") or tempfile.gettempdir()
+          _slug = hashlib.sha256(r"""{{repo_path}}""".encode()).hexdigest()[:12]
+          _dir = _Path(_base) / f"validate-recipes-{_slug}"
+          _dir.mkdir(parents=True, exist_ok=True)
+          _path = _dir / f"{name}.json"
+          payload["payload_path"] = str(_path)
+          _path.write_text(json.dumps(payload))
+          print(json.dumps(payload))
+
+
       output = discover_recipes("{{repo_path}}", "{{recipes_dir}}")
-      print(json.dumps(output))
+      _emit(output, "recipe_discovery")
       EOF
     output: "recipe_discovery"
     parse_json: true
@@ -426,7 +492,9 @@ steps:
       from pathlib import Path
 
       _env_check_raw = r"""{{env_check}}"""
-      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      # PAYLOAD SPILL (see header note): read the discovery payload from the
+      # file recipe-discovery wrote, never interpolate it into this command.
+      _recipe_discovery_raw = Path(r"""{{recipe_discovery.payload_path}}""").read_text()
       env_check = json.loads(_env_check_raw)
       recipe_discovery = json.loads(_recipe_discovery_raw)
 
@@ -799,7 +867,28 @@ steps:
           },
       }
 
-      print(json.dumps(output))
+      def _emit(payload, name):
+          # PAYLOAD SPILL (see header note): write the payload to a file and
+          # advertise its path so consumers read the file instead of
+          # interpolating the value into their own command text.
+          import hashlib
+          import os
+          import tempfile
+          from pathlib import Path as _Path
+          # Prefer the engine's per-run scratch dir (isolates concurrent runs
+          # over the same repo); fall back to a repo-keyed temp dir on an
+          # engine that does not set it.
+          _base = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR") or tempfile.gettempdir()
+          _slug = hashlib.sha256(r"""{{repo_path}}""".encode()).hexdigest()[:12]
+          _dir = _Path(_base) / f"validate-recipes-{_slug}"
+          _dir.mkdir(parents=True, exist_ok=True)
+          _path = _dir / f"{name}.json"
+          payload["payload_path"] = str(_path)
+          _path.write_text(json.dumps(payload))
+          print(json.dumps(payload))
+
+
+      _emit(output, "structural_results")
       EOF
     output: "structural_results"
     parse_json: true
@@ -822,7 +911,9 @@ steps:
       import re
       from pathlib import Path
 
-      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      # PAYLOAD SPILL (see header note): read the discovery payload from
+      # the file recipe-discovery wrote, never interpolate it here.
+      _recipe_discovery_raw = Path(r"""{{recipe_discovery.payload_path}}""").read_text()
       recipe_discovery = json.loads(_recipe_discovery_raw)
 
 
@@ -1298,7 +1389,28 @@ steps:
           },
       }
 
-      print(json.dumps(output))
+      def _emit(payload, name):
+          # PAYLOAD SPILL (see header note): write the payload to a file and
+          # advertise its path so consumers read the file instead of
+          # interpolating the value into their own command text.
+          import hashlib
+          import os
+          import tempfile
+          from pathlib import Path as _Path
+          # Prefer the engine's per-run scratch dir (isolates concurrent runs
+          # over the same repo); fall back to a repo-keyed temp dir on an
+          # engine that does not set it.
+          _base = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR") or tempfile.gettempdir()
+          _slug = hashlib.sha256(r"""{{repo_path}}""".encode()).hexdigest()[:12]
+          _dir = _Path(_base) / f"validate-recipes-{_slug}"
+          _dir.mkdir(parents=True, exist_ok=True)
+          _path = _dir / f"{name}.json"
+          payload["payload_path"] = str(_path)
+          _path.write_text(json.dumps(payload))
+          print(json.dumps(payload))
+
+
+      _emit(output, "practice_results")
       EOF
     output: "practice_results"
     parse_json: true
@@ -1321,7 +1433,9 @@ steps:
       from fnmatch import fnmatch
       from pathlib import Path
 
-      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      # PAYLOAD SPILL (see header note): read the discovery payload from
+      # the file recipe-discovery wrote, never interpolate it here.
+      _recipe_discovery_raw = Path(r"""{{recipe_discovery.payload_path}}""").read_text()
       _known_agents_raw = r"""{{known_agents}}"""
       _repo_path_raw = """{{repo_path}}"""
       recipe_discovery = json.loads(_recipe_discovery_raw)
@@ -1731,7 +1845,28 @@ steps:
               "total_warnings": total_warnings,
           },
       }
-      print(json.dumps(output_data))
+      def _emit(payload, name):
+          # PAYLOAD SPILL (see header note): write the payload to a file and
+          # advertise its path so consumers read the file instead of
+          # interpolating the value into their own command text.
+          import hashlib
+          import os
+          import tempfile
+          from pathlib import Path as _Path
+          # Prefer the engine's per-run scratch dir (isolates concurrent runs
+          # over the same repo); fall back to a repo-keyed temp dir on an
+          # engine that does not set it.
+          _base = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR") or tempfile.gettempdir()
+          _slug = hashlib.sha256(r"""{{repo_path}}""".encode()).hexdigest()[:12]
+          _dir = _Path(_base) / f"validate-recipes-{_slug}"
+          _dir.mkdir(parents=True, exist_ok=True)
+          _path = _dir / f"{name}.json"
+          payload["payload_path"] = str(_path)
+          _path.write_text(json.dumps(payload))
+          print(json.dumps(payload))
+
+
+      _emit(output_data, "semantic_results")
       EOF
     output: "semantic_results"
     parse_json: true
@@ -1752,9 +1887,13 @@ steps:
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
 
-      _structural_results_raw = r"""{{structural_results}}"""
-      _practice_results_raw = r"""{{practice_results}}"""
-      _semantic_results_raw = r"""{{semantic_results}}"""
+      from pathlib import Path
+
+      # PAYLOAD SPILL (see header note): each phase wrote its findings to
+      # a file; read those rather than interpolating three growing blobs.
+      _structural_results_raw = Path(r"""{{structural_results.payload_path}}""").read_text()
+      _practice_results_raw = Path(r"""{{practice_results.payload_path}}""").read_text()
+      _semantic_results_raw = Path(r"""{{semantic_results.payload_path}}""").read_text()
 
       structural_results = json.loads(_structural_results_raw)
       practice_results = json.loads(_practice_results_raw)
@@ -1894,7 +2033,28 @@ steps:
           "message": message,
       }
 
-      print(json.dumps(output))
+      def _emit(payload, name):
+          # PAYLOAD SPILL (see header note): write the payload to a file and
+          # advertise its path so consumers read the file instead of
+          # interpolating the value into their own command text.
+          import hashlib
+          import os
+          import tempfile
+          from pathlib import Path as _Path
+          # Prefer the engine's per-run scratch dir (isolates concurrent runs
+          # over the same repo); fall back to a repo-keyed temp dir on an
+          # engine that does not set it.
+          _base = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR") or tempfile.gettempdir()
+          _slug = hashlib.sha256(r"""{{repo_path}}""".encode()).hexdigest()[:12]
+          _dir = _Path(_base) / f"validate-recipes-{_slug}"
+          _dir.mkdir(parents=True, exist_ok=True)
+          _path = _dir / f"{name}.json"
+          payload["payload_path"] = str(_path)
+          _path.write_text(json.dumps(payload))
+          print(json.dumps(payload))
+
+
+      _emit(output, "quality_classification")
       EOF
     output: "quality_classification"
     parse_json: true
@@ -1914,7 +2074,10 @@ steps:
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json
 
-      _quality_classification_raw = r"""{{quality_classification}}"""
+      from pathlib import Path
+
+      # PAYLOAD SPILL (see header note).
+      _quality_classification_raw = Path(r"""{{quality_classification.payload_path}}""").read_text()
       quality_classification = json.loads(_quality_classification_raw)
 
       summary = quality_classification.get("summary", {})
@@ -2054,7 +2217,9 @@ steps:
       import re
       from pathlib import Path
 
-      _recipe_discovery_raw = r"""{{recipe_discovery}}"""
+      # PAYLOAD SPILL (see header note): read the discovery payload from
+      # the file recipe-discovery wrote, never interpolate it here.
+      _recipe_discovery_raw = Path(r"""{{recipe_discovery.payload_path}}""").read_text()
       recipe_discovery = json.loads(_recipe_discovery_raw)
       repo_path = Path(recipe_discovery.get("repo_path", "")).resolve()
 
@@ -2184,7 +2349,28 @@ steps:
                   "detail": str(exc),
               })
 
-      print(json.dumps(results))
+      def _emit(payload, name):
+          # PAYLOAD SPILL (see header note): write the payload to a file and
+          # advertise its path so consumers read the file instead of
+          # interpolating the value into their own command text.
+          import hashlib
+          import os
+          import tempfile
+          from pathlib import Path as _Path
+          # Prefer the engine's per-run scratch dir (isolates concurrent runs
+          # over the same repo); fall back to a repo-keyed temp dir on an
+          # engine that does not set it.
+          _base = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR") or tempfile.gettempdir()
+          _slug = hashlib.sha256(r"""{{repo_path}}""".encode()).hexdigest()[:12]
+          _dir = _Path(_base) / f"validate-recipes-{_slug}"
+          _dir.mkdir(parents=True, exist_ok=True)
+          _path = _dir / f"{name}.json"
+          payload["payload_path"] = str(_path)
+          _path.write_text(json.dumps(payload))
+          print(json.dumps(payload))
+
+
+      _emit(results, "dot_freshness")
       EOF
     output: "dot_freshness"
     parse_json: true
@@ -2207,15 +2393,36 @@ steps:
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
       import json, yaml, sys
       from pathlib import Path
-      raw = r"""{{dot_freshness}}"""
+
+      def _emit(payload, name="regen_targets"):
+          # PAYLOAD SPILL (see header note): this payload carries the full DOT
+          # source for EVERY stale recipe, so it is the one that broke first
+          # ([Errno 7] at ~50 recipes). dot-regen-write reads the FILE.
+          import hashlib
+          import os
+          import tempfile
+          # Prefer the engine's per-run scratch dir (isolates concurrent runs
+          # over the same repo); fall back to a repo-keyed temp dir on an
+          # engine that does not set it.
+          _base = os.environ.get("AMPLIFIER_RECIPE_SCRATCH_DIR") or tempfile.gettempdir()
+          _slug = hashlib.sha256(r"""{{repo_path}}""".encode()).hexdigest()[:12]
+          _dir = Path(_base) / f"validate-recipes-{_slug}"
+          _dir.mkdir(parents=True, exist_ok=True)
+          _path = _dir / f"{name}.json"
+          payload["payload_path"] = str(_path)
+          _path.write_text(json.dumps(payload))
+          print(json.dumps(payload))
+
+      # PAYLOAD SPILL (see header note).
+      raw = Path(r"""{{dot_freshness.payload_path}}""").read_text()
       dot_freshness = json.loads(raw)
       if not dot_freshness.get("dot_available"):
-          print(json.dumps({"skipped": True, "recipes": []})); sys.exit(0)
+          _emit({"skipped": True, "recipes": []}); sys.exit(0)
       to_regen = [f for f in dot_freshness.get("findings", [])
                   if f.get("code") in ("RECIPE_DOT_MISSING", "RECIPE_DOT_STALE")
                   and f.get("recipe_path")]
       if not to_regen:
-          print(json.dumps({"skipped": False, "recipes": []})); sys.exit(0)
+          _emit({"skipped": False, "recipes": []}); sys.exit(0)
       from amplifier_module_tool_recipes.recipe_to_dot import recipe_to_dot
       recipes = []
       for finding in to_regen:
@@ -2223,7 +2430,11 @@ steps:
           if not rp.exists(): continue
           try: d = yaml.safe_load(rp.read_text())
           except Exception: continue
-          structural_dot = recipe_to_dot(str(rp))
+          # One unrenderable recipe must not crash this step: its output is
+          # read by dot-regen-write via `payload_path`, so an empty stdout
+          # here would take the next step's variable reference down with it.
+          try: structural_dot = recipe_to_dot(str(rp))
+          except Exception: continue
           all_steps = list(d.get("steps", []))
           for stage in d.get("stages", []):
               if isinstance(stage, dict): all_steps.extend(stage.get("steps", []))
@@ -2238,7 +2449,7 @@ steps:
           recipes.append({"yaml_path": str(rp), "dot_path": str(rp.with_suffix(".dot")),
               "name": d.get("name", rp.stem), "description": str(d.get("description",""))[:300],
               "structural_dot": structural_dot, "steps_info": steps_info})
-      print(json.dumps({"skipped": False, "recipes": recipes}))
+      _emit({"skipped": False, "recipes": recipes})
       EOF
     output: "regen_targets"
     parse_json: true
@@ -2306,8 +2517,16 @@ steps:
       9. Add a short // comment at the top explaining the recipe in one sentence.
       10. Keep the source_hash="..." graph attribute exactly as-is.
 
-      Return ONLY the complete rewritten DOT. No explanation, no markdown fences,
-      just the raw DOT content starting with // and ending with }.
+      Return the rewritten DOT, and NOTHING else, in exactly this shape:
+
+      DOT_PATH: {{recipe.dot_path}}
+      // <one-sentence comment>
+      digraph ... { ... }
+
+      The first line must be that literal DOT_PATH line, copied exactly — it is
+      how the write step knows which file this DOT belongs to. Then the raw DOT
+      content, starting with // and ending with }. No markdown fences, no
+      explanation before or after.
 
       CRITICAL: Preserve every node ID, every edge, every shape/color/style attribute.
       Only labels and the top comment change.
@@ -2318,59 +2537,139 @@ steps:
     on_error: "continue"
     command: |
       "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
-      import json, subprocess, re, sys
+      import json, shutil, subprocess, sys
       from pathlib import Path
-      regen_targets = json.loads(r"""{{regen_targets}}""")
-      enhanced_raw = r"""{{enhanced_dots}}"""
-      if regen_targets.get("skipped") or not regen_targets.get("recipes"):
-          print(json.dumps({"written": 0, "rendered": 0, "fallback": 0, "errors": []}))
-          sys.exit(0)
-      recipes = regen_targets["recipes"]
-      enhanced_list = []
-      try:
-          enhanced_list = json.loads(enhanced_raw)
-      except (json.JSONDecodeError, TypeError):
-          s = enhanced_raw.strip()
-          if s and s != "null": enhanced_list = [s]
-      results = {"written": 0, "rendered": 0, "fallback": 0, "errors": []}
-      for i, ri in enumerate(recipes):
-          dot_path = Path(ri["dot_path"])
-          png_path = dot_path.with_suffix(".png")
-          dot_content = None
-          if i < len(enhanced_list) and enhanced_list[i]:
-              candidate = str(enhanced_list[i]).strip()
-              candidate = re.sub(r"^```(?:dot)?\s*\n", "", candidate)
-              candidate = re.sub(r"\n```\s*$", "", candidate)
-              if candidate.startswith("//") or candidate.startswith("digraph"):
-                  dot_content = candidate
-              elif "digraph" in candidate:
-                  m = re.search(r"((?://[^\n]*\n)*digraph\s+\w+\s*\{.*\})", candidate, re.DOTALL)
-                  if m: dot_content = m.group(1)
-          if not dot_content:
-              dot_content = ri["structural_dot"]
-              results["fallback"] += 1
-          if "source_hash" not in dot_content:
-              m = re.search(r'source_hash="[a-f0-9]+"', ri["structural_dot"])
-              if m:
-                  dot_content = dot_content.replace('bgcolor="white"',
-                      'bgcolor="white"\n    ' + m.group(0))
+
+      # PAYLOAD SPILL (see header note): read the regen payload from the file
+      # dot-regen-structural wrote. Interpolating it here is exactly what
+      # produced "[Errno 7] Argument list too long" on a 50-recipe repo in
+      # v1.0.5 -- the payload carries the full DOT source for every target,
+      # so the rendered command grew past the OS's 128 KB argv cap.
+      regen_targets = json.loads(Path(r"""{{regen_targets.payload_path}}""").read_text())
+
+      have_dot = bool(shutil.which("dot"))
+      results = {"written": 0, "rendered": 0, "errors": [], "total": 0,
+                 "graphviz_available": have_dot}
+      recipes = regen_targets.get("recipes") or []
+      if regen_targets.get("skipped") or not recipes:
+          print(json.dumps(results)); sys.exit(0)
+      results["total"] = len(recipes)
+
+      for ri in recipes:
+          dot_path = Path(ri["dot_path"]); png_path = dot_path.with_suffix(".png")
           try:
-              dot_path.write_text(dot_content); results["written"] += 1
+              dot_path.write_text(ri["structural_dot"]); results["written"] += 1
           except Exception as exc:
-              results["errors"].append(f"Write failed: {exc}"); continue
+              results["errors"].append(f"Write failed: {dot_path.name}: {exc}")
+              continue
+          if not have_dot:
+              # Per-file report rather than a crash: the DOT is written and
+              # correct, only the PNG could not be rendered.
+              results["errors"].append(
+                  f"PNG not rendered ('dot' not on PATH -- install graphviz): {png_path.name}")
+              continue
           proc = subprocess.run(["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
                                 capture_output=True, text=True, timeout=15)
           if proc.returncode == 0:
               results["rendered"] += 1
           else:
-              dot_path.write_text(ri["structural_dot"]); results["fallback"] += 1
-              proc2 = subprocess.run(["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
-                                     capture_output=True, text=True, timeout=15)
-              if proc2.returncode == 0: results["rendered"] += 1
-              else: results["errors"].append(f"Render failed: {dot_path.name}")
-      results["total"] = len(recipes)
+              results["errors"].append(
+                  f"Render failed: {dot_path.name}: {proc.stderr.strip()[:200]}")
       print(json.dumps(results))
       EOF
     output: "dot_regen"
     parse_json: true
-    timeout: 120
+    timeout: 300
+
+  # Applies the LLM-enhanced labels ON TOP of the structural DOTs written
+  # above -- one recipe per iteration, so the command carries ONE diagram
+  # (a few KB) instead of all of them. Interpolating the whole collected
+  # `enhanced_dots` list was the second instance of the ARG_MAX defect: with
+  # enhancement on it is even larger than regen_targets.
+  #
+  # Correlation is by the DOT_PATH marker the enhance prompt requires, not by
+  # list position, and the target must appear in the regen payload -- a model
+  # cannot talk this step into writing to an arbitrary path.
+  - id: "dot-regen-enhanced-write"
+    type: "bash"
+    condition: "{{enhance_diagrams}} != 'false'"
+    depends_on: ["dot-regen-write"]
+    foreach: "{{enhanced_dots}}"
+    as: "enhanced"
+    collect: "dot_regen_enhanced"
+    on_error: "continue"
+    timeout: 60
+    command: |
+      set -uo pipefail
+      AMPLIFIER_ENHANCED_FILE="$(mktemp)"
+      export AMPLIFIER_ENHANCED_FILE
+      cat > "$AMPLIFIER_ENHANCED_FILE" <<'AMPLIFIER_ENHANCED_DOT_EOF'
+      {{enhanced}}
+      AMPLIFIER_ENHANCED_DOT_EOF
+      "${AMPLIFIER_PYTHON:-python3}" << 'EOF'
+      import json, os, re, shutil, subprocess
+      from pathlib import Path
+
+      raw = Path(os.environ["AMPLIFIER_ENHANCED_FILE"]).read_text().strip()
+      # PAYLOAD SPILL (see header note): the allowed targets come from the file.
+      regen_targets = json.loads(Path(r"""{{regen_targets.payload_path}}""").read_text())
+      by_path = {r["dot_path"]: r for r in (regen_targets.get("recipes") or [])}
+      result = {"dot_path": None, "applied": False, "rendered": False, "error": None}
+
+      m = re.search(r"^\s*DOT_PATH:\s*(\S+)\s*$", raw, re.MULTILINE)
+      if not m:
+          result["error"] = "no DOT_PATH marker in enhanced output -- structural DOT kept"
+          print(json.dumps(result)); raise SystemExit(0)
+      dot_path_str = m.group(1)
+      result["dot_path"] = dot_path_str
+      target = by_path.get(dot_path_str)
+      if target is None:
+          result["error"] = f"DOT_PATH {dot_path_str} is not a regeneration target -- ignored"
+          print(json.dumps(result)); raise SystemExit(0)
+
+      candidate = raw[m.end():].strip()
+      candidate = re.sub(r"^```(?:dot)?\s*\n", "", candidate)
+      candidate = re.sub(r"\n```\s*$", "", candidate)
+      dot_content = None
+      if candidate.startswith("//") or candidate.startswith("digraph"):
+          dot_content = candidate
+      elif "digraph" in candidate:
+          m2 = re.search(r"((?://[^\n]*\n)*digraph\s+\w+\s*\{.*\})", candidate, re.DOTALL)
+          if m2: dot_content = m2.group(1)
+      if not dot_content:
+          result["error"] = "enhanced output is not DOT -- structural DOT kept"
+          print(json.dumps(result)); raise SystemExit(0)
+
+      if "source_hash" not in dot_content:
+          m3 = re.search(r'source_hash="[a-f0-9]+"', target["structural_dot"])
+          if m3:
+              dot_content = dot_content.replace('bgcolor="white"',
+                  'bgcolor="white"\n    ' + m3.group(0))
+
+      dot_path = Path(dot_path_str); png_path = dot_path.with_suffix(".png")
+      try:
+          dot_path.write_text(dot_content); result["applied"] = True
+      except Exception as exc:
+          result["error"] = f"Write failed: {exc}"
+          print(json.dumps(result)); raise SystemExit(0)
+
+      if not shutil.which("dot"):
+          result["error"] = "PNG not rendered ('dot' not on PATH -- install graphviz)"
+          print(json.dumps(result)); raise SystemExit(0)
+      proc = subprocess.run(["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
+                            capture_output=True, text=True, timeout=15)
+      if proc.returncode == 0:
+          result["rendered"] = True
+      else:
+          # The enhanced DOT does not render: put the structural one back so
+          # the repo is never left holding a broken diagram.
+          dot_path.write_text(target["structural_dot"])
+          result["applied"] = False
+          result["error"] = f"enhanced DOT failed to render, structural restored: {proc.stderr.strip()[:200]}"
+          subprocess.run(["dot", "-Tpng", str(dot_path), "-o", str(png_path)],
+                         capture_output=True, text=True, timeout=15)
+      print(json.dumps(result))
+      EOF
+      _rc=$?
+      rm -f "$AMPLIFIER_ENHANCED_FILE"
+      exit $_rc

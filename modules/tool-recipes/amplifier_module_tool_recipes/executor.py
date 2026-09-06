@@ -250,6 +250,20 @@ _CHECKPOINT_TRIM_THRESHOLD_BYTES: int = 100_000
 # that should be revisited (e.g. use 'output' instead of 'collect').
 _FOREACH_PROGRESS_WARN_BYTES: int = 10_000_000  # 10 MB
 
+# A rendered bash command is passed to the OS as a single argv entry
+# (`bash -c <command>`).  Linux caps one argv entry at MAX_ARG_STRLEN =
+# 32 * PAGE_SIZE, i.e. 128 KB on the usual 4 KB page; exceeding it fails at
+# *exec* time with OSError [Errno 7] Argument list too long -- before the
+# command runs, so there is no exit code and no stderr to read.  Warn well
+# under that ceiling so a recipe that is growing toward the cliff (it usually
+# scales with repo size) is told before it falls off it.
+_COMMAND_SIZE_WARN_BYTES: int = 100_000  # 100 KB
+
+# Synthetic exit code recorded for a command that could not be executed at all.
+# 126 is the POSIX shell convention for "command found but not executable",
+# which is the closest standard meaning for an exec-time failure.
+_EXEC_FAILURE_EXIT_CODE: int = 126
+
 # Deduplication set for depends_on advisory warnings.
 # Keyed by recipe_name so each recipe emits at most one warning per process
 # lifetime regardless of how many steps declare depends_on or how many times
@@ -305,6 +319,28 @@ class SkipRemainingError(Exception):
     """Raised when step fails with on_error='skip_remaining'."""
 
     pass
+
+
+def _oversized_command_remedy(step_id: str, size_bytes: int) -> str:
+    """Explain an oversized rendered command and name the fix.
+
+    A command grows past the OS limit when a large context variable is
+    interpolated into the command *text* itself.  The remedy is always the
+    same: have the producing step write the payload to a file and pass only
+    the path.
+    """
+    return (
+        f"Step '{step_id}': rendered command is {size_bytes} bytes "
+        f"({size_bytes / 1024:.0f} KB), at or beyond the "
+        f"{_COMMAND_SIZE_WARN_BYTES / 1024:.0f} KB advisory limit. The OS caps a "
+        "single command string (typically 128 KB on Linux: MAX_ARG_STRLEN) and "
+        "rejects anything larger at exec time with "
+        "'[Errno 7] Argument list too long' -- before the command runs. This "
+        "usually means a large context variable is interpolated into the "
+        "command text. Fix: have the producing step write the payload to a "
+        "file (e.g. under tempfile.gettempdir()) and print only its path, then "
+        "read that file here instead of interpolating the value."
+    )
 
 
 class ApprovalGatePausedError(Exception):
@@ -1462,7 +1498,10 @@ class RecipeExecutor:
                     elif step.type == "bash":
                         # Bash steps don't count against agent recursion limits
                         bash_result = await self._execute_bash_step(
-                            step, context, project_path
+                            step,
+                            context,
+                            project_path,
+                            session_id=cancellation_session_id,
                         )
                         # Store exit code if requested
                         if step.output_exit_code:
@@ -1791,7 +1830,7 @@ class RecipeExecutor:
                         elif step.type == "bash":
                             # Bash steps don't count against agent recursion limits
                             bash_result = await self._execute_bash_step(
-                                step, context, project_path
+                                step, context, project_path, session_id=session_id
                             )
                             # Store exit code if requested
                             if step.output_exit_code:
@@ -2956,7 +2995,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 parent_session_id=session_id,
             )
         elif step.type == "bash":
-            bash_result = await self._execute_bash_step(step, context, project_path)
+            bash_result = await self._execute_bash_step(
+                step, context, project_path, session_id=session_id
+            )
             if step.output_exit_code:
                 context[step.output_exit_code] = str(bash_result.exit_code)
             return bash_result.stdout
@@ -3136,7 +3177,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 elif step.type == "bash":
                     # Bash steps don't count against agent recursion limits
                     bash_result = await self._execute_bash_step(
-                        step, iter_context, project_path
+                        step, iter_context, project_path, session_id=session_id
                     )
                     # Store exit code if requested (in iteration context)
                     if step.output_exit_code:
@@ -3800,11 +3841,40 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             )
         return resolved
 
+    def _bash_scratch_dir(
+        self, session_id: str | None, project_path: Path
+    ) -> Path | None:
+        """Per-run scratch directory a bash step can spill payloads into.
+
+        A recipe that passes a payload between steps by interpolating it into
+        the next step's command hits the OS argv cap as soon as the payload
+        grows (see ``_COMMAND_SIZE_WARN_BYTES``). The fix is a file -- and a
+        file needs somewhere to live that is scoped to THIS run, so two
+        concurrent runs of the same recipe over the same repo cannot read each
+        other's payloads. That is the session directory.
+
+        Returns None (caller falls back to the system temp dir) when there is
+        no session to scope to, or the directory cannot be created.
+        """
+        if not session_id:
+            return None
+        try:
+            scratch = (
+                self.session_manager.get_session_dir(session_id, project_path)
+                / "scratch"
+            )
+            scratch.mkdir(parents=True, exist_ok=True)
+            return scratch
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("No bash scratch dir for session %s: %s", session_id, exc)
+            return None
+
     async def _execute_bash_step(
         self,
         step: Step,
         context: dict[str, Any],
         project_path: Path,
+        session_id: str | None = None,
     ) -> BashResult:
         """
         Execute a bash step by running shell command directly.
@@ -3828,6 +3898,14 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Substitute variables in command
         command = self.substitute_variables(step.command, context)
 
+        # A command that has grown past the advisory ceiling is one repo-size
+        # bump away from failing at exec time with E2BIG. Say so now, while the
+        # run still works, and name the fix.
+        command_size = len(command.encode("utf-8", errors="replace"))
+        oversized_command = command_size > _COMMAND_SIZE_WARN_BYTES
+        if oversized_command:
+            logger.warning("%s", _oversized_command_remedy(step.id, command_size))
+
         # Determine working directory
         if step.cwd:
             cwd = Path(self.substitute_variables(step.cwd, context))
@@ -3847,6 +3925,12 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Python (which has recipe modules like recipe_to_dot installed), rather
         # than the bare `python3` that resolves to the system Python.
         env["AMPLIFIER_PYTHON"] = _resolve_amplifier_python()
+        # Somewhere run-scoped for a step to spill a payload that is too big to
+        # pass through the next step's command line. Absent (older engine, no
+        # session) a recipe should fall back to the system temp dir.
+        scratch_dir = self._bash_scratch_dir(session_id, project_path)
+        if scratch_dir is not None:
+            env["AMPLIFIER_RECIPE_SCRATCH_DIR"] = str(scratch_dir)
         if step.env:
             for key, value in step.env.items():
                 # Substitute variables in env values
@@ -3863,15 +3947,45 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # often dash on Ubuntu, which lacks these. See _resolve_bash() for how
         # this is resolved per-platform (and why WSL is rejected on Windows).
         try:
-            process = await asyncio.create_subprocess_exec(
-                _resolve_bash(),
-                "-c",
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(cwd),
-                env=env,
-            )
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    _resolve_bash(),
+                    "-c",
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(cwd),
+                    env=env,
+                )
+            except OSError as exec_error:
+                # The command never started: the OS refused the exec itself
+                # (E2BIG from an oversized command, ENOENT, EACCES, EMFILE...).
+                # There is no exit code to inspect, but this is still THIS
+                # STEP failing, so it honours on_error exactly like a non-zero
+                # exit -- otherwise `on_error: continue` silently does not
+                # apply to the one failure mode a recipe author cannot see
+                # coming from the command's own text.
+                error_msg = (
+                    f"Step '{step.id}': failed to execute command: {exec_error}"
+                )
+                if oversized_command:
+                    error_msg += "\n" + _oversized_command_remedy(
+                        step.id, command_size
+                    )
+
+                if step.on_error == "fail":
+                    raise ValueError(error_msg) from exec_error
+                elif step.on_error == "skip_remaining":
+                    raise SkipRemainingError(error_msg) from exec_error
+
+                # "continue": record the failure as this step's result and let
+                # the run proceed, same as a non-zero exit under continue.
+                logger.warning("%s (on_error=continue, absorbed)", error_msg)
+                return BashResult(
+                    stdout="",
+                    stderr=error_msg,
+                    exit_code=_EXEC_FAILURE_EXIT_CODE,
+                )
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
