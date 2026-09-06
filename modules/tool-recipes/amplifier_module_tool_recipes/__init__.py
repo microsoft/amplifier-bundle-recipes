@@ -46,9 +46,12 @@ from .models import Recipe
 from .runner_adapter import LEGACY_EXECUTION_MODE
 from .runner_adapter import V2_EXECUTION_MODE
 from .runner_adapter import RecipeRunnerUnavailableError
+from .runner_adapter import V2ProvenanceMismatchError
 from .runner_adapter import V2ResumeUnavailableError
+from .runner_adapter import attach_provenance_warning
 from .runner_adapter import check_adapter_config
 from .runner_adapter import check_legacy_agents_available
+from .runner_adapter import check_recorded_provenance
 from .runner_adapter import declared_schema_version
 from .runner_adapter import is_v2_recipe
 from .runner_adapter import label_execution_mode
@@ -1202,6 +1205,13 @@ Example:
         every outcome below is a closed-world engine call, a library call, or
         a refusal.
 
+        Before any of them hands off, the closure the run recorded is checked
+        against a fresh re-resolution (:func:`runner_adapter.check_recorded_provenance`,
+        ``recipe-dependency-manifest.v1`` Core 8): an edited recipe or a moved
+        dependency is a typed refusal, not a resume into different steps. A
+        session recorded before that record existed warns and proceeds rather
+        than being stranded.
+
         What the recorded run reported decides which:
 
         * it finished -- nothing to resume, and saying so is the right answer,
@@ -1286,18 +1296,61 @@ Example:
                 recorded_mode,
             )
 
+        resume_path = self._v2_resume_path(record, original_recipe_path, recipe_file)
+
+        # What the remaining steps will resolve must be what the completed ones
+        # did (`recipe-dependency-manifest.v1` Core 8). The library's `resume`
+        # is explicit that it does NOT check this and that the caller must,
+        # before handing over -- and until now no adapter path did, so a run
+        # recorded against one closure could be continued against another with
+        # nothing said (recipes-8hr). Checked here, ahead of BOTH routes below,
+        # because both hand off to an engine that would otherwise just run.
+        try:
+            provenance_warning = await check_recorded_provenance(
+                self.coordinator,
+                self.session_manager,
+                resume_path,
+                project_path,
+                state.get(V2_PROVENANCE_STATE_KEY),
+                session_id=session_id,
+                run_id=run_id,
+            )
+        except V2ProvenanceMismatchError as exc:
+            return label_execution_mode(
+                ToolResult(
+                    success=False,
+                    error={
+                        "message": exc.message,
+                        "type": type(exc).__name__,
+                        "remedy": exc.remedy,
+                        "diverged": dict(exc.diverged),
+                        "completed_steps": list(completed_steps or []),
+                        "step_ids": list(step_ids),
+                    },
+                ),
+                recorded_mode,
+            )
+        if provenance_warning:
+            # Recorded by a build older than the provenance record, unreadable,
+            # or unresolvable now: resumed rather than stranded, and never
+            # silently -- the note rides beside every result this call returns.
+            logger.warning("%s", provenance_warning)
+
         # The engine that ran it resumes it. A run executed on the closed-world
         # legacy step engine handled `foreach`, `type: recipe`, `bash` and
         # staged approval gates; handing its remainder to the library's
         # sequential executor made it die on the first such step it met --
         # a step the very same run had already executed past (recipes-5c6).
         if record.get("execution_mode") == V2_LEGACY_ENGINE_EXECUTION_MODE:
-            return await self._resume_v2_on_legacy_engine(
-                session_id,
-                project_path,
-                recipe_file,
-                record,
-                original_recipe_path,
+            return attach_provenance_warning(
+                await self._resume_v2_on_legacy_engine(
+                    session_id,
+                    project_path,
+                    recipe_file,
+                    record,
+                    original_recipe_path,
+                ),
+                provenance_warning,
             )
 
         if completed_steps is None:
@@ -1317,8 +1370,6 @@ Example:
                 ),
                 V2_EXECUTION_MODE,
             )
-
-        resume_path = self._v2_resume_path(record, original_recipe_path, recipe_file)
 
         try:
             result = await resume_v2_recipe(
@@ -1370,15 +1421,18 @@ Example:
         )
 
         runner = load_runner()
-        return label_execution_mode(
-            self._v2_tool_result(
-                result,
-                runner,
-                resume_path,
-                recipe_display_name(recipe_file),
-                session_id,
+        return attach_provenance_warning(
+            label_execution_mode(
+                self._v2_tool_result(
+                    result,
+                    runner,
+                    resume_path,
+                    recipe_display_name(recipe_file),
+                    session_id,
+                ),
+                V2_EXECUTION_MODE,
             ),
-            V2_EXECUTION_MODE,
+            provenance_warning,
         )
 
     @staticmethod

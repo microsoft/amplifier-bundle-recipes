@@ -3275,6 +3275,23 @@ Every run records (`manifest.v1` Core 7):
 never silently re-resolves (`manifest.v1` Core 8) — a locked resume that sees a
 different resolved revision is a failure (`manifest.v1` Conformance/BAD).
 
+This holds for the `recipes` tool's own `resume` too, on both of its engines.
+Before it hands the run to either, it re-plans the recipe and compares that
+plan against the record above; a difference is refused as
+`V2ProvenanceMismatchError`, naming what moved (the recipe digest, a
+dependency's resolved revision, or the source supplying an agent), both
+values, and the remedy — re-run with `execute`, or restore what was recorded.
+Nothing runs. Continuing would execute the run's *remaining* steps against a
+different closure than its *completed* ones, and report success either way.
+
+Two deliberate non-refusals, both audible rather than silent: a session
+recorded before this record existed, and a closure that cannot be re-resolved
+at this moment, are **resumed with a warning** (logged, and readable on the
+result as `provenance_warning`) rather than stranded. A failed re-plan is not
+reported as drift — the resume itself re-plans and reports that failure as
+itself. See
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#error-v2provenancemismatcherror-on-resume).
+
 #### The per-agent provenance record
 
 A declared bundle composes its own `includes`, so **the dependency you declared
