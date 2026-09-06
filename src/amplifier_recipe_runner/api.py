@@ -166,6 +166,18 @@ class RunRequest:
     run_id: str | None = None
     """Caller-chosen run identifier; generated when omitted."""
 
+    state_dir: str | Path | None = None
+    """Where this run may persist resumable state, if the host wants it kept.
+
+    Not a host-import channel: it names a *directory this run owns*, and
+    nothing read from it can widen the recipe's agent surface (manifest Core
+    4 constrains agents, not filesystem paths). It exists because pause ->
+    approve -> resume spans separate processes: the run that pauses at an
+    approval gate must leave its context and position somewhere the run that
+    resumes can read. ``None`` means "keep nothing", which is why a run that
+    never pauses needs no directory at all.
+    """
+
     legacy_mode: bool = False
     """Labeled caller-bound legacy mode (manifest Core 10).
 

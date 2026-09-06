@@ -62,6 +62,9 @@ Code   Meaning
        Reserved: no path raises it today (mid-run resume, its only former
        user, is now wired to the library's ``resume``). It stays because the
        honest answer to a future missing capability must not be exit 1.
+7      Paused at an approval gate. Neither success nor failure: the run is
+       waiting for a human, and a script must be able to tell that apart
+       from a step that broke.
 =====  ======================================================================
 """
 
@@ -91,6 +94,7 @@ from .api import ValidationReport
 from .errors import LegacyRecipeError
 from .errors import PreflightError
 from .errors import ProvenanceMismatchError
+from .execution import RunStateStore
 from .execution import plan as plan_recipe
 from .execution import resume as resume_recipe
 from .execution import run as run_recipe
@@ -114,6 +118,7 @@ __all__ = [
     "EXIT_FAILURE",
     "EXIT_LEGACY_RECIPE",
     "EXIT_OK",
+    "EXIT_PAUSED",
     "EXIT_PREFLIGHT",
     "EXIT_PROVENANCE_MISMATCH",
     "EXIT_UNSUPPORTED",
@@ -132,6 +137,7 @@ EXIT_PREFLIGHT: Final[int] = 3
 EXIT_LEGACY_RECIPE: Final[int] = 4
 EXIT_PROVENANCE_MISMATCH: Final[int] = 5
 EXIT_UNSUPPORTED: Final[int] = 6
+EXIT_PAUSED: Final[int] = 7
 
 #: Config filenames searched under the workspace, in order.
 CONFIG_FILENAMES: Final[tuple[str, ...]] = (
@@ -383,6 +389,7 @@ def _request(
     services: HostServices | None = None,
     context: Mapping[str, Any] | None = None,
     run_id: str | None = None,
+    state_dir: Path | None = None,
 ) -> RunRequest:
     return RunRequest(
         recipe=recipe,
@@ -391,6 +398,7 @@ def _request(
         trust_policy=trust,
         lock_mode=lock_mode,
         run_id=run_id,
+        state_dir=state_dir,
         # Never True here: labeled caller-bound legacy mode belongs to the
         # embedded Amplifier tool adapter, not to the standalone runner
         # (manifest Core 10).
@@ -827,6 +835,7 @@ def run_command(
     as_json = _as_json(json_output, runtime)
     mode = _lock_mode(lock_mode, runtime.config)
     identifier = run_id or f"run-{uuid.uuid4().hex[:12]}"
+    run_dir = _state_dir(state_dir, runtime) / identifier
     request = _request(
         recipe,
         runtime=runtime,
@@ -835,9 +844,11 @@ def run_command(
         services=_services(runtime),
         context=_context(context_pairs),
         run_id=identifier,
+        # The run owns this directory: it is where an approval gate leaves the
+        # context and position a later `resume` reads back.
+        state_dir=run_dir,
     )
     resolver = _resolver(offline, runtime.config)
-    run_dir = _state_dir(state_dir, runtime) / identifier
 
     try:
         # Preflight first, so lock verification and provenance recording both
@@ -886,6 +897,9 @@ def run_command(
     _record_outcome(run_dir, result)
     if result.error is not None:
         raise RunnerFailure(result.error)
+    if result.status is RunStatus.PAUSED:
+        _note(_approval_hint(result, run_dir), as_json=as_json)
+        ctx.exit(EXIT_PAUSED)
     if result.status is not RunStatus.SUCCEEDED:
         ctx.exit(EXIT_FAILURE)
 
@@ -922,6 +936,7 @@ def _record_outcome(run_dir: Path, result: RunResult) -> None:
     context = dict(_run_context(run_dir))
     context["status"] = result.status.value
     context["completed_steps"] = list(result.completed_steps)
+    context["pending_approval"] = result.pending_approval
     _write_run_context(run_dir, context)
 
 
@@ -1006,6 +1021,7 @@ def resume_command(
         trust=_trust_policy(trust or recorded_context.get("trust"), runtime.config),
         services=_services(runtime),
         run_id=run_id,
+        state_dir=run_dir,
     )
     resolver = _resolver(offline if offline is not None else recorded_context.get("offline"), runtime.config)
 
@@ -1052,6 +1068,9 @@ def resume_command(
     _record_outcome(run_dir, result)
     if result.error is not None:
         raise RunnerFailure(result.error)
+    if result.status is RunStatus.PAUSED:
+        click.echo(_approval_hint(result, run_dir))
+        ctx.exit(EXIT_PAUSED)
     if result.status is not RunStatus.SUCCEEDED:
         ctx.exit(EXIT_FAILURE)
 
@@ -1062,6 +1081,11 @@ def _run_is_finished(context: Mapping[str, Any], recorded_steps: tuple[str, ...]
     Reads the status the library reported, falling back to step coverage when
     a run was recorded but never executed (a preflight-only ``--dry-run``).
     """
+    if context.get("status") == RunStatus.PAUSED.value:
+        # A gate after the last stage leaves every step completed and the run
+        # still unfinished. Step coverage cannot see that; the recorded status
+        # can, so it is read first.
+        return False
     if context.get("status") == RunStatus.SUCCEEDED.value:
         return True
     return bool(recorded_steps) and set(completed) >= set(recorded_steps)
@@ -1081,6 +1105,77 @@ def _run_context(run_dir: Path) -> Mapping[str, Any]:
 def _recorded_recipe(run_dir: Path) -> Path | None:
     recorded = _run_context(run_dir).get("recipe")
     return Path(str(recorded)) if recorded else None
+
+
+# --------------------------------------------------------------------------
+# approve / deny
+# --------------------------------------------------------------------------
+
+
+def _approval_hint(result: RunResult, run_dir: Path) -> str:
+    stage = result.pending_approval or "?"
+    return (
+        f"paused: stage {stage!r} is waiting for a decision.\n"
+        f"  approve: recipe-runner approve {result.run_id} --stage {stage}\n"
+        f"  then:    recipe-runner resume {result.run_id}"
+    )
+
+
+def _decision_command(name: str, approved: bool, summary: str) -> Any:
+    """Build ``approve``/``deny``. One body, so they cannot drift apart."""
+
+    @cli.command(name, short_help=summary)
+    @click.argument("run_id")
+    @click.option("--stage", "stage", default=None, help="Stage to decide; defaults to the one the run paused at.")
+    @click.option("--message", "message", default=None, help="Note passed to the recipe as {{_approval_message}}.")
+    @click.option(
+        "--state-dir",
+        type=click.Path(file_okay=False, path_type=Path),
+        default=None,
+        help="Where run state was recorded.",
+    )
+    @click.pass_context
+    def command(
+        ctx: click.Context,
+        run_id: str,
+        stage: str | None,
+        message: str | None,
+        state_dir: Path | None,
+    ) -> None:
+        runtime: Runtime = ctx.obj
+        run_dir = _state_dir(state_dir, runtime) / run_id
+        store = RunStateStore(run_dir)
+        recorded = store.load()
+        if recorded is None:
+            raise click.UsageError(
+                f"no paused run state for {run_id!r} at {store.path}. "
+                "Pass --state-dir if the run recorded its state elsewhere."
+            )
+
+        target = stage or recorded.get("pending_approval")
+        if not target:
+            raise click.UsageError(
+                f"run {run_id!r} is not paused at an approval gate, and no --stage was named. "
+                "Naming a stage that is not pending would record a verdict for work that never asked for one."
+            )
+
+        # The verdict is written where the *resuming process* reads it. This
+        # command never continues the run itself: approving and running are
+        # different acts, and collapsing them would make an approval
+        # indistinguishable from a re-run.
+        store.record_decision(str(target), approved=approved, message=message)
+        click.echo(f"run_id: {run_id}")
+        click.echo(f"stage: {target}")
+        click.echo(f"decision: {'approved' if approved else 'denied'}")
+        if message:
+            click.echo(f"message: {message}")
+        click.echo(f"next: recipe-runner resume {run_id}")
+
+    return command
+
+
+approve_command = _decision_command("approve", True, "Approve a paused run's stage.")
+deny_command = _decision_command("deny", False, "Deny a paused run's stage.")
 
 
 # --------------------------------------------------------------------------
