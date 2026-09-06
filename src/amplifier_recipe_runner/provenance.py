@@ -113,7 +113,12 @@ class RunManifest:
 
     @property
     def agent_dependency_map(self) -> Mapping[str, str]:
-        """Flat ``agent -> supplying dependency URI`` view of :attr:`agents`."""
+        """Flat ``agent -> defining source tree URI`` view of :attr:`agents`.
+
+        The *defining* tree, not merely the declared dependency that reached
+        it -- see :attr:`~amplifier_recipe_runner.api.AgentProvenance.supplied_by`.
+        ``declared_by`` is the declared-dependency view.
+        """
         return {name: prov.supplied_by for name, prov in self.agents.items()}
 
     def dependency_for(self, uri: str) -> ResolvedDependency | None:
@@ -351,12 +356,13 @@ def _agent_to_mapping(prov: AgentProvenance) -> dict[str, Any]:
     return {
         "agent": prov.agent,
         "supplied_by": prov.supplied_by,
+        "declared_by": prov.declared_by,
         "dependency_digest": prov.dependency_digest,
         "alias": prov.alias,
         "local_path": prov.local_path,
         "resolved_revision": prov.resolved_revision,
         "defined_in": prov.defined_in,
-        "via_includes": prov.via_includes,
+        "via_includes": list(prov.via_includes),
     }
 
 
@@ -366,13 +372,34 @@ def _agent_from_mapping(data: Any) -> AgentProvenance:
     return AgentProvenance(
         agent=str(data.get("agent") or ""),
         supplied_by=str(data.get("supplied_by") or ""),
+        # Absent stays absent. A manifest written before this field existed
+        # did put the declared dependency in `supplied_by`, but filling it in
+        # here would make read(write(x)) != x -- and a record that never
+        # distinguished the two should not start claiming that it did.
+        declared_by=_opt_str(data.get("declared_by")),
         dependency_digest=_opt_str(data.get("dependency_digest")),
         alias=_opt_str(data.get("alias")),
         local_path=_opt_str(data.get("local_path")),
         resolved_revision=_opt_str(data.get("resolved_revision")),
         defined_in=_opt_str(data.get("defined_in")),
-        via_includes=bool(data.get("via_includes", False)),
+        via_includes=_include_chain(data.get("via_includes")),
     )
+
+
+def _include_chain(value: Any) -> tuple[str, ...]:
+    """Read an include path, tolerating the boolean form that preceded it.
+
+    An older manifest recorded only *whether* an agent arrived through
+    includes. ``True`` there says a chain existed without naming it, which is
+    not a chain -- it reads back as empty rather than as a fabricated hop.
+    """
+    if isinstance(value, bool) or value is None:
+        return ()
+    if isinstance(value, (str, bytes)):
+        return ()
+    if isinstance(value, Sequence):
+        return tuple(str(item) for item in value)
+    return ()
 
 
 def _policy_to_mapping(policy: EffectivePolicy | None) -> dict[str, Any] | None:
