@@ -56,6 +56,9 @@ from .runner_adapter import load_runner
 from .runner_adapter import recipe_display_name
 from .runner_adapter import resume_v2_recipe
 from .closed_world import agent_provenance_record
+from .engine_provenance import engine_provenance
+from .engine_provenance import label_engine_provenance
+from .engine_provenance import warn_if_shadowed
 from .runner_adapter import provider_roles_label
 from .runner_adapter import run_v2_recipe
 from .runner_adapter import runner_provenance
@@ -77,6 +80,20 @@ logger = logging.getLogger(__name__)
 # Prevents oversized tool results that break session resumption
 # ~10KB is roughly 2.5k tokens, leaving room for other content
 MAX_OUTPUT_SIZE_BYTES = 10_000
+
+# Operations whose payload also carries the engine record *inside* it.
+# Deliberately only read-only operations: the legacy-compat baselines pin the
+# serialized payload of `execute`/`resume`/`approve` byte-for-byte (legacy
+# identity, manifest.v1 Core 10), so those carry the record beside the payload
+# instead. See RecipesTool.execute.
+ENGINE_IN_OUTPUT = frozenset({"engine_info", "list", "validate"})
+
+# The import-time guard (recipes-669/recipes-ecd): if this file was imported
+# from a bundle cache that is a symlink, or an editable install on this
+# interpreter points somewhere else, say so loudly -- and only say so. A
+# diagnostic that could fail a run would be a worse bug than the silence it
+# replaces.
+warn_if_shadowed()
 
 
 def _truncate_value(value: Any, max_bytes: int = MAX_OUTPUT_SIZE_BYTES) -> Any:
@@ -385,6 +402,8 @@ Operations:
 - approve: Approve a stage to continue execution
 - deny: Deny a stage to stop execution
 - cancel: Cancel a running recipe session (graceful or immediate)
+- engine_info: Report which tool-recipes engine is running (module file, version,
+  git sha, bundle-cache/editable-install shadowing) without executing anything
 
 Example:
   Execute recipe: {{"operation": "execute", "recipe_path": "@recipes:examples/code-review.yaml", "context": {{"file_path": "src/auth.py"}}}}
@@ -394,7 +413,8 @@ Example:
   List approvals: {{"operation": "approvals"}}
   Approve stage: {{"operation": "approve", "session_id": "...", "stage_name": "planning", "message": "merge"}}
   Deny stage: {{"operation": "deny", "session_id": "...", "stage_name": "planning", "reason": "needs revision"}}
-  Cancel recipe: {{"operation": "cancel", "session_id": "...", "immediate": false}}"""
+  Cancel recipe: {{"operation": "cancel", "session_id": "...", "immediate": false}}
+  Engine info: {{"operation": "engine_info"}}"""
 
     @property
     def input_schema(self) -> dict:
@@ -412,6 +432,7 @@ Example:
                         "approve",
                         "deny",
                         "cancel",
+                        "engine_info",
                     ],
                     "description": "Operation to perform",
                 },
@@ -448,17 +469,34 @@ Example:
         }
 
     async def execute(self, input: dict[str, Any]) -> ToolResult:
-        """
-        Execute tool operation.
+        """Run an operation, then say which engine ran it.
 
-        Args:
-            input: Tool input with 'operation' field
+        Every result leaves here carrying the running engine's identity --
+        module file, package version, git sha, and whether the path it was
+        imported from is a symlink or shadowed by an editable install.  Two
+        recorded incidents (recipes-669, recipes-ecd) had a lane "prove" an
+        engine change live while executing a different lane's code, and neither
+        run had anything in it that could have said so.
 
-        Returns:
-            ToolResult with operation results
+        The record rides *beside* the payload (``result.engine``), never inside
+        it: ``ToolResult``'s serialized payload is what the legacy-compat
+        baselines pin byte-for-byte, so a diagnostic that rewrote it would
+        break the frozen legacy contract it is meant to protect.  The read-only
+        operations in ``ENGINE_IN_OUTPUT`` -- which no baseline pins -- also
+        carry it *inside* the payload, so a caller that only ever sees the
+        serialized result (the CLI, an agent) can still read it.
         """
         operation = input.get("operation")
+        result = await self._dispatch(operation, input)
+        label_engine_provenance(result)
+        if operation in ENGINE_IN_OUTPUT and isinstance(result.output, dict):
+            result.output.setdefault("engine", engine_provenance())
+        return result
 
+    async def _dispatch(
+        self, operation: str | None, input: dict[str, Any]
+    ) -> ToolResult:
+        """Route one operation to its handler.  See :meth:`execute`."""
         try:
             # `execute` and `resume` are the two operations that run the recipe
             # engine, and so the two that can leave background work behind. Both
@@ -484,6 +522,8 @@ Example:
                 return await self._deny_stage(input)
             if operation == "cancel":
                 return await self._cancel_recipe(input)
+            if operation == "engine_info":
+                return await self._engine_info(input)
             return ToolResult(
                 success=False,
                 error={"message": f"Unknown operation: {operation}"},
@@ -1555,6 +1595,18 @@ Example:
         if resume_path is None or not resume_path.exists():
             return recipe_file
         return resume_path
+
+    async def _engine_info(self, input: dict[str, Any]) -> ToolResult:
+        """Answer "whose code is this?" without running anything.
+
+        The one operation a live proof can ask before it trusts a run: it
+        starts no session, touches no recipe, and returns the same record every
+        other result carries beside its payload.  ``scripts/live-proof.sh``
+        reads ``module_dir_real`` out of this and refuses to go on if it is not
+        the worktree under test.
+        """
+        record = engine_provenance(refresh=bool(input.get("refresh")))
+        return ToolResult(success=True, output=dict(record))
 
     async def _list_sessions(self, input: dict[str, Any]) -> ToolResult:
         """List active recipe sessions."""

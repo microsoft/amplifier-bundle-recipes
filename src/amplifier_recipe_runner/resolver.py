@@ -57,6 +57,7 @@ __all__ = [
     "LocalBundleResolver",
     "ResolvedAgent",
     "ResolvedBundle",
+    "SourceTree",
     "canonical_agent_name",
     "split_source",
 ]
@@ -118,6 +119,42 @@ class ResolvedAgent:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceTree:
+    """One source tree composed into a dependency, with its own identity.
+
+    A declared bundle composes its ``includes``, so its agent map can carry
+    agents whose definition files live in entirely different checkouts, each
+    at its own revision. Reporting only the declared dependency's revision
+    would state something false about those agents (manifest Core 7), so the
+    resolver reports every tree it actually composed and the planner matches
+    each agent's definition file against them.
+
+    :attr:`via_includes` is the include path from the declared dependency's
+    own bundle to the bundle that brought this tree into the closure -- empty
+    for the dependency's own tree. It is recorded by the resolver, which is
+    the only layer that can see the include graph; the planner never infers
+    one.
+    """
+
+    name: str
+    """Namespace this tree supplies agents under."""
+
+    local_path: str | None = None
+    """Resource root: the directory whose ``agents/`` holds the definitions."""
+
+    uri: str | None = None
+    """Declared source of this tree, when the resolver knows it.
+
+    ``None`` when the tree was composed without a recorded source -- absence
+    of evidence, never guessed from the path.
+    """
+
+    resolved_revision: str | None = None
+    content_digest: str | None = None
+    via_includes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedBundle:
     """What a resolver read for one declared dependency.
 
@@ -148,6 +185,15 @@ class ResolvedBundle:
     requested_ref: str | None = None
     subdirectory: str | None = None
     version: str | None = None
+
+    source_trees: Mapping[str, SourceTree] = field(default_factory=lambda: MappingProxyType({}))
+    """Namespace -> the tree that actually holds that namespace's definitions.
+
+    Always includes this dependency's own tree. A resolver that composes no
+    includes reports exactly that one entry; a resolver that composes them
+    reports one per tree it pulled in, so a transitively supplied agent can be
+    stamped with the revision of the checkout it really lives in.
+    """
 
 
 @runtime_checkable
@@ -428,17 +474,32 @@ class LocalBundleResolver:
                 metadata=_agent_metadata(agent_path, canonical),
             )
 
+        revision = await _git_revision(resource_root)
+        digest = _digest_file(bundle_file)
         return ResolvedBundle(
             source=source,
             kind=dependency.kind,
             namespace=namespace,
             agents=MappingProxyType(agents),
             local_path=str(resource_root),
-            resolved_revision=await _git_revision(resource_root),
-            content_digest=_digest_file(bundle_file),
+            resolved_revision=revision,
+            content_digest=digest,
             requested_ref=requested_ref,
             subdirectory=subdirectory,
             version=str(meta["version"]) if isinstance(meta.get("version"), (str, int, float)) else None,
+            # This resolver composes no includes, so there is exactly one tree
+            # and it is the declared dependency's own.
+            source_trees=MappingProxyType(
+                {
+                    namespace: SourceTree(
+                        name=namespace,
+                        local_path=str(resource_root),
+                        uri=source,
+                        resolved_revision=revision,
+                        content_digest=digest,
+                    )
+                }
+            ),
         )
 
 
@@ -547,6 +608,17 @@ class FoundationResolver:
                     digest = _digest_file(candidate)
                     break
 
+        trees = await _compose_source_trees(
+            registry,
+            root_name=namespace,
+            source_base_paths=source_base_paths,
+            agents=agents,
+            own_root=resource_root,
+            own_uri=source,
+            own_revision=revision,
+            own_digest=digest,
+        )
+
         return ResolvedBundle(
             source=source,
             kind=dependency.kind,
@@ -558,4 +630,170 @@ class FoundationResolver:
             requested_ref=requested_ref,
             subdirectory=subdirectory,
             version=str(getattr(bundle, "version", "") or "") or None,
+            source_trees=trees,
         )
+
+
+# --------------------------------------------------------------------------
+# Composed source trees (the includes the default resolver walked)
+# --------------------------------------------------------------------------
+
+
+async def _compose_source_trees(
+    registry: Any,
+    *,
+    root_name: str,
+    source_base_paths: Mapping[str, Any],
+    agents: Mapping[str, ResolvedAgent],
+    own_root: Path | None,
+    own_uri: str,
+    own_revision: str | None,
+    own_digest: str | None,
+) -> Mapping[str, SourceTree]:
+    """Report every tree that actually holds one of ``agents``' definitions.
+
+    Foundation composes a bundle's ``includes`` into one agent map, and
+    ``bundle.source_base_paths`` records the resource root each namespace's
+    files were read from. That mapping is the evidence a per-agent attribution
+    needs; without it the planner can only repeat the declared dependency's
+    revision over agents that live in other checkouts entirely.
+
+    Only trees that hold at least one agent definition are reported. A tree
+    supplying no agent has nothing to attribute, and resolving a revision for
+    it would spend a subprocess to say nothing.
+    """
+    trees: dict[str, SourceTree] = {}
+    if own_root is not None:
+        trees[root_name] = SourceTree(
+            name=root_name,
+            local_path=str(own_root),
+            uri=own_uri,
+            resolved_revision=own_revision,
+            content_digest=own_digest,
+        )
+
+    roots = _agent_bearing_roots(source_base_paths, agents)
+    for name, root in sorted(roots.items()):
+        if name in trees or (own_root is not None and root == own_root.resolve()):
+            continue
+        uri = _registry_uri_for(registry, name, root)
+        trees[name] = SourceTree(
+            name=name,
+            local_path=str(root),
+            uri=uri,
+            resolved_revision=await _git_revision(root),
+            content_digest=_tree_digest(root),
+            via_includes=_include_path(registry, root_name, root),
+        )
+    return MappingProxyType(trees)
+
+
+def _agent_bearing_roots(
+    source_base_paths: Mapping[str, Any],
+    agents: Mapping[str, ResolvedAgent],
+) -> dict[str, Path]:
+    """Namespace -> resource root, for the roots that really hold a definition.
+
+    An agent file can sit under several nested roots (a behavior partial's
+    directory inside its bundle's checkout); the longest match is the one that
+    read it, so that is the one reported.
+    """
+    candidates: list[tuple[str, Path]] = []
+    for name, value in source_base_paths.items():
+        root = _as_path(str(value)) if value else None
+        if root is not None:
+            candidates.append((str(name), root))
+
+    found: dict[str, Path] = {}
+    for agent in agents.values():
+        definition = _as_path(agent.local_path)
+        if definition is None:
+            continue
+        matches = [
+            (len(str(root)), name, root)
+            for name, root in candidates
+            if _tree_contains(str(root), str(definition))
+        ]
+        if not matches:
+            continue
+        longest = max(length for length, _, _ in matches)
+        name, root = next((n, r) for length, n, r in matches if length == longest)
+        found[name] = root
+    return found
+
+
+def _registry_uri_for(registry: Any, name: str, root: Path) -> str | None:
+    """The declared URI Foundation recorded for ``name``, when it fits ``root``.
+
+    The registry is long-lived state shared across loads, so an entry under
+    this name may predate this closure entirely. It is trusted only when its
+    own recorded path is the tree we matched -- otherwise the URI is left
+    unrecorded rather than guessed.
+    """
+    try:
+        state = registry.get_state(name)
+    except Exception:  # noqa: BLE001 - registry shape is not ours to assume
+        return None
+    local = getattr(state, "local_path", None) if state is not None else None
+    if local is None or _as_path(str(local)) != root:
+        return None
+    uri = getattr(state, "uri", None)
+    return str(uri) if uri else None
+
+
+def _include_path(registry: Any, root_name: str, root: Path) -> tuple[str, ...]:
+    """Include path from ``root_name``'s bundle to whatever brought in ``root``.
+
+    A breadth-first walk of the registry's recorded ``includes`` edges, so the
+    chain is the shortest one Foundation actually followed. Empty when no path
+    reaches the tree -- the relationship is then unrecorded, never invented.
+    """
+    try:
+        states = registry.get_state()
+    except Exception:  # noqa: BLE001 - registry shape is not ours to assume
+        return ()
+    if not isinstance(states, Mapping):
+        return ()
+
+    queue: list[tuple[str, tuple[str, ...]]] = [(root_name, ())]
+    seen = {root_name}
+    while queue:
+        name, path = queue.pop(0)
+        state = states.get(name)
+        if state is None:
+            continue
+        local = getattr(state, "local_path", None)
+        if path and local and _tree_contains(str(root), str(local)):
+            return path
+        for child in getattr(state, "includes", None) or ():
+            child = str(child)
+            if child not in seen:
+                seen.add(child)
+                queue.append((child, (*path, child)))
+    return ()
+
+
+def _tree_digest(root: Path) -> str | None:
+    for name in _BUNDLE_FILENAMES:
+        candidate = root / name
+        if candidate.is_file():
+            return _digest_file(candidate)
+    return None
+
+
+def _tree_contains(tree: str | None, definition: str | None) -> bool:
+    """True when ``definition`` lies inside ``tree`` (or is it)."""
+    root = _as_path(tree)
+    target = _as_path(definition)
+    if root is None or target is None:
+        return False
+    return target == root or target.is_relative_to(root)
+
+
+def _as_path(value: str | None) -> Path | None:
+    if not value:
+        return None
+    try:
+        return Path(value).resolve()
+    except (OSError, ValueError):  # pragma: no cover - exotic path values
+        return None

@@ -99,7 +99,17 @@ def session_dir_of(sessions: SessionManager, project: Path) -> Path:
 
 
 def records_of(sessions: SessionManager, project: Path) -> list[dict[str, Any]]:
-    return steps_log.read_steps_log(session_dir_of(sessions, project))
+    """The run's *step* records, in file order.
+
+    A log also opens with one ``header`` line naming the engine that wrote it
+    (see ``steps_log.EVENT_HEADER`` and test_engine_provenance.py); it is not a
+    step, so it is filtered here rather than in every assertion below.
+    """
+    return [
+        record
+        for record in steps_log.read_steps_log(session_dir_of(sessions, project))
+        if record.get("event") != steps_log.EVENT_HEADER
+    ]
 
 
 def finished(records: list[dict[str, Any]], step_id: str) -> list[dict[str, Any]]:

@@ -1284,6 +1284,19 @@ class TestV2Resume:
 
         Same reading the standalone CLI's `resume` takes for the same case:
         one library call, under the recorded run id, re-running nothing.
+
+        This is the FALLBACK route -- the one taken when the library exports
+        no `resume` entry point -- so the seam that decides between the two is
+        pinned here rather than left to whichever runner version happens to be
+        importable (`library_resume`; the companion test below pins it the
+        other way). Left unpinned, this test read the ambient library: once
+        `resume` landed (recipes-4qf) the adapter routed to the REAL entry
+        point, `fake_run` was never reached, and the recipe's declared
+        `git+https://example.invalid/...` dependency was resolved for real --
+        an actual `git clone` whose result depended on the host's network and
+        bundle cache (recipes-pm2). Nothing here needs dependency resolution:
+        the subject is which entry point the adapter calls, not what it
+        resolves.
         """
         runner = ra.load_runner()
         tool = make_v2_session_tool(
@@ -1303,6 +1316,57 @@ class TestV2Resume:
             return runner.RunResult(run_id=request.run_id, status=runner.RunStatus.SUCCEEDED)
 
         monkeypatch.setattr(runner, "run", fake_run)
+        monkeypatch.setattr(
+            "amplifier_module_tool_recipes.runner_adapter.library_resume", lambda: None
+        )
+
+        result = await tool._resume_recipe({"session_id": "sess-1"})
+
+        assert "request" in seen, (
+            "the library exported no `resume`, so the fallback `run` route was "
+            f"the only one left -- but it was never called: {result.error}"
+        )
+        assert result.success is True
+        assert seen["request"].run_id == "run-1"
+        assert seen["request"].legacy_mode is False
+        tool.executor.execute_recipe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_nothing_completed_still_prefers_the_library_resume_entry_point(
+        self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The other side of the seam above: `resume` wins even with nothing done.
+
+        "Nothing completed" does not demote the run to the `run` fallback --
+        `resume` with an empty completed-step set IS running from the start, on
+        the library's own path. Pinning both directions is what keeps this
+        class's outcome from depending on which runner version is installed.
+        """
+        runner = ra.load_runner()
+        tool = make_v2_session_tool(
+            temp_dir,
+            v2_run={
+                "status": "failed",
+                "run_id": "run-1",
+                "completed_steps": [],
+                "step_ids": ["review"],
+                "recipe_path": str(temp_dir / "v2.yaml"),
+            },
+        )
+        seen: dict[str, Any] = {}
+
+        async def fake_resume(request: Any) -> Any:
+            seen["request"] = request
+            return runner.RunResult(run_id=request.run_id, status=runner.RunStatus.SUCCEEDED)
+
+        async def fake_run(request: Any) -> Any:  # pragma: no cover - must not run
+            raise AssertionError("`resume` exists, so the `run` fallback must not be used")
+
+        monkeypatch.setattr(runner, "run", fake_run)
+        monkeypatch.setattr(
+            "amplifier_module_tool_recipes.runner_adapter.library_resume",
+            lambda: fake_resume,
+        )
 
         result = await tool._resume_recipe({"session_id": "sess-1"})
 

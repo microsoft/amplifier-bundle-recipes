@@ -1,8 +1,17 @@
 ---
 bundle:
   name: recipes
-  version: 1.0.0
-  description: Multi-step AI agent orchestration for repeatable workflows
+  version: 1.0.1
+  description: |
+    Multi-step AI agent orchestration for repeatable workflows.
+
+    Recipe work follows a required lifecycle -- author with
+    `recipes:recipe-author`, verify with `recipes:result-validator`, document
+    with the `recipes:generate-recipe-docs` recipe -- and never by writing
+    recipe YAML by hand. That lifecycle, the schema-v2 dependency header, the
+    tool operations and the worked examples are all instruction, so they live
+    in `context/recipe-instructions.md` and reach the model through the
+    @mention below rather than as documentation prose in this body.
 
 includes:
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main
@@ -12,37 +21,6 @@ includes:
 # Recipe System
 
 @recipes:context/recipe-instructions.md
-
----
-
-## Creating and Editing Recipes
-
-### Required Workflow (Non-Negotiable)
-
-| Phase | Agent | Purpose |
-|-------|-------|---------|
-| 1. Author | `recipes:recipe-author` | Create, edit, validate, debug |
-| 2. Validate | `recipes:result-validator` | Verify recipe meets original intent |
-
-**MUST delegate to `recipes:recipe-author`** for ALL recipe work. Do NOT write recipe YAML directly.
-
-**MUST run `recipes:result-validator`** after creation/editing, providing the recipe AND conversation context.
-
-### Why This Matters
-
-- `recipe-author` has complete schema knowledge and asks clarifying questions
-- `result-validator` provides unbiased verification that the recipe solves what the user asked for
-- Skipping these steps results in recipes that are syntactically valid but semantically wrong
-
-## Examples
-
-Example recipes are available in `@recipes:examples/`:
-
-- `simple-analysis-recipe.yaml` - Basic sequential workflow
-- `code-review-recipe.yaml` - Multi-stage review with conditional execution
-- `dependency-upgrade-staged-recipe.yaml` - Workflow with human approval gates
-
-For a complete catalog, see `recipes:docs/EXAMPLES_CATALOG.md`
 
 ---
 

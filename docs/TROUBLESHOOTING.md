@@ -16,6 +16,7 @@ This guide helps you diagnose and fix problems when creating or executing recipe
 - [The Process Hangs After the Recipe Finishes](#the-process-hangs-after-the-recipe-finishes)
 - [Auditing a Finished Run: `steps.jsonl`](#auditing-a-finished-run-stepsjsonl)
 - [Recipe Runner Library Skew](#recipe-runner-library-skew)
+- [Which Engine Actually Ran? (Proving a Change Live)](#which-engine-actually-ran-proving-a-change-live)
 - [Debugging Tips](#debugging-tips)
 
 ---
@@ -1175,6 +1176,115 @@ uv pip uninstall amplifier-recipe-runner
 amplifier tool invoke recipes -o json operation=execute recipe_path=... \
   | grep -o "'runner_library': {[^}]*}"
 ```
+
+---
+
+## Which Engine Actually Ran? (Proving a Change Live)
+
+You changed engine code in a worktree, ran `amplifier tool invoke recipes ...`,
+and it passed. **That is not yet evidence.** On a machine with more than one
+checkout of this repo, the run may have executed somebody else's code and said
+nothing about it.
+
+### The one command
+
+```bash
+# From your worktree. Asserts the engine, THEN runs your invocation.
+./scripts/live-proof.sh "$PWD" -- recipes operation=validate \
+    recipe_path=examples/bash-step-example.yaml -b anchors-amp-dev
+```
+
+It exits non-zero, naming the path that actually answered, if the engine is not
+the worktree you pointed it at. `live-proof.sh <worktree>` with no `--` runs the
+assertion alone and nothing else.
+
+It needs **no cache symlink and no venv reinstall**: `PYTHONPATH` is consulted
+before `site-packages`, and the tool-recipes editable install is a plain-path
+`.pth` rather than an import-hook finder, so putting the worktree first wins for
+that one process and changes nothing on disk for anyone else.
+
+### Ask the engine who it is
+
+```bash
+amplifier tool invoke recipes operation=engine_info -b anchors-amp-dev -o json
+```
+
+`engine_info` starts no session and touches no recipe. It reports:
+
+| Field | Answers |
+|-------|---------|
+| `module_file` / `module_dir` | which file is running, exactly as imported |
+| `module_dir_real` | where that path *resolves* — differs when a symlink is in play |
+| `package_version` | installed distribution version, when there is one |
+| `git_sha` / `git_ref` / `git_root` | the commit of the tree it was imported from |
+| `bundle_cache_dir`, `bundle_cache_is_symlink`, `bundle_cache_resolves_to`, `bundle_cache_commit` | the cached bundle it came from, and whether that cache is really the cache |
+| `editable_pth` | every editable install on this interpreter naming this module, and where each points |
+| `warnings` | the shadowing conditions below, as sentences naming both paths |
+
+The same record rides on **every** result as `result.engine` (beside the
+payload, never inside it — the legacy-compat baselines pin `execute`/`resume`
+payloads byte-for-byte), and opens every `steps.jsonl` as a `header` line:
+
+```bash
+jq -r 'select(.event=="header") | .engine | "\(.module_dir_real)  \(.git_sha[0:12])"' \
+  "$SESSION/steps.jsonl"
+```
+
+One header line per process, so a run **resumed by a different engine** says so
+rather than looking seamless.
+
+### DO NOT: symlink the bundle cache
+
+```bash
+# ❌ NEVER
+ln -s /path/to/my/worktree ~/.amplifier/cache/amplifier-bundle-recipes-<hash>
+```
+
+That path is the cache key **every** bundle mounts tool-recipes from. While the
+symlink exists, every `amplifier` run on the host — other lanes, other agents,
+real user sessions — executes your worktree's engine, whatever bundle they
+asked for. A recorded incident (`recipes-669`): a lane registered its own local
+bundle, ran a recipe that had to trip a warning it had just added, and the
+warning never fired — the module still came from the symlinked tree. The run
+completed and looked like a clean pass.
+
+### DO NOT: `uv pip install -e` into the CLI's venv
+
+```bash
+# ❌ NEVER
+uv pip install -e modules/tool-recipes  # into the amplifier tool venv
+```
+
+Running `amplifier` re-resolves editable installs and **rewrites**
+`.../site-packages/_editable_impl_amplifier_module_tool_recipes.pth` to the
+resolved realpath. Removing a symlink afterwards does not undo it: a recorded
+incident (`recipes-ecd`) restored the cache directory correctly — symlink gone,
+real directory back, `.amplifier_cache_meta.json` intact, cache `git status`
+clean — and the CLI still imported the lane's worktree until the `.pth` was
+edited by hand. The leak outlives the procedure that caused it.
+
+### The engine warns when it notices
+
+At import, tool-recipes checks whether it was loaded out of the bundle cache
+while the cache is a symlink, or while an editable `.pth` names somewhere else.
+Either way it logs a WARNING naming **both** paths:
+
+```
+tool-recipes engine: bundle cache /home/u/.amplifier/cache/amplifier-bundle-recipes-<hash>
+is a SYMLINK resolving to /lanes/other-lane -- every `amplifier` run on this
+machine imports that tree, not the cached bundle.
+```
+
+It only warns. A diagnostic that could fail a run would be a worse bug than the
+silence it replaces. Set `AMPLIFIER_RECIPES_ENGINE_GUARD=0` to silence it.
+
+### If the assertion fails
+
+| Symptom | Meaning | Fix |
+|---------|---------|-----|
+| `WRONG ENGINE`, `actual` under another lane | The cache is symlinked, or a `.pth` points at that lane | `ls -l ~/.amplifier/cache/amplifier-bundle-recipes-*` and `cat .../site-packages/_editable_impl_amplifier_module_tool_recipes.pth`; restore **both** |
+| `NO ENGINE PROVENANCE`, `Unknown operation: engine_info` | The engine that answered predates `engine_info`, so it is not your worktree | Check `PYTHONPATH` reached the CLI; do not "fix" it by installing |
+| `not a directory` (exit 3) | First argument is not a worktree root | Pass the repo root, not `modules/tool-recipes` |
 
 ---
 
