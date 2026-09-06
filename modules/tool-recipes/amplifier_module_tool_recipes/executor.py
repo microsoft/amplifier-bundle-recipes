@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 from .context_schema import merge_recipe_context
 from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
+from .expression_evaluator import substitute_condition_variables
 from amplifier_foundation import ProviderPreference
 from amplifier_foundation import resolve_model_pattern
 from amplifier_foundation import sanitize_for_json
@@ -3916,9 +3917,15 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     f"validation failed: {'; '.join(errors)}"
                 )
 
-            # Evaluate condition on sub-step (skip if false)
+            # Evaluate condition on sub-step (skip if false).
+            # Condition text resolves through the evaluator's own type-aware
+            # substitution, never the general-purpose textual one: pasted in
+            # bare, an empty string leaves a dangling operator and a value
+            # with a space becomes two tokens (recipes-kft).
             if sub_step.condition:
-                resolved_cond = self.substitute_variables(sub_step.condition, context)
+                resolved_cond = substitute_condition_variables(
+                    sub_step.condition, context
+                )
                 from .expression_evaluator import evaluate_condition
 
                 if not evaluate_condition(resolved_cond, context):
@@ -4191,8 +4198,9 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     )
 
                 # Evaluate while_condition with variable substitution
+                # (type-aware -- see the sub-step condition above).
                 assert step.while_condition is not None
-                resolved_condition = self.substitute_variables(
+                resolved_condition = substitute_condition_variables(
                     step.while_condition, context
                 )
                 condition_result = evaluate_condition(resolved_condition, context)
@@ -4273,7 +4281,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 # Evaluate break_when after each iteration
                 if step.break_when:
                     try:
-                        resolved_break = self.substitute_variables(
+                        resolved_break = substitute_condition_variables(
                             step.break_when, context
                         )
                         if evaluate_condition(resolved_break, context):

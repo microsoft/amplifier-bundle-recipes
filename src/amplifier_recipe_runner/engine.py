@@ -71,6 +71,7 @@ import yaml
 from .errors import RecipeRunnerError
 from .expressions import ExpressionError
 from .expressions import evaluate_condition
+from .expressions import substitute_condition_variables
 from .manifest import FLAT_STAGE_APPROVAL_KEYS
 from .manifest import check_context_block
 
@@ -100,6 +101,7 @@ __all__ = [
     "resolve_dotted_path",
     "resolve_foreach_variable",
     "resolve_step_timeout",
+    "substitute_condition_variables",
     "substitute_recursive",
     "substitute_variables",
 ]
@@ -2038,7 +2040,7 @@ class StepEngine:
                     break
                 self._check_cancelled()
 
-                resolved_condition = substitute_variables(step.while_condition, context)
+                resolved_condition = substitute_condition_variables(step.while_condition, context)
                 if not evaluate_condition(resolved_condition, context):
                     break
 
@@ -2069,7 +2071,7 @@ class StepEngine:
 
                 if step.break_when:
                     try:
-                        if evaluate_condition(substitute_variables(step.break_when, context), context):
+                        if evaluate_condition(substitute_condition_variables(step.break_when, context), context):
                             break
                     except ExpressionError as exc:
                         self._emit("step:warning", {"step_id": step.id, "reason": f"break_when: {exc}"})
@@ -2102,7 +2104,11 @@ class StepEngine:
                 # Sub-steps pre-substitute before evaluating; the top level
                 # does not. That asymmetry is the legacy engine's, reproduced
                 # here rather than tidied away -- see docs/EXECUTOR_PARITY.md.
-                resolved = substitute_variables(sub_step.condition, context)
+                # The substitution is the evaluator's own type-aware one, so
+                # what the two paths RESOLVE is now identical either way: a
+                # textual paste left an empty string as a dangling operator
+                # and a spaced value as two tokens (recipes-kft).
+                resolved = substitute_condition_variables(sub_step.condition, context)
                 if not evaluate_condition(resolved, context):
                     skipped = context.get("_skipped_steps", [])
                     skipped.append(sub_step.id)

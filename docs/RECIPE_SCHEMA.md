@@ -1849,7 +1849,7 @@ Step conditions use a simple expression syntax for runtime evaluation.
 **Numeric comparison:** When both operands parse as numbers (int or float), comparison
 operators (`<`, `>`, `<=`, `>=`) compare numerically. Otherwise they compare as strings.
 
-**Boolean normalization:** These values are treated as falsy: `false`, `False`, `""`, `"0"`, `"none"`, `"None"`.
+**Boolean normalization:** These values are treated as falsy: `false`, `False`, `""`, `"0"`, `"none"`, `"None"`, `"null"`.
 All other non-empty values are truthy.
 
 **Operator precedence** (lowest to highest): `or` → `and` → `not` → comparison → `()`
@@ -1868,6 +1868,37 @@ condition: "{{report.severity}} == 'critical'"
 # From step output
 condition: "{{analysis_result}} != 'failed'"
 ```
+
+**A condition substitutes VALUES, not text.** Everywhere a condition is
+evaluated — `condition:`, `while_condition:`, `break_when:`, on a top-level
+step, a staged step or a loop sub-step — a `{{reference}}` is rendered as a
+*literal*, so the expression stays well-formed whatever the value is:
+
+| Value | Renders as | Example expression after substitution |
+|-------|-----------|----------------------------------------|
+| `""` (empty string) | `''` | `'' == ''` |
+| `"v3.md"` | `'v3.md'` | `'v3.md' != ''` |
+| `"all clear"` (spaces) | `'all clear'` | `'all clear' == 'all clear'` |
+| `"it's"` (inner quote) | `'it\'s'` (escaped) | `'it\'s' == 'it\'s'` |
+| `5`, `3.14` | `5`, `3.14` (bare) | `5 > 3` |
+| `true` / `false` | `true` / `false` | `true == true` |
+| `None` | `null` (falsy, beside `none`/`None`) | `null == ''` → false |
+
+Two consequences worth knowing:
+
+- **You do not need to quote the reference.** `condition: "{{continue_from}}
+  == ''"` is correct even when `continue_from` defaults to `""` — it renders
+  to `'' == ''`, not to a dangling `== ''`. (Before `recipes-kft` a bare
+  reference *was* pasted in as raw text inside loops, so an empty-string
+  default killed the run and a value containing a space parsed as two
+  tokens.)
+- **Quoting it anyway is still fine.** `condition: "'{{continue_from}}' ==
+  ''"` splices the value inside the quotes you wrote rather than adding a
+  second pair, so both spellings mean the same thing.
+
+A reference the context does not carry at all is still an error
+(`Undefined variable: ...`). A reference whose *value* is `None` is not — it
+compares as `null` and is falsy.
 
 ### String Literals
 
