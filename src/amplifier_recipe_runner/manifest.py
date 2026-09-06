@@ -19,6 +19,10 @@ Implements the parse-time half of contract ``recipe-dependency-manifest.v1``:
   only the *host* and *runner* terms can express, via ``None``.
 * **Core 12** -- the historical ``agent_config`` step field is REJECTED at
   parse under schema 2. It is never silently retained inert.
+* **Core 1, applied to stages** -- the flat stage keys ``approval_required`` /
+  ``approval_message`` / ``auto_approve_if`` are REJECTED at parse by name.
+  They read as a human checkpoint and are not stage fields, so accepting them
+  quietly runs a declared approval gate ungated.
 
 Scope: **parsing only**. No dependency resolution, no network, no Foundation
 calls, no lockfile handling. Everything here is pure and offline.
@@ -43,6 +47,7 @@ __all__ = [
     "CONTRACT",
     "DEPENDENCY_KEYS",
     "DEPENDENCY_KINDS",
+    "FLAT_STAGE_APPROVAL_KEYS",
     "KNOWN_TOP_LEVEL_KEYS",
     "SCHEMA_VERSION",
     "Dependency",
@@ -110,6 +115,24 @@ _RECIPE_BODY_KEYS: Final[frozenset[str]] = frozenset(
 #: Every top-level key a schema-2 recipe may declare. Anything else is a
 #: parse ERROR naming the offending key (Core 1).
 KNOWN_TOP_LEVEL_KEYS: Final[frozenset[str]] = _MANIFEST_KEYS | _RECIPE_BODY_KEYS
+
+#: Flat stage-level approval keys that read like a human checkpoint and are
+#: not stage fields. ``docs/RECIPE_SCHEMA.md`` ("Stage Object") documents
+#: exactly one gate -- the ``approval:`` block -- so each of these was parsed
+#: by nobody and dropped without a word. Each maps to the remedy that actually
+#: works; ``auto_approve_if`` has no equivalent at all, so its remedy says so
+#: rather than inventing a field no engine here can evaluate.
+FLAT_STAGE_APPROVAL_KEYS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "approval_required": "use 'approval: {required: <bool>, prompt: <text>}'",
+        "approval_message": "use 'approval: {required: true, prompt: <text>}'",
+        "auto_approve_if": (
+            "there is no conditional auto-approval in this schema -- remove it, "
+            "and gate the stage with 'approval: {required: true, prompt: <text>}' "
+            "if the checkpoint is real"
+        ),
+    }
+)
 
 
 class ManifestError(ValueError):
@@ -228,7 +251,9 @@ def parse_manifest(data: Any, *, source: str | None = None) -> ParseResult:
         ManifestError: on any contract violation -- unknown top-level or
             dependency key, malformed
             ``dependencies``/``capabilities``/``agents``, an unsupported
-            ``schema_version``, or an ``agent_config`` step field.
+            ``schema_version``, an ``agent_config`` step field, or a flat
+            stage-level approval key (``approval_required`` /
+            ``approval_message`` / ``auto_approve_if``).
     """
     if not isinstance(data, Mapping):
         raise ManifestError(
@@ -257,6 +282,7 @@ def parse_manifest(data: Any, *, source: str | None = None) -> ParseResult:
     _check_schema_version(data["schema_version"], source=source)
     _check_top_level_keys(data, source=source)
     _reject_agent_config(data, source=source)
+    _reject_flat_stage_approval_keys(data, source=source)
     check_context_block(data.get("context"), source=source)
 
     if "dependencies" not in data:
@@ -617,6 +643,43 @@ def _reject_agent_config(data: Mapping[str, Any], *, source: str | None) -> None
                 clause="Core 12",
                 source=source,
             )
+
+
+def _reject_flat_stage_approval_keys(data: Mapping[str, Any], *, source: str | None) -> None:
+    """Core 1, applied to a STAGE key: an approval gate is never dropped silently.
+
+    ``approval_required`` / ``approval_message`` / ``auto_approve_if`` are not
+    stage fields -- the only gate a stage has is its ``approval:`` block. A
+    stage carrying them presents itself, often at length, as a human
+    checkpoint and has never gated anything: the run goes straight through.
+    That is the same silent edit Core 1 forbids for an unknown top-level key,
+    and the same class as Core 12's parsed-but-ignored ``agent_config``, so it
+    is rejected here by name with the remedy rather than honoured as an alias
+    (``auto_approve_if`` has no honourable reading at all -- no engine here
+    can evaluate it).
+    """
+    stages = data.get("stages")
+    if not isinstance(stages, list):
+        return
+    for index, stage in enumerate(stages):
+        if not isinstance(stage, Mapping):
+            continue
+        offending = [key for key in FLAT_STAGE_APPROVAL_KEYS if key in stage]
+        if not offending:
+            continue
+        name = stage.get("name")
+        named = f"stage {name!r}" if isinstance(name, str) and name else f"stage at stages[{index}]"
+        remedies = "; ".join(f"{key!r}: {FLAT_STAGE_APPROVAL_KEYS[key]}" for key in offending)
+        one = len(offending) == 1
+        raise ManifestError(
+            f"{named} declares {_fmt(offending)}, which "
+            f"{'is not a stage key' if one else 'are not stage keys'}: a stage's only "
+            "approval gate is its 'approval:' block, so "
+            f"{'this' if one else 'these'} would be read by nobody and the declared "
+            f"human checkpoint would run ungated. {remedies}",
+            clause="Core 1",
+            source=source,
+        )
 
 
 def _walk_steps(data: Mapping[str, Any]) -> list[tuple[Mapping[str, Any], str]]:

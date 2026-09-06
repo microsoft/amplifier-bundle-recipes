@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import importlib.machinery
 import importlib.util
+import inspect
 import logging
 import shutil
 import sys
@@ -81,6 +82,14 @@ steps:
   - id: review
     agent: "foundation:zen-architect"
     instruction: "Review it"
+"""
+
+#: The same recipe with a second step, so "the completed one did not run
+#: again" is a claim about a recipe that actually has two steps to tell apart.
+V2_RECIPE_TWO_STEPS = V2_RECIPE + """\
+  - id: apply
+    agent: "foundation:zen-architect"
+    instruction: "Apply it"
 """
 
 
@@ -1355,8 +1364,9 @@ class TestV2Resume:
         )
         seen: dict[str, Any] = {}
 
-        async def fake_resume(request: Any) -> Any:
+        async def fake_resume(request: Any, **kwargs: Any) -> Any:
             seen["request"] = request
+            seen.update(kwargs)
             return runner.RunResult(run_id=request.run_id, status=runner.RunStatus.SUCCEEDED)
 
         async def fake_run(request: Any) -> Any:  # pragma: no cover - must not run
@@ -1373,6 +1383,9 @@ class TestV2Resume:
         assert result.success is True
         assert seen["request"].run_id == "run-1"
         assert seen["request"].legacy_mode is False
+        # Nothing completed is a real value, not an absent one: the library is
+        # told so explicitly rather than left to infer it from a default.
+        assert seen["completed_steps"] == ()
         tool.executor.execute_recipe.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1412,11 +1425,21 @@ class TestV2Resume:
     async def test_a_library_resume_entry_point_is_used_when_it_exists(
         self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """The seam: when the library exports `resume`, it wins outright.
+        """The seam: when the library exports `resume`, it wins outright --
+        and it is handed the steps the recorded run already finished.
 
         This is what makes the refusal above temporary rather than a design
         decision -- no change here is needed for the entry point to take over,
         including for the mid-run case the refusal covers.
+
+        The fake stands in for the library's own contract rather than merely
+        recording the call: it runs the recipe's declared steps *minus*
+        whatever `completed_steps` it was given. That is the difference this
+        test exists to catch. Its previous shape was `fake_resume(request)`,
+        which ignored the keyword -- so when the adapter stopped forwarding
+        it, nothing here changed colour while every completed step ran a
+        second time under a SUCCEEDED result (recipes-bpx). Drop the keyword
+        again and `executed` below becomes `["review", "apply"]`.
         """
         runner = ra.load_runner()
         tool = make_v2_session_tool(
@@ -1428,11 +1451,16 @@ class TestV2Resume:
                 "step_ids": ["review", "apply"],
                 "recipe_path": str(temp_dir / "v2.yaml"),
             },
+            recipe_body=V2_RECIPE_TWO_STEPS,
         )
         seen: dict[str, Any] = {}
+        executed: list[str] = []
 
-        async def fake_resume(request: Any) -> Any:
+        async def fake_resume(request: Any, **kwargs: Any) -> Any:
             seen["request"] = request
+            seen.update(kwargs)
+            skipped = set(kwargs.get("completed_steps", ()))
+            executed.extend(step for step in ("review", "apply") if step not in skipped)
             return runner.RunResult(
                 run_id=request.run_id,
                 status=runner.RunStatus.SUCCEEDED,
@@ -1443,9 +1471,39 @@ class TestV2Resume:
 
         result = await tool._resume_recipe({"session_id": "sess-1"})
 
+        assert seen.get("completed_steps") == ("review",), (
+            "the library's `resume` must be told what the recorded run finished; "
+            f"it was called with {sorted(seen)}"
+        )
+        assert executed == ["apply"], (
+            "`review` was recorded completed, so resuming must not run it again -- "
+            f"this resume executed {executed}"
+        )
         assert result.success is True
         assert seen["request"].run_id == "run-1"
         assert result.output["completed_steps"] == ["review", "apply"]
+
+    def test_the_shipped_library_resume_takes_the_keyword_the_adapter_sends(self):
+        """A fake proves what the adapter sends; only the real entry point
+        proves it lands.
+
+        Both halves matter, and neither substitutes for the other: a fake
+        `resume` accepting `**kwargs` would happily swallow a keyword the
+        shipped library does not declare, and the mismatch would surface as a
+        `TypeError` in a live resume, never in this suite. So this asserts
+        against `library_resume()` itself -- the lookup the adapter performs --
+        that `completed_steps` is a keyword it accepts.
+        """
+        entry = ra.library_resume()
+
+        assert entry is not None, (
+            "the shipped library exports `resume` (recipes-4qf); "
+            "`library_resume()` returning None means the seam moved"
+        )
+        signature = inspect.signature(entry)
+        # Raises TypeError if the adapter's call shape does not fit.
+        signature.bind(object(), completed_steps=("review",))
+        assert signature.parameters["completed_steps"].kind is inspect.Parameter.KEYWORD_ONLY
 
     @pytest.mark.asyncio
     async def test_an_unrecorded_run_refuses_rather_than_assuming_nothing_ran(

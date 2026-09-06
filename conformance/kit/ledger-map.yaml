@@ -4,7 +4,7 @@
 # The kit does NOT edit the ledger; the reconciler consumes this map and
 # decides dispositions. `coverage: partial` always names what is NOT covered.
 #
-# fixtures: 17 (10 GOOD, 7 BAD)
+# fixtures: 19 (12 GOOD, 7 BAD)
 kit:
   entrypoint: conformance/kit/kit.py
   run: python3 conformance/kit/kit.py --run
@@ -221,6 +221,24 @@ fixtures:
     the library against the other implementation rather than against an authored expectation, so a drift
     in EITHER engine fails it. Requires the legacy engine to be importable and refuses to run against
     a stand-in.'
+- id: good-checkpointed-foreach-resumes-mid-loop-on-both-engines
+  polarity: GOOD
+  title: An interrupted `checkpoint_iterations:` foreach resumes mid-loop identically on BOTH engines
+  clauses:
+  - lib.v1 Core 2
+  - lib.v1 Core 8
+  satisfies:
+  - RCP-102
+  - RCP-108
+  notes: 'PARITY FIXTURE for docs/EXECUTOR_PARITY.md delta 3. Runs conformance/kit/fixtures/recipes/checkpointed-foreach.yaml
+    on BOTH engines: five items, an injected failure at item 3 (a marker file, not a context flag -- both
+    engines restore their saved context on resume, so a flag would be discarded), then the marker is removed
+    and the run is resumed. Compares WHICH ITEMS EACH ENGINE ACTUALLY EXECUTED, before and after, plus
+    the final collected results. The loop body appends to a log on disk because a restored result and
+    a silent re-run are indistinguishable from the context alone -- the side effect is the only evidence
+    that separates them. Exercises the library''s real `run` -> `resume` pair over a state directory,
+    so it proves the WIRING (engine -> RunStateStore -> engine) and not merely the engine. Self-discriminating:
+    it compares the two implementations against each other, so a drift in EITHER fails it.'
 rows:
   RCP-001:
     coverage: partial
@@ -327,8 +345,8 @@ rows:
   RCP-101:
     coverage: partial
     fixtures:
-    - good-full-step-vocabulary-matches-the-legacy-engine
     - good-activation-install-resolves-the-in-bundle-runner
+    - good-full-step-vocabulary-matches-the-legacy-engine
     - good-identical-resolved-graph-across-hosts
     covered: Two independent hosts (in-process library, separate process) produce byte-identical resolved-graph
       identity, so neither carries resolution logic of its own. Separately, the Amplifier tool adapter
@@ -343,13 +361,16 @@ rows:
   RCP-102:
     coverage: partial
     fixtures:
+    - good-checkpointed-foreach-resumes-mid-loop-on-both-engines
     - good-declared-dependency-runs-from-lean-caller
     - good-full-step-vocabulary-matches-the-legacy-engine
     - good-plan-reports-provenance-without-executing-anything
-    covered: '`plan` and `run` are exercised with no UI and no Amplifier CLI; `plan` is proved side-effect
-      free (empty workspace after) and works with no host services at all.'
-    not_covered: '`validate` and `resume` are absent from the shipped surface (residual R2), so two of
-      the four required entry points have no fixture.'
+    covered: '`plan`, `run` and `resume` are exercised with no UI and no Amplifier CLI; `plan` is proved
+      side-effect free (empty workspace after) and works with no host services at all. `resume` is driven
+      end to end over a real state directory by the mid-loop foreach fixture -- run, fail, resume -- and
+      compared against the legacy engine''s own resume.'
+    not_covered: '`validate` is absent from the shipped surface (residual R2), so one of the four required
+      entry points has no fixture.'
   RCP-103:
     coverage: full
     fixtures:
@@ -404,6 +425,7 @@ rows:
     - bad-colliding-declared-dependencies-fail-preflight
     - bad-errored-step-is-never-a-completed-step
     - bad-undeclared-agent-fails-preflight-before-side-effects
+    - good-checkpointed-foreach-resumes-mid-loop-on-both-engines
     - good-full-step-vocabulary-matches-the-legacy-engine
     covered: 'All four named preflight classes are asserted by type, not by exit code: UndeclaredAgentError,
       AgentCollisionError, TrustRefusedError, ProvenanceMismatchError. ''Never a fabricated success''

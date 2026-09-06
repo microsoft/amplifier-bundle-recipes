@@ -298,6 +298,28 @@ PROVIDER_PREFERENCE_KEY_MAP: dict[str, str] = {
 }
 
 
+# Flat stage-level approval keys -> the remedy that actually works. These read
+# like a human checkpoint and are NOT Stage fields (Stage has exactly `name`,
+# `steps`, `approval`), so a stage carrying them used to run straight through
+# without ever prompting. Rejected by name at parse instead.
+#
+# Deliberately duplicated from
+# ``amplifier_recipe_runner.manifest.FLAT_STAGE_APPROVAL_KEYS`` rather than
+# imported: the runner library is an OPTIONAL dependency of this module, and a
+# legacy recipe must be refused the same way whether or not it is installed.
+# The two must stay in step -- ``tests/test_flat_stage_approval_keys.py``
+# asserts they are identical whenever the library is importable.
+FLAT_STAGE_APPROVAL_KEYS: dict[str, str] = {
+    "approval_required": "use 'approval: {required: <bool>, prompt: <text>}'",
+    "approval_message": "use 'approval: {required: true, prompt: <text>}'",
+    "auto_approve_if": (
+        "there is no conditional auto-approval in this schema -- remove it, "
+        "and gate the stage with 'approval: {required: true, prompt: <text>}' "
+        "if the checkpoint is real"
+    ),
+}
+
+
 @dataclass
 class Step:
     """Represents a single step in a recipe workflow.
@@ -852,10 +874,50 @@ class Recipe:
         return ApprovalConfig(**approval_data)
 
     @classmethod
+    def _refuse_flat_stage_approval_keys(cls, stage_data: dict[str, Any]) -> None:
+        """Refuse a stage whose approval gate was written as flat stage keys.
+
+        :class:`Stage` has exactly three fields -- ``name``, ``steps``,
+        ``approval`` -- so ``approval_required`` / ``approval_message`` /
+        ``auto_approve_if`` were dropped here without a word. A stage that
+        presents itself, often at length, as a human checkpoint then ran
+        straight through without ever prompting: the one failure mode a gate
+        exists to prevent.
+
+        Rejected rather than aliased, and rejected identically to the schema-v2
+        library parser
+        (:func:`amplifier_recipe_runner.manifest._reject_flat_stage_approval_keys`)
+        so the two engines cannot disagree about the same file.
+        ``auto_approve_if`` has no honourable reading at all -- neither engine
+        can evaluate a conditional auto-approval -- so accepting the other two
+        as aliases would still leave that one silently dropped.
+        """
+        offending = [key for key in FLAT_STAGE_APPROVAL_KEYS if key in stage_data]
+        if not offending:
+            return
+
+        name = stage_data.get("name")
+        named = f"Stage '{name}'" if isinstance(name, str) and name else "Stage"
+        keys = ", ".join(f"'{key}'" for key in offending)
+        remedies = "; ".join(
+            f"'{key}': {FLAT_STAGE_APPROVAL_KEYS[key]}" for key in offending
+        )
+        one = len(offending) == 1
+        raise ValueError(
+            f"{named} declares {keys}, which "
+            f"{'is not a stage key' if one else 'are not stage keys'}: a stage's only "
+            "approval gate is its 'approval:' block, so "
+            f"{'this' if one else 'these'} would be read by nobody and the declared "
+            f"human checkpoint would run ungated. {remedies}"
+        )
+
+    @classmethod
     def _parse_stage(cls, stage_data: dict[str, Any]) -> Stage:
         """Parse a single stage from YAML data."""
         if not isinstance(stage_data, dict):
             raise ValueError("Each stage must be a dictionary")
+
+        cls._refuse_flat_stage_approval_keys(stage_data)
 
         # Parse steps within stage
         steps_data = stage_data.get("steps", [])

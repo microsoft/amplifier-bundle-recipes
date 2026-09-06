@@ -2225,6 +2225,245 @@ async def good_full_vocabulary_parity() -> str:
     )
 
 
+# ==========================================================================
+# MID-LOOP RESUME -- the two engines, one interrupted foreach, diffed
+# ==========================================================================
+
+
+class _DictSessions:
+    """Dict-backed session state for the legacy engine.
+
+    The full-vocabulary fixture can get away with a MagicMock session manager
+    because nothing there reads state back. Mid-loop resume is *entirely*
+    about reading state back, so this one has to actually hold it -- a mock
+    that returned a fixed dict would make the resume half of the comparison
+    vacuous while still reporting a pass.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self.state: dict[str, Any] = {}
+
+    def create_session(self, *_args: Any, **_kwargs: Any) -> str:
+        self.state = {
+            "current_step_index": 0,
+            "context": {},
+            "completed_steps": [],
+            "started": "2026-01-01T00:00:00",
+        }
+        return "kit-session"
+
+    def load_state(self, _session_id: str, _project_path: Any = None) -> dict[str, Any]:
+        return json.loads(json.dumps(self.state, default=str))
+
+    def save_state(self, _session_id: str, _project_path: Any, state: dict[str, Any]) -> None:
+        self.state = json.loads(json.dumps(dict(state), default=str))
+
+    def get_session_dir(self, *_args: Any, **_kwargs: Any) -> Path:
+        directory = self._root / "session"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def is_cancellation_requested(self, *_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    def is_immediate_cancellation(self, *_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    def cleanup_old_sessions(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def get_pending_approval(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def set_pending_approval(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def clear_pending_approval(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def get_stage_approval_status(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def check_approval_timeout(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def mark_cancelled(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def request_cancellation(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def _ran(log: Path) -> list[str]:
+    """Which items the loop body actually executed, in order."""
+    return log.read_text(encoding="utf-8").split() if log.is_file() else []
+
+
+async def _legacy_interrupt_and_resume(recipe_path: Path, workspace: Path) -> dict[str, Any]:
+    """Run, fail mid-loop, remove the injected error, resume -- on the LEGACY engine."""
+    from unittest.mock import AsyncMock
+    from unittest.mock import MagicMock
+
+    legacy = legacy_engine_module()
+    from amplifier_module_tool_recipes.models import Recipe  # type: ignore[import-not-found]
+
+    log = workspace / "ran.log"
+    marker = workspace / "fail-marker"
+    marker.write_text("injected", encoding="utf-8")
+    variables = {"ran_log": str(log), "fail_marker": str(marker)}
+
+    coordinator = MagicMock()
+    coordinator.session = MagicMock()
+    coordinator.config = {"agents": {}}
+    coordinator.hooks = None
+    coordinator.get_capability.return_value = AsyncMock(return_value=_AGENT_REPLY)
+
+    sessions = _DictSessions(workspace)
+    executor = legacy.RecipeExecutor(coordinator, sessions)
+    recipe = Recipe.from_yaml(recipe_path)
+
+    failed = False
+    try:
+        await executor.execute_recipe(recipe, dict(variables), workspace, recipe_path=recipe_path)
+    except Exception:  # noqa: BLE001 - the injected failure is the point
+        failed = True
+    first = _ran(log)
+    progress = sessions.state.get("foreach_progress")
+
+    marker.unlink()
+    log.unlink(missing_ok=True)
+    context = await executor.execute_recipe(
+        recipe, dict(variables), workspace, session_id="kit-session", recipe_path=recipe_path
+    )
+    return {"failed": failed, "first": first, "second": _ran(log), "seen": context.get("seen"), "progress": progress}
+
+
+async def _library_interrupt_and_resume(recipe_path: Path, workspace: Path) -> dict[str, Any]:
+    """The same interrupt-and-resume, through the LIBRARY's public run/resume."""
+    from amplifier_recipe_runner.api import RunRequest
+    from amplifier_recipe_runner.api import RunStatus
+    from amplifier_recipe_runner.execution import RunStateStore
+    from amplifier_recipe_runner.execution import resume as resume_recipe
+    from amplifier_recipe_runner.execution import run as run_recipe
+
+    log = workspace / "ran.log"
+    marker = workspace / "fail-marker"
+    marker.write_text("injected", encoding="utf-8")
+    state_dir = workspace / "run-state"
+
+    def request() -> Any:
+        return RunRequest(
+            recipe=recipe_path,
+            context={"ran_log": str(log), "fail_marker": str(marker)},
+            services=services(workspace),
+            run_id="kit-run",
+            state_dir=state_dir,
+        )
+
+    first_result = await run_recipe(request(), resolver=local_resolver())
+    first = _ran(log)
+    recorded = RunStateStore(state_dir).load() or {}
+    progress = (recorded.get("engine_state") or {}).get("foreach_progress")
+
+    marker.unlink()
+    log.unlink(missing_ok=True)
+    second_result = await resume_recipe(request(), resolver=local_resolver())
+    return {
+        "failed": first_result.status is RunStatus.FAILED,
+        "first": first,
+        "second": _ran(log),
+        "seen": dict(second_result.context).get("seen"),
+        "progress": progress,
+        "status": second_result.status,
+    }
+
+
+@fixture(
+    id="good-checkpointed-foreach-resumes-mid-loop-on-both-engines",
+    polarity="GOOD",
+    title="An interrupted `checkpoint_iterations:` foreach resumes mid-loop identically on BOTH engines",
+    clauses=("lib.v1 Core 2", "lib.v1 Core 8"),
+    rows=("RCP-102", "RCP-108"),
+    notes=(
+        "PARITY FIXTURE for docs/EXECUTOR_PARITY.md delta 3. Runs "
+        "conformance/kit/fixtures/recipes/checkpointed-foreach.yaml on BOTH engines: five items, "
+        "an injected failure at item 3 (a marker file, not a context flag -- both engines restore "
+        "their saved context on resume, so a flag would be discarded), then the marker is removed "
+        "and the run is resumed. Compares WHICH ITEMS EACH ENGINE ACTUALLY EXECUTED, before and "
+        "after, plus the final collected results. The loop body appends to a log on disk because a "
+        "restored result and a silent re-run are indistinguishable from the context alone -- the "
+        "side effect is the only evidence that separates them. Exercises the library's real "
+        "`run` -> `resume` pair over a state directory, so it proves the WIRING (engine -> "
+        "RunStateStore -> engine) and not merely the engine. Self-discriminating: it compares the "
+        "two implementations against each other, so a drift in EITHER fails it."
+    ),
+)
+async def good_checkpointed_foreach_parity() -> str:
+    from amplifier_recipe_runner.api import RunStatus
+
+    recipe_path = RECIPES / "checkpointed-foreach.yaml"
+    expect(recipe_path.is_file(), f"missing parity recipe {recipe_path}")
+
+    legacy_workspace = Path(tempfile.mkdtemp(prefix="recipes-cp-legacy-"))
+    library_workspace = Path(tempfile.mkdtemp(prefix="recipes-cp-library-"))
+
+    legacy_seen = await _legacy_interrupt_and_resume(recipe_path, legacy_workspace)
+    library_seen = await _library_interrupt_and_resume(recipe_path, library_workspace)
+
+    # Non-vacuity FIRST. Every one of these would let a broken engine pass.
+    expect(legacy_seen["failed"], "the legacy engine did not fail at the injected item; nothing was interrupted")
+    expect(library_seen["failed"], "the library did not fail at the injected item; nothing was interrupted")
+    expect(
+        library_seen["status"] is RunStatus.SUCCEEDED,
+        f"the library's resume did not succeed: {library_seen['status']}",
+    )
+    expect(
+        legacy_seen["progress"] is not None,
+        "the legacy engine recorded no foreach_progress; there was nothing to resume FROM",
+    )
+    expect(
+        library_seen["progress"] is not None,
+        "the library recorded no foreach_progress in its state directory; the store wiring is not live",
+    )
+    # The recipe's own list and injected failure point, restated here because
+    # this fixture is what makes them mean something.
+    all_items = ["a", "b", "c", "d", "e"]
+    already_done = ["a", "b"]
+    for engine, seen in (("legacy", legacy_seen), ("library", library_seen)):
+        expect(
+            seen["second"] != all_items,
+            f"the {engine} engine re-ran the whole list on resume ({seen['second']}); "
+            "that is a restart, not a mid-loop resume",
+        )
+        overlap = sorted(set(seen["second"]) & set(already_done))
+        expect(
+            not overlap,
+            f"the {engine} engine re-executed {overlap} on resume -- those iterations were already "
+            "checkpointed as complete, so re-running them is exactly the cost this field exists to avoid",
+        )
+
+    differing = [
+        f"{name}: legacy={_brief(legacy_seen[name], 120)} library={_brief(library_seen[name], 120)}"
+        for name in ("first", "second", "seen")
+        if legacy_seen[name] != library_seen[name]
+    ]
+    if differing:
+        raise KitFailure(
+            "the two engines disagree about an interrupted foreach: "
+            + "; ".join(differing)
+            + ". `first`/`second` are the items each engine ACTUALLY executed before and after the "
+            "resume; `seen` is the collected result. Every intended difference belongs in "
+            "docs/EXECUTOR_PARITY.md with its reason; an undocumented one is a parity defect."
+        )
+
+    return (
+        f"both engines ran {legacy_seen['first']} then, on resume, only {legacy_seen['second']} -- "
+        f"identical collected results ({len(legacy_seen['seen'] or [])} items, index-aligned), "
+        f"with mid-loop progress recorded on each side"
+    )
+
+
 # --------------------------------------------------------------------------
 # Ledger coverage -- authored judgements, emitted as ledger-map.yaml
 # --------------------------------------------------------------------------
@@ -2338,8 +2577,13 @@ LEDGER_COVERAGE: dict[str, dict[str, Any]] = {
     },
     "RCP-102": {
         "coverage": "partial",
-        "covered": "`plan` and `run` are exercised with no UI and no Amplifier CLI; `plan` is proved side-effect free (empty workspace after) and works with no host services at all.",
-        "not_covered": "`validate` and `resume` are absent from the shipped surface (residual R2), so two of the four required entry points have no fixture.",
+        "covered": (
+            "`plan`, `run` and `resume` are exercised with no UI and no Amplifier CLI; `plan` is "
+            "proved side-effect free (empty workspace after) and works with no host services at all. "
+            "`resume` is driven end to end over a real state directory by the mid-loop foreach "
+            "fixture -- run, fail, resume -- and compared against the legacy engine's own resume."
+        ),
+        "not_covered": "`validate` is absent from the shipped surface (residual R2), so one of the four required entry points has no fixture.",
     },
     "RCP-103": {
         "coverage": "full",

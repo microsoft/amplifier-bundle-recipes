@@ -811,20 +811,49 @@ steps:
                           "detail": invalid_op,
                       })
 
-          # 12. Staged mode: approval_required without prompt (WARNING)
+          # 12. Staged mode: flat approval keys are REJECTED, not gates (ERROR)
+          # A Stage has exactly `name`, `steps`, `approval`. These three read as
+          # a human checkpoint, are not stage keys, and both engines now refuse
+          # them at load (recipes-c9d) -- before that they were dropped in
+          # silence and the stage ran through ungated. Reported as an ERROR
+          # here, not a warning: the recipe will not load at all.
+          FLAT_APPROVAL_KEYS = (
+              "approval_required",
+              "approval_message",
+              "auto_approve_if",
+          )
           for stage in stages:
               if isinstance(stage, dict):
-                  if stage.get("approval_required") and not stage.get("prompt"):
-                      stage_id = stage.get("id", "(unknown)")
+                  offending = [k for k in FLAT_APPROVAL_KEYS if k in stage]
+                  if offending:
+                      stage_id = stage.get("name", stage.get("id", "(unknown)"))
                       findings.append({
-                          "code": "APPROVAL_NO_PROMPT",
-                          "severity": "WARNING",
+                          "code": "FLAT_STAGE_APPROVAL_KEY",
+                          "severity": "ERROR",
                           "message": (
-                              f"Stage '{stage_id}': approval_required"
-                              " but no approval prompt defined"
+                              f"Stage '{stage_id}': declares"
+                              f" {', '.join(repr(k) for k in offending)},"
+                              " which is not a stage key -- a stage's only"
+                              " approval gate is its 'approval:' block. Use"
+                              " approval: {required: true, prompt: ...}"
                           ),
-                          "detail": stage_id,
+                          "detail": ",".join(offending),
                       })
+
+                  # A real gate that would fail ApprovalConfig.validate().
+                  approval = stage.get("approval")
+                  if isinstance(approval, dict):
+                      if approval.get("required") and not approval.get("prompt"):
+                          stage_id = stage.get("name", stage.get("id", "(unknown)"))
+                          findings.append({
+                              "code": "APPROVAL_NO_PROMPT",
+                              "severity": "ERROR",
+                              "message": (
+                                  f"Stage '{stage_id}': approval.required is"
+                                  " true but no approval.prompt is defined"
+                              ),
+                              "detail": stage_id,
+                          })
 
           return findings
 
