@@ -29,6 +29,7 @@ from .models import OrchestratorConfig
 from .models import RateLimitingConfig
 from .models import Recipe
 from .models import RecursionConfig
+from .models import Stage
 from .models import Step
 from .models import coerce_timeout
 from .session import ApprovalStatus
@@ -1954,6 +1955,13 @@ class RecipeExecutor:
         Raises:
             ApprovalGatePausedError: When execution pauses at an approval gate
         """
+        # The stage whose gate this resume just came through, if any. A
+        # `when: before_stage` gate parks the run ON its own stage, so without
+        # this the very next loop iteration would re-park at the same gate and
+        # the stage could never run. Stays None for an `after_stage` gate,
+        # which parks on the FOLLOWING stage and so cannot re-trigger.
+        approved_gate_stage: str | None = None
+
         # Load state for resumption
         if is_resuming:
             state = self.session_manager.load_state(session_id, project_path)
@@ -1986,6 +1994,7 @@ class RecipeExecutor:
                     self.session_manager.clear_pending_approval(
                         session_id, project_path
                     )
+                    approved_gate_stage = stage_name
                 elif approval_status == ApprovalStatus.PENDING:
                     # Still pending - raise to indicate waiting
                     raise ApprovalGatePausedError(
@@ -2000,6 +2009,7 @@ class RecipeExecutor:
                     self.session_manager.clear_pending_approval(
                         session_id, project_path
                     )
+                    approved_gate_stage = stage_name
                     # Inject approval message into context for subsequent steps
                     state = self.session_manager.load_state(session_id, project_path)
                     context["_approval_message"] = state.get("_approval_message", "")
@@ -2040,6 +2050,44 @@ class RecipeExecutor:
                 start_step = (
                     current_step_in_stage if stage_idx == current_stage_index else 0
                 )
+
+                # A `when: before_stage` gate pauses BEFORE this stage's first
+                # step runs, so denying it still prevents the work. Two
+                # conditions keep it from firing twice: `start_step == 0` (a
+                # stage already part-way through has passed its gate), and
+                # `approved_gate_stage` (this resume came through this very
+                # gate). `when: after_stage` -- the default -- skips this
+                # entirely and gates below, exactly as it always has.
+                if (
+                    stage.approval
+                    and stage.approval.gates_before_stage
+                    and start_step == 0
+                    and stage.name != approved_gate_stage
+                ):
+                    # The gate's own recorded verdict, which outlives the
+                    # pending record `deny` clears: a stage told "no" is not
+                    # asked again, it is refused -- in the same words the
+                    # post-stage denial path uses.
+                    decided = self.session_manager.get_stage_approval_status(
+                        session_id, project_path, stage.name
+                    )
+                    if decided == ApprovalStatus.DENIED:
+                        raise ValueError(
+                            f"Execution denied at stage '{stage.name}'"
+                        )
+                    if decided != ApprovalStatus.APPROVED:
+                        await self._pause_at_before_stage_gate(
+                            session_id,
+                            project_path,
+                            recipe,
+                            context,
+                            stage,
+                            stage_idx,
+                            completed_stages,
+                            completed_steps,
+                            recipe_path=recipe_path,
+                            parent_session_id=parent_session_id,
+                        )
 
                 # Execute steps within this stage
                 for step_idx in range(start_step, len(stage.steps)):
@@ -2209,10 +2257,16 @@ class RecipeExecutor:
                         # Cancellation requested - re-raise to outer handler
                         raise
 
-                # Stage completed - check for approval gate
+                # Stage completed - check for approval gate. A `before_stage`
+                # gate has already had its say above; asking again here would
+                # gate the same stage twice.
                 completed_stages.append(stage.name)
 
-                if stage.approval and stage.approval.required:
+                if (
+                    stage.approval
+                    and stage.approval.required
+                    and not stage.approval.gates_before_stage
+                ):
                     # Save state with next stage as target FIRST
                     # (set_pending_approval will load, add approval fields, and save)
                     self._save_staged_state(
@@ -2389,6 +2443,96 @@ class RecipeExecutor:
             "recipe_path": str(recipe_path) if recipe_path else None,
         }
         self.session_manager.save_state(session_id, project_path, state)
+
+    async def _pause_at_before_stage_gate(
+        self,
+        session_id: str,
+        project_path: Path,
+        recipe: Recipe,
+        context: dict[str, Any],
+        stage: Stage,
+        stage_idx: int,
+        completed_stages: list[str],
+        completed_steps: list[str],
+        recipe_path: Path | None = None,
+        parent_session_id: str | None = None,
+    ) -> None:
+        """Park the run at a ``when: before_stage`` gate. Always raises.
+
+        The mirror image of the post-stage gate below it: state is saved
+        pointing at *this* stage rather than the next one, and this stage is
+        NOT in ``completed_stages`` -- because none of its steps has run.
+        Everything the caller sees (``paused_for_approval``, the prompt, the
+        ``approve``/``deny``/``resume`` protocol) is identical.
+
+        Raises:
+            ApprovalGatePausedError: always -- that is how a gate pauses.
+        """
+        approval = stage.approval
+        assert approval is not None  # only called when a gate is configured
+
+        # Save state pointing at THIS stage, step 0. The stage is deliberately
+        # absent from completed_stages: nothing in it has run, and a resume
+        # must re-enter it rather than step over it.
+        self._save_staged_state(
+            session_id,
+            project_path,
+            recipe,
+            context,
+            stage_idx,
+            0,
+            completed_stages,
+            completed_steps,
+            recipe_path=recipe_path,
+            parent_session_id=parent_session_id,
+        )
+
+        raw_approval_prompt = (
+            approval.prompt or f"Approve running stage '{stage.name}'?"
+        )
+        resolved_approval_prompt = self.substitute_variables(
+            raw_approval_prompt, context
+        )
+
+        self.session_manager.set_pending_approval(
+            session_id=session_id,
+            project_path=project_path,
+            stage_name=stage.name,
+            prompt=resolved_approval_prompt,
+            timeout=approval.timeout,
+            default=approval.default,
+        )
+
+        # Emit approval event for UI. The gate sits on this stage's FIRST
+        # step, which has not run -- not on the last one, which is where an
+        # after_stage gate sits.
+        all_steps = [s for stg in recipe.stages for s in stg.steps]
+        first_step_index = sum(len(stg.steps) for stg in recipe.stages[:stage_idx])
+        steps_status = self._build_steps_status(
+            all_steps, first_step_index, completed_steps
+        )
+        if first_step_index < len(steps_status):
+            steps_status[first_step_index]["status"] = "waiting_approval"
+            steps_status[first_step_index]["is_approval_gate"] = True
+
+        await self._show_progress(
+            f"⏸️ Waiting for approval before stage: {stage.name}",
+            event_name="recipe:approval",
+            event_data=self._build_recipe_event_data(
+                recipe,
+                first_step_index,
+                steps_status,
+                "waiting_approval",
+                prompt=raw_approval_prompt,
+                stage_name=stage.name,
+            ),
+        )
+
+        raise ApprovalGatePausedError(
+            session_id=session_id,
+            stage_name=stage.name,
+            approval_prompt=resolved_approval_prompt,
+        )
 
     async def execute_step_with_retry(
         self,

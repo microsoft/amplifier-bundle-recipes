@@ -194,6 +194,44 @@ def test_agent_config_rejected_in_staged_and_nested_steps():
     assert "'inner'" in str(excinfo.value)
 
 
+def test_stage_approval_when_is_accepted():
+    """A `when: before_stage` gate parses; the manifest layer does not gate it.
+
+    ``approval.when`` positions a stage's approval gate (recipes-vtj). It is
+    step-engine vocabulary, not manifest vocabulary -- so the contract's job
+    here is to let it through untouched rather than to know what it means. A
+    v2 recipe that uses it must still validate and plan, or the field would be
+    unusable in exactly the recipes that most need it.
+    """
+    staged = textwrap.dedent(
+        """
+        schema_version: 2
+        name: gated
+        description: A staged recipe with a pre-stage gate
+        version: "1.0"
+        dependencies: []
+        stages:
+          - name: assess
+            steps:
+              - id: look
+                type: bash
+                command: echo looked
+          - name: act
+            approval:
+              required: true
+              when: before_stage
+              prompt: Run the act stage?
+            steps:
+              - id: do-it
+                type: bash
+                command: echo did
+        """
+    )
+    manifest = parse_manifest_text(staged)
+    assert isinstance(manifest, Manifest)
+    assert manifest.schema_version == 2
+
+
 def test_agent_config_is_never_silently_retained():
     """A clean v2 recipe carries no agent_config anywhere in the parsed result."""
     manifest = parse_manifest_text(VALID_V2)

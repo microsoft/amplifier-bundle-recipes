@@ -549,13 +549,48 @@ def _render_steps_block(
     return "\n".join(lines), last_uncond, step_types
 
 
+def _emit_gate(
+    lines: list[str],
+    step_types: set[str],
+    approval: dict,
+    stage_name: str,
+    exit_node: str,
+) -> str:
+    """Append one approval-gate diamond, hung off ``exit_node``.
+
+    Called from either side of a stage -- which side is decided by the stage's
+    ``approval.when`` -- so the node itself is described in exactly one place.
+
+    Returns:
+        The gate's node id, which becomes the flow's new exit node.
+    """
+    gate_id = "gate_" + _sanitize_id(stage_name)
+    gate_label = "Human\nApproves?"
+    ap_prompt = approval.get("prompt", "")
+    tt_attr = ""
+    if ap_prompt:
+        tt_attr = f", tooltip={_q(ap_prompt[:100].replace(chr(10), ' '))}"
+    lines.append(
+        f"    {gate_id} [label={_q(gate_label)}, shape=diamond,"
+        f' fillcolor="{_COLOR_APPROVAL}"{tt_attr}]'
+    )
+    lines.append(f"    {exit_node} -> {gate_id}")
+    step_types.add("approval")
+    return gate_id
+
+
 def _render_staged(stages: list[dict]) -> tuple[str, str, set[str]]:
     """Render a staged recipe to DOT cluster subgraphs with approval gates.
 
     Each stage is wrapped in a ``subgraph cluster_<name>`` block.  When a
     stage carries ``approval.required: true``, an orange approval-gate diamond
-    is inserted **before** that stage (between the previous stage's exit node
-    and this stage's first step).
+    is inserted on the side of the stage its ``approval.when`` names:
+
+    * ``after_stage`` (the default) -- **after** the stage's last step, which
+      is where the engine actually pauses. Drawing it before the stage was a
+      picture of semantics the engine has never had (recipes-vtj).
+    * ``before_stage`` -- **before** the stage's first step, between the
+      previous stage's exit node and this stage's first step.
 
     Args:
         stages: List of stage dictionaries from the recipe YAML.
@@ -582,22 +617,11 @@ def _render_staged(stages: list[dict]) -> tuple[str, str, set[str]]:
         stage_steps: list[dict] = stage.get("steps") or []
         approval = stage.get("approval") or {}
         has_approval = bool(approval.get("required"))
+        gates_before = approval.get("when") == "before_stage"
 
-        # ── Approval gate before this stage ───────────────────────────────────
-        if has_approval:
-            gate_id = "gate_" + _sanitize_id(sname)
-            gate_label = "Human\nApproves?"
-            ap_prompt = approval.get("prompt", "")
-            tt_attr = ""
-            if ap_prompt:
-                tt_attr = f", tooltip={_q(ap_prompt[:100].replace(chr(10), ' '))}"
-            lines.append(
-                f"    {gate_id} [label={_q(gate_label)}, shape=diamond,"
-                f' fillcolor="{_COLOR_APPROVAL}"{tt_attr}]'
-            )
-            lines.append(f"    {prev_exit} -> {gate_id}")
-            prev_exit = gate_id
-            step_types.add("approval")
+        # ── Approval gate BEFORE this stage (`when: before_stage`) ───────────────────────────────────
+        if has_approval and gates_before:
+            prev_exit = _emit_gate(lines, step_types, approval, sname, prev_exit)
 
         # ── Stage cluster ──────────────────────────────────────────────────────
         stage_label = _title_case(sname)
@@ -623,6 +647,12 @@ def _render_staged(stages: list[dict]) -> tuple[str, str, set[str]]:
             lines.append("    }")
             lines.append(f"    {prev_exit} -> {ph_id} [style=invis]")
             prev_exit = ph_id
+
+        # -- Approval gate AFTER this stage (the default) -------------------
+        # This is where the engine actually pauses for a `when: after_stage`
+        # gate: every step above has already run by the time it is asked.
+        if has_approval and not gates_before:
+            prev_exit = _emit_gate(lines, step_types, approval, sname, prev_exit)
 
         lines.append("")
 

@@ -96,7 +96,13 @@ def test_simple_flat_recipe(tmp_path: Path) -> None:
 
 
 def test_staged_recipe_with_approval(tmp_path: Path) -> None:
-    """Staged recipe: cluster subgraphs, approval diamond, inter-stage edges."""
+    """Staged recipe: cluster subgraphs, approval diamond, inter-stage edges.
+
+    The default gate is a POST-stage gate, and the diagram now says so. It used
+    to draw every gate before its stage -- a picture of semantics the engine has
+    never had, and the same misreading that made the shipped staged example ask
+    permission for work already done (recipes-vtj).
+    """
     p = _write(
         tmp_path,
         """
@@ -127,11 +133,46 @@ def test_staged_recipe_with_approval(tmp_path: Path) -> None:
     assert "gate_stage_one" in dot
     assert "#ffe0b2" in dot
 
-    # start flows into the gate which precedes stage-one
-    assert "start -> gate_stage_one" in dot
+    # start flows straight into stage-one's step; the gate comes AFTER it,
+    # which is where the engine actually pauses.
+    assert "start -> step_prepare" in dot
+    assert "step_prepare -> gate_stage_one" in dot
+    assert "gate_stage_one -> step_finalize" in dot
+    assert "start -> gate_stage_one" not in dot
 
     # Legend is present
     assert "cluster_legend" in dot
+
+
+def test_staged_recipe_with_before_stage_approval(tmp_path: Path) -> None:
+    """`when: before_stage` puts the diamond in front of the stage it guards."""
+    p = _write(
+        tmp_path,
+        """
+        name: staged-recipe
+        stages:
+          - name: stage-one
+            steps:
+              - id: prepare
+                agent: foundation:zen-architect
+                prompt: Prepare the work for review.
+          - name: stage-two
+            approval:
+              required: true
+              when: before_stage
+              prompt: Approve running stage two?
+            steps:
+              - id: finalize
+                agent: foundation:zen-architect
+                prompt: Finalize the work after approval.
+        """,
+    )
+    dot = recipe_to_dot(p)
+
+    assert "start -> step_prepare" in dot
+    assert "step_prepare -> gate_stage_two" in dot
+    assert "gate_stage_two -> step_finalize" in dot
+    assert "step_finalize -> gate_stage_two" not in dot
 
 
 # ---------------------------------------------------------------------------
