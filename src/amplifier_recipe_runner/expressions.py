@@ -35,6 +35,15 @@ class ExpressionError(Exception):
     pass
 
 
+# Distinguishes "the context does not carry this variable at all" (an error)
+# from "the context carries it and its value is None" (renders as `null`).
+# Resolution used to return None for both, so a None-valued variable was
+# reported as undefined.
+_MISSING = object()
+
+_VARIABLE_PATTERN = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
+
+
 def evaluate_condition(expression: str, context: dict[str, Any]) -> bool:
     """Evaluate a condition expression against context.
 
@@ -61,6 +70,42 @@ def evaluate_condition(expression: str, context: dict[str, Any]) -> bool:
         raise ExpressionError(f"Invalid expression: {e}") from e
 
 
+def substitute_condition_variables(expression: str, context: dict[str, Any]) -> str:
+    """Render ``{{variable}}`` references in *condition text* as literals.
+
+    This is exactly the substitution :func:`evaluate_condition` performs
+    internally, exposed so a caller that also needs the resolved text -- a
+    skip reason, a loop's exit message -- resolves it the same way the
+    evaluator does.
+
+    Resolving a condition with a general-purpose *textual* substituter
+    instead is the defect recorded in ``recipes-kft``: the value is pasted in
+    bare, so an empty string leaves a dangling operator (``{{flag}} == ''``
+    becomes `` == ''``) and a value with a space becomes two bare tokens
+    (``a b == 'a b'``) -- both of which the parser rejects.
+    """
+    return _substitute_variables(expression, context)
+
+
+def _escape_for_quote(value: str, quote: str) -> str:
+    """Escape a raw string for safe embedding inside a ``quote``-delimited literal.
+
+    Escapes backslashes and the delimiting quote character so the value
+    cannot terminate the literal early or break tokenization.
+
+    Args:
+        value: Raw string value from context
+        quote: The quote character delimiting the literal (``'`` or ``"``)
+
+    Returns:
+        Escaped string safe for embedding between two ``quote`` characters
+    """
+    # Escape backslashes first (so we don't double-escape the quote escapes)
+    value = value.replace("\\", "\\\\")
+    # Escape the delimiting quote
+    return value.replace(quote, "\\" + quote)
+
+
 def _escape_string_value(value: str) -> str:
     """Escape a string value for safe embedding in single-quoted literal.
 
@@ -73,11 +118,7 @@ def _escape_string_value(value: str) -> str:
     Returns:
         Escaped string safe for embedding in 'quotes'
     """
-    # Escape backslashes first (so we don't double-escape the quote escapes)
-    value = value.replace("\\", "\\\\")
-    # Escape single quotes
-    value = value.replace("'", "\\'")
-    return value
+    return _escape_for_quote(value, "'")
 
 
 def _unescape_string_value(value: str) -> str:
@@ -98,36 +139,107 @@ def _unescape_string_value(value: str) -> str:
     return value
 
 
+def _bare_text(value: Any) -> str:
+    """Render a value as the raw text it contributes inside a string literal."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def _render_reference(var_path: str, context: dict[str, Any], quote: str | None) -> str:
+    """Render one ``{{var}}`` reference as expression text.
+
+    ``quote`` is the character delimiting the string literal the reference
+    sits inside, or None when it stands on its own.
+    """
+    value = _resolve_variable(var_path, context)
+    if value is _MISSING:
+        raise ExpressionError(f"Undefined variable: {var_path}")
+
+    # Inside the author's own literal ('{{var}}' == ''): splice the raw text
+    # in, escaped for the enclosing quote. Wrapping it in quotes of our own
+    # here is what produced '''' -- two empty literals side by side.
+    if quote is not None:
+        return _escape_for_quote(_bare_text(value), quote)
+
+    # Standing on its own: render a well-formed literal, so the expression
+    # survives tokenization whatever the value is.
+    if isinstance(value, str):
+        # Escape special characters before wrapping in quotes
+        escaped = _escape_string_value(value)
+        return f"'{escaped}'"
+    return _bare_text(value)
+
+
 def _substitute_variables(expression: str, context: dict[str, Any]) -> str:
-    """Replace {{variable}} references with their values."""
-    pattern = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
+    """Replace {{variable}} references with their values.
 
-    def replace_var(match: re.Match) -> str:
-        var_path = match.group(1)
-        value = _resolve_variable(var_path, context)
-        if value is None:
-            raise ExpressionError(f"Undefined variable: {var_path}")
-        # Convert to string representation for comparison
-        if isinstance(value, str):
-            # Escape special characters before wrapping in quotes
-            escaped = _escape_string_value(value)
-            return f"'{escaped}'"
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        return str(value)
+    Substitution is *type-aware* and *quote-aware*:
 
-    return pattern.sub(replace_var, expression)
+    - Standing on its own, a reference renders as a well-formed literal: a
+      string becomes a quoted, escaped string literal (so ``''``, ``'a b'``
+      and ``'it\\'s'`` all survive tokenization), a bool becomes
+      ``true``/``false``, ``None`` becomes ``null``, a number renders bare.
+    - Inside a string literal the author wrote themselves
+      (``'{{var}}' == ''``), the value is spliced in raw and escaped for the
+      enclosing quote, so their quotes are honoured rather than doubled.
+
+    A reference the context does not carry is an error; a reference whose
+    value *is* ``None`` is not.
+    """
+    out: list[str] = []
+    index = 0
+    length = len(expression)
+    quote: str | None = None
+
+    while index < length:
+        char = expression[index]
+
+        if quote is not None:
+            # Inside a literal: preserve escape pairs, close on the delimiter.
+            if char == "\\" and index + 1 < length:
+                out.append(expression[index : index + 2])
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+                out.append(char)
+                index += 1
+                continue
+        elif char in ("'", '"'):
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+
+        match = _VARIABLE_PATTERN.match(expression, index)
+        if match:
+            out.append(_render_reference(match.group(1), context, quote))
+            index = match.end()
+            continue
+
+        out.append(char)
+        index += 1
+
+    return "".join(out)
 
 
 def _resolve_variable(path: str, context: dict[str, Any]) -> Any:
-    """Resolve dotted variable path (e.g., 'step.id')."""
+    """Resolve dotted variable path (e.g., 'step.id').
+
+    Returns ``_MISSING`` -- not None -- when the path is absent, so a
+    variable whose value *is* None stays distinguishable from one the
+    context never carried.
+    """
     parts = path.split(".")
     value = context
     for part in parts:
         if isinstance(value, dict) and part in value:
             value = value[part]
         else:
-            return None
+            return _MISSING
     return value
 
 
@@ -279,8 +391,12 @@ def _tokenize(expression: str) -> list[str]:
 def _is_truthy(value: str) -> bool:
     """Determine if a string value is truthy using boolean normalization.
 
-    Falsy values: 'false', 'False', '', '0', 'none', 'None'
+    Falsy values: 'false', 'False', '', '0', 'none', 'None', 'null'
     Truthy values: 'true', 'True', any other non-empty string
+
+    ``null`` is what a None-valued variable now renders as, so it belongs
+    beside 'none'/'None' -- otherwise `condition: "{{maybe}}"` would treat a
+    None as truthy.
 
     Args:
         value: String value to test
@@ -288,7 +404,7 @@ def _is_truthy(value: str) -> bool:
     Returns:
         True if value is truthy, False otherwise
     """
-    return value not in ("false", "False", "", "0", "none", "None")
+    return value not in ("false", "False", "", "0", "none", "None", "null")
 
 
 def _try_numeric(value: str) -> float | None:

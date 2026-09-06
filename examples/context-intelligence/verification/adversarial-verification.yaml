@@ -428,11 +428,14 @@ stages:
       SKIPPED when continue_from is provided (continuation mode).
     approval:
       required: false
-    condition: "{{continue_from}} == ''"
+    # Fresh-run gate. It sits on every step of this stage, not on the stage:
+    # `condition:` is a STEP field -- a stage-level one is dropped silently by
+    # both engines, so a gate written there never gates anything.
     
     steps:
       - id: validate_inputs
         agent: "foundation:explorer"
+        condition: "{{continue_from}} == ''"
         timeout: 120  # 2 minutes max
         prompt: |
           # Quick Pre-Check (Max 2 minutes)
@@ -494,6 +497,7 @@ stages:
       
       - id: check_proceed
         agent: "foundation:zen-architect"
+        condition: "{{continue_from}} == ''"
         prompt: |
           # Evaluate Pre-Check Result
           
@@ -534,11 +538,14 @@ stages:
       SKIPPED when continue_from is provided (continuation mode).
     approval:
       required: false
-    condition: "{{continue_from}} == ''"
+    # Fresh-run gate. It sits on every step of this stage, not on the stage:
+    # `condition:` is a STEP field -- a stage-level one is dropped silently by
+    # both engines, so a gate written there never gates anything.
     
     steps:
       - id: parallel_investigation
         agent: "foundation:zen-architect"
+        condition: "{{continue_from}} == ''"
         prompt: |
           # Parallel Investigation Orchestrator
           
@@ -624,6 +631,7 @@ stages:
 
       - id: confidence_tagging
         agent: "foundation:zen-architect"
+        condition: "{{continue_from}} == ''"
         prompt: |
           # Confidence Consolidation Pass
           
@@ -672,11 +680,14 @@ stages:
       SKIPPED when continue_from is provided (continuation mode).
     approval:
       required: false
-    condition: "{{continue_from}} == ''"
+    # Fresh-run gate. It sits on every step of this stage, not on the stage:
+    # `condition:` is a STEP field -- a stage-level one is dropped silently by
+    # both engines, so a gate written there never gates anything.
     
     steps:
       - id: create_v1_document
         agent: foundation:zen-architect
+        condition: "{{continue_from}} == ''"
         prompt: |
           # Synthesize Investigation Findings
           
@@ -759,6 +770,7 @@ stages:
       
       - id: save_v1
         type: bash
+        condition: "{{continue_from}} == ''"
         command: |
           # Pre-compute timestamp to avoid HEREDOC issues
           TIMESTAMP=$(date -Iseconds)
