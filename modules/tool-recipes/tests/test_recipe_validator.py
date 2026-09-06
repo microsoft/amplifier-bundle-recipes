@@ -3,13 +3,16 @@
 from pathlib import Path
 
 from amplifier_module_tool_recipes.models import ApprovalConfig
+from amplifier_module_tool_recipes.models import ProviderPreferenceConfig
 from amplifier_module_tool_recipes.models import Recipe
 from amplifier_module_tool_recipes.models import Stage
 from amplifier_module_tool_recipes.models import Step
 from amplifier_module_tool_recipes.validator import LEGACY_AGENT_REFS_CODE
+from amplifier_module_tool_recipes.validator import MODEL_WITHOUT_PROVIDER_CODE
 from amplifier_module_tool_recipes.validator import ValidationResult
 from amplifier_module_tool_recipes.validator import check_agent_availability
 from amplifier_module_tool_recipes.validator import check_legacy_agent_refs
+from amplifier_module_tool_recipes.validator import check_model_without_provider
 from amplifier_module_tool_recipes.validator import check_step_dependencies
 from amplifier_module_tool_recipes.validator import check_variable_references
 from amplifier_module_tool_recipes.validator import extract_variables
@@ -990,3 +993,139 @@ class TestCheckLegacyAgentRefs:
         assert recipe.schema_version == 2
         assert recipe.declares_v2 is True
         assert check_legacy_agent_refs(recipe) == []
+
+
+class TestCheckModelWithoutProvider:
+    """Tests for check_model_without_provider (RECIPE_MODEL_WITHOUT_PROVIDER).
+
+    The defect: ``executor.execute_step`` honours a legacy step-level
+    ``model:`` only in its ``elif step.provider and step.model:`` branch.
+    Written without a ``provider:``, the pin matches no branch, no preference
+    is built, and the step runs on the session default -- silently. Measured
+    live: one probe with ``provider: anthropic`` + ``model: "claude-haiku"``
+    failed on the model id; the identical probe with the ``provider:`` line
+    deleted *completed*, because the pin was thrown away.
+    """
+
+    def _recipe(self, **kwargs) -> Recipe:
+        kwargs.setdefault("name", "test")
+        kwargs.setdefault("description", "test")
+        kwargs.setdefault("version", "1.0.0")
+        return Recipe(**kwargs)
+
+    def test_model_without_provider_warns(self):
+        recipe = self._recipe(
+            steps=[
+                Step(id="s1", agent="a", prompt="p", output="o", model="claude-haiku-*")
+            ]
+        )
+        warnings = check_model_without_provider(recipe)
+        assert len(warnings) == 1
+        assert warnings[0].startswith(f"{MODEL_WITHOUT_PROVIDER_CODE}: ")
+        assert "s1" in warnings[0]
+        assert "claude-haiku-*" in warnings[0]
+
+    def test_model_with_provider_is_silent(self):
+        recipe = self._recipe(
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="p",
+                    output="o",
+                    provider="anthropic",
+                    model="claude-haiku-*",
+                )
+            ]
+        )
+        assert check_model_without_provider(recipe) == []
+
+    def test_no_model_at_all_is_silent(self):
+        recipe = self._recipe(steps=[Step(id="s1", agent="a", prompt="p", output="o")])
+        assert check_model_without_provider(recipe) == []
+
+    def test_nested_loop_body_is_covered(self):
+        """A pin is just as silent inside a foreach body as outside one."""
+        recipe = self._recipe(
+            steps=[
+                Step(
+                    id="loop",
+                    type="agent",
+                    agent="a",
+                    foreach="{{items}}",
+                    while_steps=[
+                        Step(
+                            id="inner",
+                            agent="a",
+                            prompt="p",
+                            output="o",
+                            model="claude-haiku-*",
+                        )
+                    ],
+                )
+            ]
+        )
+        warnings = check_model_without_provider(recipe)
+        assert len(warnings) == 1
+        assert "inner" in warnings[0]
+
+    def test_staged_recipe_is_covered(self):
+        recipe = self._recipe(
+            stages=[
+                Stage(
+                    name="stage-1",
+                    steps=[
+                        Step(
+                            id="s1",
+                            agent="a",
+                            prompt="p",
+                            output="o",
+                            model="claude-haiku-*",
+                        )
+                    ],
+                )
+            ]
+        )
+        warnings = check_model_without_provider(recipe)
+        assert len(warnings) == 1
+        assert "s1" in warnings[0]
+
+    def test_bash_step_is_not_double_reported(self):
+        """`model` on a non-agent step is already a hard error; don't pile on."""
+        recipe = self._recipe(
+            steps=[
+                Step(id="s1", type="bash", command="echo hi", model="claude-haiku-*")
+            ]
+        )
+        assert check_model_without_provider(recipe) == []
+
+    def test_provider_preferences_step_is_not_double_reported(self):
+        """`model` + `provider_preferences` is already a hard error."""
+        recipe = self._recipe(
+            steps=[
+                Step(
+                    id="s1",
+                    agent="a",
+                    prompt="p",
+                    output="o",
+                    model="claude-haiku-*",
+                    provider_preferences=[
+                        ProviderPreferenceConfig(provider="anthropic", model="x-*")
+                    ],
+                )
+            ]
+        )
+        assert check_model_without_provider(recipe) == []
+
+    def test_validate_recipe_surfaces_the_warning(self):
+        """The check is wired into the top-level validator, not orphaned."""
+        recipe = self._recipe(
+            steps=[
+                Step(id="s1", agent="a", prompt="p", output="o", model="claude-haiku-*")
+            ]
+        )
+        result = validate_recipe(recipe)
+        assert result.is_valid, "a discarded pin is a warning, not an error"
+        assert any(
+            w.startswith(f"{MODEL_WITHOUT_PROVIDER_CODE}: ") for w in result.warnings
+        )

@@ -37,6 +37,8 @@ from amplifier_module_tool_recipes import runner_adapter as ra
 from amplifier_module_tool_recipes.executor import RecipeExecutor
 from amplifier_module_tool_recipes.session import SessionManager
 
+from .pre_fix_sessions import split_into_pre_fix_pair
+
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 RUNNER_AVAILABLE = ra.runner_available()
@@ -342,15 +344,17 @@ class TestApprovalGateResume:
         assert lines(out_dir / "report.txt") == ["reported"]
 
     @pytest.mark.asyncio
-    async def test_resume_also_works_addressed_at_the_engines_own_session(
+    async def test_resume_also_works_addressed_at_a_pre_fix_engine_session(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Two session ids exist; a caller holding either must be able to resume.
+        """A run recorded with two ids: a caller holding either must resume.
 
-        The engine runs in a session of its own making. Both ids were observed
-        in the wild (the run reports one, `approvals` lists the other), and
-        before the fix BOTH refused -- one on the sequential executor, one with
-        "recorded no run outcome".
+        Before recipes-ppu the engine ran in a session of its own making, so
+        both ids were observed in the wild (the run reported one, `approvals`
+        listed the other) and before recipes-5c6 BOTH refused -- one on the
+        sequential executor, one with "recorded no run outcome". A fresh run
+        now leaves one session, so the pair is reconstructed on disk here;
+        those sessions still exist from older builds.
         """
         tool, project = make_tool(tmp_path)
         out_dir = project / "out"
@@ -370,10 +374,7 @@ class TestApprovalGateResume:
             {"recipe_path": str(tmp_path / "staged.yaml")}
         )
         reported_session = executed.output["session_id"]
-        record = tool.session_manager.load_state(reported_session, project)[
-            V2_RUN_STATE_KEY
-        ]
-        engine_session = record["engine_session_id"]
+        engine_session = split_into_pre_fix_pair(tool, project, reported_session)
         assert engine_session and engine_session != reported_session
 
         await tool._approve_stage(

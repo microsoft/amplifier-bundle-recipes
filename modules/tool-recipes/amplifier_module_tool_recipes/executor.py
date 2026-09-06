@@ -30,6 +30,7 @@ from .models import OrchestratorConfig
 from .models import RateLimitingConfig
 from .models import Recipe
 from .models import RecursionConfig
+from .models import Stage
 from .models import Step
 from .models import coerce_timeout
 from .session import ApprovalStatus
@@ -91,7 +92,9 @@ def _model_role_label(role: Any) -> str | None:
     return str(role)
 
 
-def _model_after_pattern_resolution(resolution: Any, provider_name: str) -> str:
+def _model_after_pattern_resolution(
+    resolution: Any, provider_name: str, coordinator: Any = None
+) -> str:
     """The model a step should spawn with, honouring the documented fallback.
 
     ``resolve_model_pattern`` reports "nothing matched" in one of two shapes,
@@ -102,11 +105,22 @@ def _model_after_pattern_resolution(resolution: Any, provider_name: str) -> str:
     dies with a 404 (``not_found_error``) instead of running. The documented
     contract is the opposite: "if model pattern has no matches -> uses
     provider's default model" (``context/recipe-instructions.md``,
-    ``docs/BEST_PRACTICES.md``). An empty model is how this executor already
-    spells "use the provider's default" (see the ``step.provider``-only branch),
-    so that is what an unmatched pattern collapses to under either shape,
-    loudly. ``None`` in particular must never reach a provider as the string
-    ``"None"``.
+    ``docs/BEST_PRACTICES.md``). ``None`` in particular must never reach a
+    provider as the string ``"None"``.
+
+    "The provider's default model" is resolved to a REAL model id here
+    (:func:`_provider_default_model`), not spelled as the empty string. The
+    empty string looks like "leave the model alone" and is not: the spawner
+    stamps whatever a preference carries onto the promoted instance's config
+    (``spawn_utils._apply_single_override`` -> ``config["default_model"] =
+    model``), so an empty model BLANKS that provider's configured default and
+    the run dies on a 400 -- ``invalid_request_error``, "model: String should
+    have at least 1 character" -- measured with ``model:
+    "claude-nosuchfamily-*"`` + ``provider: anthropic``. Turning a 404 into a
+    400 is not a fallback. If no default can be named at all the empty string
+    is still returned here, and :func:`resolve_default_models` -- the last stop
+    before the spawn -- drops the preference rather than emit the blanking
+    value.
 
     The fallback fires only on POSITIVE evidence of no match: a pattern was
     resolved, a non-empty catalogue came back from the provider, and nothing in
@@ -124,19 +138,25 @@ def _model_after_pattern_resolution(resolution: Any, provider_name: str) -> str:
     if not pattern or not available_models or matched_models:
         return resolved_model
 
+    default_model = _provider_default_model(coordinator, provider_name)
     logger.warning(
         "model pattern %r matched none of the %d model(s) provider %r offers - "
-        "falling back to that provider's default model, as documented. "
+        "falling back to that provider's default model (%s), as documented. "
         "Passing the pattern through would 404 (no model is literally named "
         "%r). Available: %s",
         pattern,
         len(available_models),
         provider_name or "(unnamed)",
+        repr(default_model)
+        if default_model
+        else "not nameable from this provider name alone - it is resolved "
+        "again against the pinned instance just before the spawn, and the "
+        "preference is dropped if nothing names one",
         pattern,
         ", ".join(str(m) for m in list(available_models)[:10])
         + ("..." if len(available_models) > 10 else ""),
     )
-    return ""
+    return default_model
 
 
 def _is_wsl_bash(path: str) -> bool:
@@ -896,6 +916,202 @@ def pin_preferences_to_instances(
 
 
 # ---------------------------------------------------------------------------
+# "Use the provider's default" must name a model, because "" BLANKS one
+# ---------------------------------------------------------------------------
+#
+# A ProviderPreference's `model` is not advisory and it is not optional: the
+# spawner stamps it onto the promoted instance's mount config verbatim --
+# `spawn_utils._apply_single_override` does `config["default_model"] = model`
+# with no emptiness check -- and the provider module then reads that key back
+# as its own default (`provider-anthropic/__init__.py:882`:
+# `self.config.get("default_model", "claude-sonnet-5")`; the key is PRESENT, so
+# the module's built-in default never applies). An empty model therefore does
+# not mean "leave this provider alone"; it means "run this provider with no
+# model", and the request dies with
+#   InvalidRequestError ... "model: String should have at least 1 character".
+#
+# That is what a step with `provider: anthropic` + an unmatchable
+# `model: "claude-nosuchfamily-*"` measured: the fallback fired, said the right
+# thing, and substituted "". `pin_preferences_to_instances` above already
+# rewrites an empty model to the CHOSEN INSTANCE'S configured `default_model`
+# -- but only when the mount entry declares one. A host whose provider entry
+# carries no `default_model` (the module supplies its own) leaves the empty
+# string in place, and it reaches the API.
+#
+# So the chain gets one last pass before it is handed to the spawn: every
+# remaining empty model is filled from the provider itself, and any preference
+# still unfillable is DROPPED rather than emitted. Dropping costs the
+# promotion (the child inherits the parent session's provider ordering, which
+# is exactly what an unpinned `delegate` of the same agent does) and the step
+# runs; emitting "" costs the whole run.
+
+
+def _mount_entries(coordinator: Any) -> list[dict[str, Any]]:
+    """The mount plan's provider entries, or ``[]`` for a host without them."""
+    config = getattr(coordinator, "config", None)
+    if not isinstance(config, dict):
+        return []
+    entries = config.get("providers")
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _configured_default_model(coordinator: Any, provider_name: str) -> str:
+    """``default_model`` as the mount plan declares it for ``provider_name``.
+
+    ``provider_name`` may be an instance id (the shape a pinned chain carries)
+    or a bare module name (the shape an unpinnable chain keeps), so both are
+    matched. Ties are broken the way :func:`_pin_preference_to_instance` breaks
+    them -- lowest priority number, then declaration order -- so this names the
+    same instance the rest of the engine would.
+    """
+    if not provider_name:
+        return ""
+    variants = _provider_name_variants(provider_name)
+    candidates = [
+        (index, entry)
+        for index, entry in enumerate(_mount_entries(coordinator))
+        if _provider_mount_key(entry) == provider_name
+        or variants & _provider_name_variants(str(entry.get("module", "")))
+    ]
+    if not candidates:
+        return ""
+    _, chosen = min(candidates, key=lambda pair: (_provider_priority(pair[1]), pair[0]))
+    configured = _provider_entry_config(chosen).get("default_model")
+    return configured if isinstance(configured, str) else ""
+
+
+def _live_default_model(coordinator: Any, provider_name: str) -> str:
+    """``default_model`` as the MOUNTED provider instance itself reports it.
+
+    The authoritative answer, and the only one available on a host whose mount
+    entry declares no ``default_model``: a provider module resolves its own
+    default at construction (config value, else the module's built-in), and
+    exposes it as an attribute. Read defensively -- a test double or an exotic
+    provider may not have one, and a ``MagicMock``'s auto-attribute is not a
+    model name, so only a non-empty ``str`` counts.
+
+    Mounted providers are keyed by INSTANCE ID, so a bare module name
+    (``anthropic``) matches none of them on a host that mounts instances
+    (``opus``, ``sonnet``, ...). Each live name is therefore also resolved
+    through its own mount entry, exactly as
+    ``spawn_utils._find_provider_instance`` does, and the lowest priority
+    number wins -- the instance this session resolves for that module anyway.
+    """
+    if not provider_name:
+        return ""
+    try:
+        providers = coordinator.get("providers")
+    except Exception:  # pragma: no cover - defensive: bare coordinator doubles
+        return ""
+    if not isinstance(providers, Mapping):
+        return ""
+
+    variants = _provider_name_variants(provider_name)
+    entries = _mount_entries(coordinator)
+    by_mount_key = {_provider_mount_key(entry): entry for entry in entries}
+
+    candidates: list[tuple[float, int, Any]] = []
+    for order, (name, instance) in enumerate(providers.items()):
+        if not isinstance(name, str):
+            continue
+        entry = by_mount_key.get(name)
+        named_directly = name == provider_name or bool(
+            variants & _provider_name_variants(name)
+        )
+        named_by_module = entry is not None and bool(
+            variants & _provider_name_variants(str(entry.get("module", "")))
+        )
+        if not (named_directly or named_by_module):
+            continue
+        priority = _provider_priority(entry) if entry is not None else float("inf")
+        candidates.append((priority, order, instance))
+
+    for _, _, instance in sorted(candidates, key=lambda item: item[:2]):
+        default = getattr(instance, "default_model", None)
+        if isinstance(default, str) and default:
+            return default
+    return ""
+
+
+def _provider_default_model(coordinator: Any, provider_name: str) -> str:
+    """The model ``provider_name`` runs on this host when nothing pins one.
+
+    Mount-plan config first (it is instance-exact and is what the spawner will
+    write anyway), then the live instance (which knows the module's built-in
+    default the mount plan never spelled out). ``""`` means "this host cannot
+    name it" -- never a value to pass on as a model.
+    """
+    return _configured_default_model(coordinator, provider_name) or _live_default_model(
+        coordinator, provider_name
+    )
+
+
+def resolve_default_models(
+    preferences: list[Any] | None, coordinator: Any
+) -> list[Any] | None:
+    """Replace every "use the provider's default" placeholder with a real id.
+
+    The last stop before the spawn. A preference whose model is empty is filled
+    from :func:`_provider_default_model`; one that cannot be filled is dropped,
+    because emitting it would blank the promoted provider's configured model
+    (see this section's header comment). An emptied chain becomes ``None`` --
+    inherit the parent session's ordering -- matching
+    :func:`pin_preferences_to_instances`.
+    """
+    if not preferences:
+        return preferences
+
+    resolved: list[Any] = []
+    for pref in preferences:
+        model = getattr(pref, "model", "") or ""
+        if model:
+            resolved.append(pref)
+            continue
+
+        provider = getattr(pref, "provider", "") or ""
+        default = _provider_default_model(coordinator, provider)
+        if not default:
+            logger.warning(
+                "provider preference %r carries no model and this host does "
+                "not name a default for it (no `default_model` in its mount "
+                "entry, and no mounted instance reports one) - dropping the "
+                "preference. Passing an empty model on would overwrite that "
+                "provider's own default model with the empty string and the "
+                "request would fail with \"model: String should have at least "
+                "1 character\"; the spawn instead inherits the parent "
+                "session's provider ordering",
+                provider or "(unnamed)",
+            )
+            continue
+
+        config = getattr(pref, "config", None)
+        logger.debug(
+            "provider preference %r had no model; using that provider's own "
+            "default model %r rather than an empty string the spawner would "
+            "write over its configured default",
+            provider,
+            default,
+        )
+        resolved.append(
+            ProviderPreference(
+                provider=provider,
+                model=default,
+                config=dict(config) if isinstance(config, dict) else {},
+            )
+        )
+
+    if not resolved:
+        logger.warning(
+            "no provider preference survived default-model resolution; "
+            "spawning with the parent session's provider ordering"
+        )
+        return None
+    return resolved
+
+
+# ---------------------------------------------------------------------------
 # The spawned agent's OWN overlay must say the same thing
 # ---------------------------------------------------------------------------
 #
@@ -1217,6 +1433,60 @@ class RecipeExecutor:
             session_id, project_path, immediate=is_immediate
         )
 
+    def _open_run_session(
+        self,
+        recipe: Recipe,
+        project_path: Path,
+        recipe_path: Path | None,
+        *,
+        parent_session_id: str | None = None,
+        attach_session_id: str | None = None,
+    ) -> tuple[str, str]:
+        """The session a NEW run checkpoints into: one adopted, or one created.
+
+        ``attach_session_id`` ADOPTS a session the caller already created. It
+        is deliberately not the same request as ``session_id`` (resume): the
+        run still starts at step 0 with the caller's ``context_vars``, and
+        nothing is read out of the adopted session's stored state.
+
+        This exists because the v2 path binds an Amplifier session *before*
+        the run so the approval and cancellation ports have real state to
+        read, and then handed the engine nothing -- so the engine made a
+        second session, and the id the caller was given held none of the run
+        (recipes-ppu). Passing that bound id as ``session_id`` instead is the
+        trap: ``is_resuming = session_id is not None`` would take the resume
+        branch, load ``state["context"]`` and silently discard the caller's
+        ``context_vars``.
+
+        Returns:
+            ``(session_id, started)``. The start time is read back from the
+            adopted session so its own recorded ``started`` stays
+            authoritative rather than being overwritten with "now".
+        """
+        if attach_session_id is None:
+            return (
+                self.session_manager.create_session(
+                    recipe,
+                    project_path,
+                    recipe_path,
+                    parent_session_id=parent_session_id,
+                ),
+                datetime.datetime.now().isoformat(),
+            )
+
+        started: Any = None
+        try:
+            state = self.session_manager.load_state(attach_session_id, project_path)
+            started = (state or {}).get("started")
+        except Exception as exc:  # noqa: BLE001 - an unreadable start time is not fatal
+            logger.warning(
+                "Could not read the start time of adopted session %s (%s); "
+                "recording this run as starting now.",
+                attach_session_id,
+                exc,
+            )
+        return attach_session_id, str(started or datetime.datetime.now().isoformat())
+
     async def execute_recipe(
         self,
         recipe: Recipe,
@@ -1229,6 +1499,7 @@ class RecipeExecutor:
         orchestrator_config: OrchestratorConfig | None = None,
         parent_session_id: str
         | None = None,  # optional: keyword-passed at call sites per Python convention
+        attach_session_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute recipe with checkpointing and resumption.
@@ -1243,10 +1514,28 @@ class RecipeExecutor:
             rate_limiter: Optional rate limiter (inherited from parent recipe)
             orchestrator_config: Optional orchestrator config (inherited from parent recipe)
             parent_session_id: Parent session ID for cancellation checks in sub-recipes
+            attach_session_id: Adopt this ALREADY-CREATED session as the new run's
+                own session, instead of creating one. This is *not* resumption:
+                the run starts at step 0 with ``context_vars``, and nothing is
+                loaded from the adopted session's stored state. Mutually
+                exclusive with ``session_id``; see :meth:`_open_run_session`.
 
         Returns:
             Final context dict with all step outputs
+
+        Raises:
+            ValueError: if both ``session_id`` and ``attach_session_id`` are given
+                -- "resume that session" and "start a new run in that session"
+                are different requests and one cannot silently win.
         """
+        if session_id is not None and attach_session_id is not None:
+            raise ValueError(
+                "execute_recipe was given both session_id="
+                f"{session_id!r} (resume) and attach_session_id="
+                f"{attach_session_id!r} (start a new run in an existing session). "
+                "These are different requests; pass exactly one."
+            )
+
         # Initialize or inherit recursion state
         if recursion_state is None:
             # Top-level recipe: create initial state from recipe config
@@ -1289,14 +1578,14 @@ class RecipeExecutor:
                 context = state["context"]
                 session_started = state["started"]
             else:
-                session_id = self.session_manager.create_session(
+                session_id, session_started = self._open_run_session(
                     recipe,
                     project_path,
                     recipe_path,
                     parent_session_id=parent_session_id,
+                    attach_session_id=attach_session_id,
                 )
                 context = {**recipe.context, **context_vars}
-                session_started = datetime.datetime.now().isoformat()
 
             # Add metadata to context
             context["recipe"] = {
@@ -1384,13 +1673,16 @@ class RecipeExecutor:
                         state.pop("pending_child_approval", None)
                         self.session_manager.save_state(session_id, project_path, state)
         else:
-            session_id = self.session_manager.create_session(
-                recipe, project_path, recipe_path, parent_session_id=parent_session_id
+            session_id, session_started = self._open_run_session(
+                recipe,
+                project_path,
+                recipe_path,
+                parent_session_id=parent_session_id,
+                attach_session_id=attach_session_id,
             )
             current_step_index = 0
             context = {**recipe.context, **context_vars}
             completed_steps = []
-            session_started = datetime.datetime.now().isoformat()
 
         # Effective session ID for cancellation checks
         # For sub-recipes (session_id=None), use parent_session_id to inherit cancellation state
@@ -1698,6 +1990,13 @@ class RecipeExecutor:
         Raises:
             ApprovalGatePausedError: When execution pauses at an approval gate
         """
+        # The stage whose gate this resume just came through, if any. A
+        # `when: before_stage` gate parks the run ON its own stage, so without
+        # this the very next loop iteration would re-park at the same gate and
+        # the stage could never run. Stays None for an `after_stage` gate,
+        # which parks on the FOLLOWING stage and so cannot re-trigger.
+        approved_gate_stage: str | None = None
+
         # Load state for resumption
         if is_resuming:
             state = self.session_manager.load_state(session_id, project_path)
@@ -1730,6 +2029,7 @@ class RecipeExecutor:
                     self.session_manager.clear_pending_approval(
                         session_id, project_path
                     )
+                    approved_gate_stage = stage_name
                 elif approval_status == ApprovalStatus.PENDING:
                     # Still pending - raise to indicate waiting
                     raise ApprovalGatePausedError(
@@ -1744,6 +2044,7 @@ class RecipeExecutor:
                     self.session_manager.clear_pending_approval(
                         session_id, project_path
                     )
+                    approved_gate_stage = stage_name
                     # Inject approval message into context for subsequent steps
                     state = self.session_manager.load_state(session_id, project_path)
                     context["_approval_message"] = state.get("_approval_message", "")
@@ -1784,6 +2085,44 @@ class RecipeExecutor:
                 start_step = (
                     current_step_in_stage if stage_idx == current_stage_index else 0
                 )
+
+                # A `when: before_stage` gate pauses BEFORE this stage's first
+                # step runs, so denying it still prevents the work. Two
+                # conditions keep it from firing twice: `start_step == 0` (a
+                # stage already part-way through has passed its gate), and
+                # `approved_gate_stage` (this resume came through this very
+                # gate). `when: after_stage` -- the default -- skips this
+                # entirely and gates below, exactly as it always has.
+                if (
+                    stage.approval
+                    and stage.approval.gates_before_stage
+                    and start_step == 0
+                    and stage.name != approved_gate_stage
+                ):
+                    # The gate's own recorded verdict, which outlives the
+                    # pending record `deny` clears: a stage told "no" is not
+                    # asked again, it is refused -- in the same words the
+                    # post-stage denial path uses.
+                    decided = self.session_manager.get_stage_approval_status(
+                        session_id, project_path, stage.name
+                    )
+                    if decided == ApprovalStatus.DENIED:
+                        raise ValueError(
+                            f"Execution denied at stage '{stage.name}'"
+                        )
+                    if decided != ApprovalStatus.APPROVED:
+                        await self._pause_at_before_stage_gate(
+                            session_id,
+                            project_path,
+                            recipe,
+                            context,
+                            stage,
+                            stage_idx,
+                            completed_stages,
+                            completed_steps,
+                            recipe_path=recipe_path,
+                            parent_session_id=parent_session_id,
+                        )
 
                 # Execute steps within this stage
                 for step_idx in range(start_step, len(stage.steps)):
@@ -1960,10 +2299,16 @@ class RecipeExecutor:
                         # Cancellation requested - re-raise to outer handler
                         raise
 
-                # Stage completed - check for approval gate
+                # Stage completed - check for approval gate. A `before_stage`
+                # gate has already had its say above; asking again here would
+                # gate the same stage twice.
                 completed_stages.append(stage.name)
 
-                if stage.approval and stage.approval.required:
+                if (
+                    stage.approval
+                    and stage.approval.required
+                    and not stage.approval.gates_before_stage
+                ):
                     # Save state with next stage as target FIRST
                     # (set_pending_approval will load, add approval fields, and save)
                     self._save_staged_state(
@@ -2377,6 +2722,96 @@ class RecipeExecutor:
         if "timed out after" in str(error):
             return STATUS_TIMED_OUT
         return STATUS_FAILED
+
+    async def _pause_at_before_stage_gate(
+        self,
+        session_id: str,
+        project_path: Path,
+        recipe: Recipe,
+        context: dict[str, Any],
+        stage: Stage,
+        stage_idx: int,
+        completed_stages: list[str],
+        completed_steps: list[str],
+        recipe_path: Path | None = None,
+        parent_session_id: str | None = None,
+    ) -> None:
+        """Park the run at a ``when: before_stage`` gate. Always raises.
+
+        The mirror image of the post-stage gate below it: state is saved
+        pointing at *this* stage rather than the next one, and this stage is
+        NOT in ``completed_stages`` -- because none of its steps has run.
+        Everything the caller sees (``paused_for_approval``, the prompt, the
+        ``approve``/``deny``/``resume`` protocol) is identical.
+
+        Raises:
+            ApprovalGatePausedError: always -- that is how a gate pauses.
+        """
+        approval = stage.approval
+        assert approval is not None  # only called when a gate is configured
+
+        # Save state pointing at THIS stage, step 0. The stage is deliberately
+        # absent from completed_stages: nothing in it has run, and a resume
+        # must re-enter it rather than step over it.
+        self._save_staged_state(
+            session_id,
+            project_path,
+            recipe,
+            context,
+            stage_idx,
+            0,
+            completed_stages,
+            completed_steps,
+            recipe_path=recipe_path,
+            parent_session_id=parent_session_id,
+        )
+
+        raw_approval_prompt = (
+            approval.prompt or f"Approve running stage '{stage.name}'?"
+        )
+        resolved_approval_prompt = self.substitute_variables(
+            raw_approval_prompt, context
+        )
+
+        self.session_manager.set_pending_approval(
+            session_id=session_id,
+            project_path=project_path,
+            stage_name=stage.name,
+            prompt=resolved_approval_prompt,
+            timeout=approval.timeout,
+            default=approval.default,
+        )
+
+        # Emit approval event for UI. The gate sits on this stage's FIRST
+        # step, which has not run -- not on the last one, which is where an
+        # after_stage gate sits.
+        all_steps = [s for stg in recipe.stages for s in stg.steps]
+        first_step_index = sum(len(stg.steps) for stg in recipe.stages[:stage_idx])
+        steps_status = self._build_steps_status(
+            all_steps, first_step_index, completed_steps
+        )
+        if first_step_index < len(steps_status):
+            steps_status[first_step_index]["status"] = "waiting_approval"
+            steps_status[first_step_index]["is_approval_gate"] = True
+
+        await self._show_progress(
+            f"⏸️ Waiting for approval before stage: {stage.name}",
+            event_name="recipe:approval",
+            event_data=self._build_recipe_event_data(
+                recipe,
+                first_step_index,
+                steps_status,
+                "waiting_approval",
+                prompt=raw_approval_prompt,
+                stage_name=stage.name,
+            ),
+        )
+
+        raise ApprovalGatePausedError(
+            session_id=session_id,
+            stage_name=stage.name,
+            approval_prompt=resolved_approval_prompt,
+        )
 
     async def execute_step_with_retry(
         self,
@@ -2832,7 +3267,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         coordinator=self.coordinator,
                     )
                     resolved_model = _model_after_pattern_resolution(
-                        model_resolution, pref.provider
+                        model_resolution, pref.provider, self.coordinator
                     )
                 provider_preferences.append(
                     ProviderPreference(provider=pref.provider, model=resolved_model)
@@ -2846,7 +3281,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 coordinator=self.coordinator,
             )
             resolved_model = _model_after_pattern_resolution(
-                model_resolution, step.provider
+                model_resolution, step.provider, self.coordinator
             )
             provider_preferences = [
                 ProviderPreference(provider=step.provider, model=resolved_model)
@@ -2916,6 +3351,15 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         provider_preferences = pin_preferences_to_instances(
             provider_preferences,
             host_config.get("providers") if isinstance(host_config, dict) else None,
+        )
+
+        # ...and whatever "use the provider's default model" is still spelled
+        # as an empty string becomes a real model id here, or the preference is
+        # dropped. An empty model is not inert: the spawner writes it straight
+        # into the promoted provider's `default_model`, blanking it (see
+        # `resolve_default_models`).
+        provider_preferences = resolve_default_models(
+            provider_preferences, self.coordinator
         )
 
         # Pinning can drop the entire chain (`pin_preferences_to_instances`

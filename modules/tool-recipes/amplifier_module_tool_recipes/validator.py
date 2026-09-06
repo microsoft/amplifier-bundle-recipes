@@ -53,6 +53,10 @@ def validate_recipe(recipe: Recipe, coordinator: Any = None) -> ValidationResult
     legacy_warnings = check_legacy_agent_refs(recipe)
     warnings.extend(legacy_warnings)
 
+    # `model:` with no `provider:` beside it -- silently discarded at run time
+    model_warnings = check_model_without_provider(recipe)
+    warnings.extend(model_warnings)
+
     # Dependency validation
     dep_errors = check_step_dependencies(recipe)
     errors.extend(dep_errors)
@@ -417,6 +421,79 @@ def check_agent_output_capture(recipe: Recipe) -> list[str]:
             f"final result will not see it). Add `output: <variable_name>` to "
             f"capture the reply, or `output: discard` to mark the no-output "
             f"behavior intentional."
+        )
+
+    return warnings
+
+
+#: Finding code for a step-level ``model:`` written without a ``provider:``.
+#: Same leading-``CODE: `` convention as ``LEGACY_AGENT_REFS_CODE`` below.
+MODEL_WITHOUT_PROVIDER_CODE = "RECIPE_MODEL_WITHOUT_PROVIDER"
+
+
+def _walk_steps(steps: list[Any]) -> list[Any]:
+    """Every step in a body, including nested ``foreach``/``while`` bodies.
+
+    ``Recipe.get_all_steps()`` is flat -- it flattens stages but stops at a
+    compound step's own ``steps:`` block. A ``model:`` typo is just as silent
+    inside a loop body as outside one, so the walk goes all the way down.
+    """
+    found: list[Any] = []
+    for step in steps:
+        found.append(step)
+        nested = getattr(step, "while_steps", None)
+        if nested:
+            found.extend(_walk_steps(list(nested)))
+    return found
+
+
+def check_model_without_provider(recipe: Recipe) -> list[str]:
+    """Warn when a step's ``model:`` will be discarded for want of a ``provider:``.
+
+    ``executor.execute_step`` honours a legacy step-level ``model:`` only in
+    the ``elif step.provider and step.model:`` branch. Written alone, ``model:``
+    matches no branch at all: no preference is built, the step runs on the
+    session default, and nothing says so. Measured -- a probe recipe with
+    ``model: "claude-haiku"`` and no ``provider:`` completed happily on the
+    session's own model, while the same recipe WITH ``provider: anthropic``
+    failed on that (nonexistent) model id. The recipe said one thing and the
+    engine did another, silently, and the only visible difference was a line
+    the author had not written.
+
+    A warning rather than an error: the recipe is still runnable, and this is
+    the same "declared but not enforced" shape ``_warn_depends_on_unenforced``
+    already reports at run time. The remedy is one line -- add the
+    ``provider:`` the model belongs to, or drop the ``model:`` and let the
+    session choose.
+
+    The neighbouring mistakes are already hard errors in ``Step.validate()``
+    (``model`` on a non-agent step; ``provider``/``model`` mixed with
+    ``provider_preferences`` or ``model_role``), so this check is only about
+    the one shape that gets silently dropped.
+    """
+    warnings: list[str] = []
+
+    for step in _walk_steps(list(recipe.get_all_steps())):
+        if not getattr(step, "model", None):
+            continue
+        if getattr(step, "provider", None):
+            continue
+        # Already reported as an error by Step.validate(); don't pile on.
+        if getattr(step, "provider_preferences", None) or getattr(
+            step, "model_role", None
+        ):
+            continue
+        if getattr(step, "type", "agent") != "agent":
+            continue
+        warnings.append(
+            f"{MODEL_WITHOUT_PROVIDER_CODE}: Step '{step.id}' sets "
+            f"`model: {step.model!r}` with no `provider:` beside it. The engine "
+            f"honours a step-level `model:` only together with a `provider:` "
+            f"(executor.execute_step's `elif step.provider and step.model:` "
+            f"branch), so this pin is silently discarded and the step runs on "
+            f"the session's default model. Remedy: add the `provider:` this "
+            f"model belongs to (e.g. `provider: \"anthropic\"`), or remove the "
+            f"`model:` line to make \"whatever the session is using\" explicit."
         )
 
     return warnings

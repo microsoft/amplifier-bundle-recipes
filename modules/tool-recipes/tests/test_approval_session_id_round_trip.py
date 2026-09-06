@@ -34,6 +34,8 @@ from amplifier_module_tool_recipes import runner_adapter as ra
 from amplifier_module_tool_recipes.executor import RecipeExecutor
 from amplifier_module_tool_recipes.session import SessionManager
 
+from .pre_fix_sessions import split_into_pre_fix_pair
+
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 RUNNER_AVAILABLE = ra.runner_available()
@@ -157,7 +159,9 @@ def lines(path: Path) -> list[str]:
 
 
 async def pause_at_gate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schema: str,
 ) -> tuple[RecipesTool, Path, Path, Any]:
     """execute a staged recipe of the given schema, up to its approval gate."""
     tool, project, out_dir = make_tool(tmp_path)
@@ -268,19 +272,62 @@ class TestOneSessionIdRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# v2-only: the second session exists, and must stay an implementation detail
+# v2: one run, one session (recipes-ppu) -- and the pre-fix pair still works
 # ---------------------------------------------------------------------------
 
 
 @requires_runner
-class TestV2EngineSessionStaysInternal:
+class TestV2RunHasOneSession:
+    @pytest.mark.asyncio
+    async def test_the_reported_id_is_the_id_holding_the_gate_and_the_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A v2 run leaves ONE session, and it is the one reported.
+
+        Before recipes-ppu the engine made a second session and everything the
+        run did lived there, while the id the caller was handed read
+        ``completed_steps: []`` / ``context: {}``.
+        """
+        tool, project, _out_dir, executed = await pause_at_gate(
+            tmp_path, monkeypatch, "v2"
+        )
+        session_id = executed.output["session_id"]
+        state = tool.session_manager.load_state(session_id, project)
+
+        # The run record points at itself: there is no second session.
+        assert state[V2_RUN_STATE_KEY]["engine_session_id"] == session_id
+        # The gate is here, not somewhere the caller was never told about.
+        assert tool.session_manager.get_pending_approval(session_id, project)
+        # And so is the run's own state -- the pre-gate step really checkpointed.
+        assert state["completed_steps"] == ["prep"]
+        assert state["context"]["out_dir"]
+
+    @pytest.mark.asyncio
+    async def test_the_session_listing_shows_the_run_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``list`` showed one run as two indistinguishable sessions."""
+        tool, _project, _out_dir, executed = await pause_at_gate(
+            tmp_path, monkeypatch, "v2"
+        )
+        listed = await tool._list_sessions({})
+        assert listed.success is True, listed.error
+        assert [s["session_id"] for s in listed.output["sessions"]] == [
+            executed.output["session_id"]
+        ]
+
+
+@requires_runner
+class TestPreFixTwoSessionRunsStillResolve:
+    """Sessions recorded before recipes-ppu still have two ids on disk."""
+
     @pytest.mark.asyncio
     async def test_the_two_ids_really_are_distinct(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Guard the guard: a v2 run does have two sessions.
+        """Guard the guard: this scenario really does have two sessions.
 
-        Without this, every "same id" assertion above would still pass if the
+        Without this, every "same id" assertion below would still pass if the
         engine session quietly stopped existing, and the round trip would be
         proven on a scenario that no longer contains the hazard.
         """
@@ -288,10 +335,14 @@ class TestV2EngineSessionStaysInternal:
             tmp_path, monkeypatch, "v2"
         )
         session_id = executed.output["session_id"]
+        engine_session_id = split_into_pre_fix_pair(tool, project, session_id)
         record = tool.session_manager.load_state(session_id, project)[V2_RUN_STATE_KEY]
 
-        engine_session_id = record["engine_session_id"]
         assert engine_session_id and engine_session_id != session_id
+        assert record["engine_session_id"] == engine_session_id
+        # The wrapper is the empty one, exactly as it was on disk.
+        wrapper = tool.session_manager.load_state(session_id, project)
+        assert wrapper["completed_steps"] == [] and wrapper["context"] == {}
         # The gate physically lives over there -- which is why it had to be
         # translated rather than simply reported.
         assert tool.session_manager.get_pending_approval(engine_session_id, project)
@@ -311,9 +362,7 @@ class TestV2EngineSessionStaysInternal:
             tmp_path, monkeypatch, "v2"
         )
         session_id = executed.output["session_id"]
-        engine_session_id = tool.session_manager.load_state(session_id, project)[
-            V2_RUN_STATE_KEY
-        ]["engine_session_id"]
+        engine_session_id = split_into_pre_fix_pair(tool, project, session_id)
 
         approved = await tool._approve_stage(
             {"session_id": engine_session_id, "stage_name": "setup"}
@@ -346,9 +395,7 @@ class TestV2EngineSessionStaysInternal:
             tmp_path, monkeypatch, "v2"
         )
         session_id = executed.output["session_id"]
-        engine_session_id = tool.session_manager.load_state(session_id, project)[
-            V2_RUN_STATE_KEY
-        ]["engine_session_id"]
+        engine_session_id = split_into_pre_fix_pair(tool, project, session_id)
 
         await tool._approve_stage(
             {"session_id": engine_session_id, "stage_name": "setup"}

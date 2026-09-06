@@ -1,3 +1,25 @@
+# =============================================================================
+# CHANGELOG
+# =============================================================================
+#
+# v2.1.0 (2026-09-06):
+#   - FIX: every gate now says `when: "before_stage"`, so it fires BEFORE the
+#     stage it is attached to, which is what this recipe's own header and its
+#     prompts have always claimed (recipes-vtj).
+#     * Previously every `approval:` here was a post-stage gate -- the engine's
+#       only behaviour until `when` existed. The operator was asked "Approve to
+#       validate compatibility..." at a moment when `compatibility_check` was
+#       already in context, `validate-compatibility` was already in
+#       completed_steps, and denying could no longer prevent anything.
+#     * Each prompt renders the PREVIOUS stage's outputs, which is exactly what
+#       is known at a pre-stage gate -- they were written for this position.
+#     * Prompt wording tightened to name only the decision the gate takes.
+#
+# v2.0.0:
+#   - Staged execution with approval gates between phases
+#
+# =============================================================================
+
 # --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
 # schema_version 2 makes this recipe portable: every `agent:` reference below
 # resolves ONLY from the declared closure here, never from the calling
@@ -17,18 +39,27 @@ dependencies:
 
 name: "dependency-upgrade-staged"
 description: "Systematic dependency upgrade with approval gates between phases"
-version: "2.0.0"
+version: "2.1.0"
 author: "Amplifier Recipes Collection"
 tags: ["dependencies", "devops", "maintenance", "python", "staged", "approval-gates"]
 
 # This recipe demonstrates STAGED execution with APPROVAL GATES.
 #
+# Every gate here is an AUTHORISATION gate: `when: "before_stage"` makes it
+# pause BEFORE its stage's first step runs, so denying it means that stage
+# never happens. The default, `when: "after_stage"`, is a REVIEW gate -- it
+# fires once the stage's steps have all run ("you have seen the output, may we
+# go on?"), which cannot prevent that stage's own work.
+#
 # Stages provide human-in-loop checkpoints for high-stakes operations:
 # 1. Assessment: Audit and plan (no approval - just gathering info)
-# 2. Validation: Check compatibility (approval before proceeding)
-# 3. Phase 1: Critical security fixes (approval required)
-# 4. Phase 2: Minor version updates (approval required)
-# 5. Phase 3: Major version updates (approval required - highest risk)
+# 2. Validation: Check compatibility (approval BEFORE the check runs)
+# 3. Phase 1: Critical security fixes (approval BEFORE generating them)
+# 4. Phase 2: Minor version updates (approval BEFORE generating them)
+# 5. Phase 3: Major version updates (approval BEFORE generating them)
+#
+# Each prompt therefore renders the PREVIOUS stage's outputs -- that is what is
+# known at the moment the operator is asked.
 #
 # Compare with dependency-upgrade-recipe.yaml for the flat (non-staged) version.
 #
@@ -103,10 +134,13 @@ stages:
         output: "upgrade_plan"
         timeout: 300
 
-  # Stage 2: Validation - check compatibility before generating commands
+  # Stage 2: Validation - check compatibility before generating commands.
+  # The gate fires BEFORE `validate-compatibility` runs, so denying it stops
+  # the compatibility check from happening at all.
   - name: "validation"
     approval:
       required: true
+      when: "before_stage"
       prompt: |
         DEPENDENCY AUDIT AND UPGRADE PLAN COMPLETE
 
@@ -114,7 +148,7 @@ stages:
         - Audit: {{dependency_audit}}
         - Plan: {{upgrade_plan}}
 
-        Approve to validate compatibility and generate upgrade commands.
+        Approve to run the compatibility validation.
         Deny to stop and review the plan manually.
     steps:
       - id: "validate-compatibility"
@@ -144,6 +178,7 @@ stages:
   - name: "phase-1-security"
     approval:
       required: true
+      when: "before_stage"
       prompt: |
         COMPATIBILITY VALIDATION COMPLETE
 
@@ -179,6 +214,7 @@ stages:
   - name: "phase-2-minor"
     approval:
       required: true
+      when: "before_stage"
       prompt: |
         PHASE 1 COMMANDS GENERATED
 
@@ -215,6 +251,7 @@ stages:
   - name: "phase-3-major"
     approval:
       required: true
+      when: "before_stage"
       prompt: |
         PHASE 2 COMMANDS GENERATED
 
