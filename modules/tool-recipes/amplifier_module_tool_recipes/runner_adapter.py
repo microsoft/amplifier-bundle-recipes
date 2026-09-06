@@ -154,7 +154,12 @@ RUNNER_DISTRIBUTION = "amplifier-recipe-runner"
 # ---------------------------------------------------------------------------
 
 #: Every config key ``mount()`` actually reads. Anything else is refused.
-ACCEPTED_CONFIG_KEYS = frozenset({"session_dir", "auto_cleanup_days"})
+#:
+#: ``shutdown_drain_timeout`` is the ceiling, in seconds, on the post-run wait
+#: for background work the run left behind (``shutdown.py``, recipes-8sr).
+ACCEPTED_CONFIG_KEYS = frozenset(
+    {"session_dir", "auto_cleanup_days", "shutdown_drain_timeout"}
+)
 
 #: Keys that are refused with a *specific* reason rather than the generic
 #: "not read" message, because the obvious reading of them is wrong rather
