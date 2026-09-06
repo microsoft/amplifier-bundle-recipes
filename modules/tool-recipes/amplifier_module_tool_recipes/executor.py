@@ -352,6 +352,23 @@ def _json_safe(value: Any) -> Any:
         return f"[non-serializable: {type(value).__name__}]"
 
 
+def _headed(log: StepLog) -> StepLog:
+    """Make sure a step log names the engine writing it, then hand it back.
+
+    Idempotent per process and per file (see ``steps_log.ensure_header``), so
+    this can sit on the per-step opener without adding a line per step.  A
+    stand-in session manager that predates the header simply skips it --
+    ``getattr`` rather than an assumed interface, same as the opener above.
+    """
+    try:
+        ensure = getattr(log, "ensure_header", None)
+        if callable(ensure):
+            ensure()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("steps.jsonl: header failed: %s", exc)
+    return log
+
+
 @dataclass
 class BashResult:
     """Result of a bash command execution."""
@@ -2515,13 +2532,13 @@ class RecipeExecutor:
         opener = getattr(self.session_manager, "open_steps_log", None)
         if callable(opener):
             try:
-                return opener(session_id, project_path)
+                return _headed(opener(session_id, project_path))
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("steps.jsonl: opener failed: %s", exc)
                 return StepLog(None)
         try:
             session_dir = self.session_manager.get_session_dir(session_id, project_path)
-            return StepLog(Path(session_dir) / STEPS_LOG_FILENAME)
+            return _headed(StepLog(Path(session_dir) / STEPS_LOG_FILENAME))
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("steps.jsonl: no session dir for %s: %s", session_id, exc)
             return StepLog(None)
