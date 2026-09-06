@@ -30,6 +30,26 @@ legacy recipes. If your change needs to add something to a result, attach it
 `runner_adapter.label_execution_mode`, `shutdown.attach_shutdown_warning` and
 `engine_provenance.label_engine_provenance` all do), not inside `output`.
 
+## Regenerating `bundle.dot` / `bundle.png`
+
+Both are **generated artifacts**, not hand-maintained ones. They are produced
+from the repo by `amplifier_foundation.bundle_docs.bundle_to_dot.bundle_repo_dot`,
+and every node carries a token-cost estimate — so editing `bundle.md`, an agent
+description, a context file, or a module's tool schema makes them wrong.
+
+If you change any of those, regenerate **from the repo root** and commit both:
+
+```bash
+"${AMPLIFIER_PYTHON:-python3}" -c "from amplifier_foundation.bundle_docs.bundle_to_dot import bundle_repo_dot; open('bundle.dot','w').write(bundle_repo_dot('.'))"
+dot -Tpng bundle.dot -o bundle.png
+```
+
+`modules/tool-recipes/tests/test_bundle_dot_freshness.py` is the gate: it
+regenerates and fails when the checked-in `source_hash` (or the file's bytes —
+the graph title carrying the bundle **version** sits outside the hash) no longer
+matches, printing both hashes and the command above. It runs as part of the
+first gate, so a stale diagram is a red test rather than silent rot.
+
 ## Proving an engine change LIVE
 
 Passing tests prove your code is correct. They do not prove the **CLI ran your
