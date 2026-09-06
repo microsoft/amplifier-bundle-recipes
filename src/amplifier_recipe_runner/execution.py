@@ -80,6 +80,7 @@ from .engine import StepSpec
 from .engine import UnsupportedStepError
 from .engine import load_program
 from .errors import SELF_AGENT
+from .errors import MissingContextVariableError
 from .errors import PreflightError
 from .errors import SelfAgentUnsupportedError
 from .errors import UndeclaredAgentError
@@ -1085,6 +1086,25 @@ async def _plan_and_execute(
         await session.aclose()
 
 
+def _require_declared_context(
+    program: RecipeProgram,
+    context: Mapping[str, Any],
+    *,
+    recipe: str | None = None,
+) -> None:
+    """Refuse a run whose ``required: true`` context variables are unsupplied.
+
+    A declarative ``context:`` entry with no ``default:`` binds nothing (see
+    :func:`~amplifier_recipe_runner.manifest.resolve_context_block`), so the
+    caller must supply it. Failing here -- by name, before any step -- is what
+    replaces binding the declaration mapping as the value and discovering it
+    inside a prompt or a condition (recipes-u2f).
+    """
+    missing = tuple(name for name in program.required_context if name not in context)
+    if missing:
+        raise MissingContextVariableError(missing, recipe=recipe)
+
+
 async def _execute_program(
     session: RecipeExecutionSession,
     resolved: ExecutionPlan,
@@ -1110,10 +1130,13 @@ async def _execute_program(
 
     context: dict[str, Any] = {}
     if resume_state is not None and resume_state.context:
+        # A resumed run already passed the required-context gate below, and
+        # its recorded context carries the values that satisfied it.
         context.update(resume_state.context)
     else:
         context.update(program.context)
         context.update(request.context)
+        _require_declared_context(program, context, recipe=str(request.recipe))
     context["recipe"] = {
         "name": program.name,
         "version": program.version,
@@ -1292,6 +1315,7 @@ async def _run_sub_recipe(
 
     context = dict(sub_program.context)
     context.update(sub_context)
+    _require_declared_context(sub_program, context, recipe=str(path))
     context["recipe"] = {
         "name": sub_program.name,
         "version": sub_program.version,

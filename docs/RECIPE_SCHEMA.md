@@ -180,6 +180,77 @@ steps:
     prompt: "Analyze {{project_name}} for Python {{target_version}} compatibility"
 ```
 
+##### The declarative form (`type:` / `required:` / `default:`)
+
+An entry's value may instead be a **declaration** — the shape every other
+tool's input schema uses:
+
+```yaml
+context:
+  topic:
+    type: string
+    required: true
+    description: "The question to investigate"
+  continue_from:
+    type: string
+    default: ""
+    description: "Path to a previously verified document"
+  depth:
+    type: string
+    default: "standard"
+    enum: ["quick", "standard", "deep"]
+```
+
+**Recognition.** A value is a declaration when it is a **non-empty mapping
+whose every key is drawn from `type`, `required`, `default`, `description`,
+`enum`**. A mapping carrying any other key — or an empty mapping `{}` — is an
+ordinary literal value and is bound unchanged, so a context entry that really
+is a dict keeps working:
+
+```yaml
+context:
+  # A value, not a declaration: `themes` is not a declaration key.
+  commit_analysis: { themes: [], total_analyzed: 0 }
+```
+
+To bind a literal mapping that happens to use only declaration keys, nest it
+or add another key.
+
+**What each field does.**
+
+| Field | Effect |
+|-------|--------|
+| `default` | The value bound when the caller supplies none. |
+| `required` | `true` means the caller must supply a value; the run is refused by name if it does not. |
+| `type` | Documentation only — nothing coerces the value. One of `string`, `number`, `integer`, `boolean`, `array`, `object`, `any`. |
+| `description` | Documentation only. |
+| `enum` | The permitted values, as a non-empty list. Checked against `default` at validation time. |
+
+**Resolution, in order:**
+
+1. The caller supplied a value → that value wins (exactly as for a plain entry).
+2. `default:` is present → the default is bound.
+3. `required: true` and nothing supplied → **the run is refused, naming the
+   variable**, before any step executes.
+4. Neither — a declaration that is documentation only → the variable is
+   **not bound at all**. Referencing it then fails loudly with the usual
+   "variable is not defined" error rather than substituting anything.
+
+**The declaration mapping is never bound as the value.** That was the old
+behaviour and it failed silently: `{{continue_from}}` substituted
+`{'type': 'string', 'default': '', 'description': '...'}` into prompts as noise
+and into conditions as a hard failure
+(`Invalid expression: Unexpected character '{' at position 0`).
+
+**Malformed declarations are reported by variable name** at validation time
+(`recipes operation=validate`, and `recipe-runner validate` for
+`schema_version: 2`) — a non-boolean `required`, an unknown `type`, a
+non-string `description`, an `enum` that is not a non-empty list, or a
+`default` outside its own `enum`.
+
+`required: true` beside a `default:` is contradictory but harmless: the default
+binds, so the variable is never missing. It is a **warning**, not an error.
+
 #### `recursion` (optional)
 
 **Type:** RecursionConfig object

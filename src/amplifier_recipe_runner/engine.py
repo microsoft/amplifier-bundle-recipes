@@ -72,6 +72,7 @@ from .errors import RecipeRunnerError
 from .expressions import ExpressionError
 from .expressions import evaluate_condition
 from .manifest import FLAT_STAGE_APPROVAL_KEYS
+from .manifest import check_context_block
 
 __all__ = [
     "ApprovalLedger",
@@ -673,10 +674,18 @@ class RecipeProgram:
     description: str | None
     path: Path | None
     context: Mapping[str, Any] = field(default_factory=dict)
+    """The recipe's declared context, already RESOLVED: a declarative entry
+    (``type:``/``required:``/``default:``) contributes its ``default:``, never
+    the declaration mapping itself (recipes-u2f)."""
+
     steps: tuple[StepSpec, ...] = ()
     stages: tuple[StageSpec, ...] = ()
     recursion: RecursionLimits | None = None
     schema_version: int | None = None
+    required_context: tuple[str, ...] = ()
+    """Variables declared ``required: true`` with no ``default:``. They are
+    deliberately absent from :attr:`context`; the caller supplies them, and
+    :mod:`.execution` refuses the run by name if it does not."""
 
     @property
     def is_staged(self) -> bool:
@@ -876,16 +885,24 @@ def parse_program(body: Mapping[str, Any], *, path: Path | None = None) -> Recip
 
     schema_version = body.get("schema_version")
 
+    # `context:` is a variable -> VALUE mapping. An entry written in the
+    # declarative schema form binds its `default:` here; one that is malformed
+    # raises by name rather than reaching a prompt as `{'type': ...}`
+    # (recipes-u2f). Sub-recipes are parsed through this same function, so they
+    # get the identical treatment without a second code path.
+    resolved_context = check_context_block(body.get("context"), source=str(path) if path else None)
+
     return RecipeProgram(
         name=str(body.get("name") or (path.stem if path else "recipe")),
         version=str(body["version"]) if body.get("version") is not None else None,
         description=str(body["description"]) if body.get("description") is not None else None,
         path=path,
-        context=dict(body.get("context") or {}),
+        context=dict(resolved_context.values),
         steps=tuple(steps),
         stages=tuple(stages),
         recursion=recursion,
         schema_version=schema_version if isinstance(schema_version, int) else None,
+        required_context=resolved_context.required,
     )
 
 

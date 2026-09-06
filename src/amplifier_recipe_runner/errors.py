@@ -23,6 +23,7 @@ __all__ = [
     "AgentCollisionError",
     "LegacyRecipeError",
     "ManifestValidationError",
+    "MissingContextVariableError",
     "PreflightError",
     "ProvenanceMismatchError",
     "RecipeRunnerError",
@@ -297,4 +298,36 @@ class ManifestValidationError(PreflightError):
         super().__init__(
             f"Invalid recipe manifest{in_recipe}{where}: {message}",
             remedy=remedy or "Fix the manifest to match RECIPE_SCHEMA v2.",
+        )
+
+
+class MissingContextVariableError(PreflightError):
+    """A ``context:`` variable declared ``required: true`` was never supplied.
+
+    A declarative ``context:`` entry with no ``default:`` binds nothing -- the
+    caller supplies it. Before this error existed, the whole declaration
+    mapping was bound as the value instead, so ``{{topic}}`` substituted
+    ``{'type': 'string', 'required': True}`` into prompts and conditions and
+    the run failed somewhere else entirely (``recipes-u2f``). Raised before any
+    step runs, naming every missing variable.
+    """
+
+    def __init__(
+        self,
+        variables: tuple[str, ...],
+        *,
+        recipe: str | None = None,
+        remedy: str | None = None,
+    ) -> None:
+        self.variables = variables
+        self.recipe = recipe
+        listed = ", ".join(repr(name) for name in variables)
+        in_recipe = f" in {recipe!r}" if recipe else ""
+        super().__init__(
+            f"Required context variable(s){in_recipe} not supplied: {listed}.",
+            remedy=remedy
+            or (
+                "Pass a value for each one at run time, or give the "
+                "declaration a 'default:'."
+            ),
         )

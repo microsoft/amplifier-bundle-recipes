@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .context_schema import resolve_context
 from .models import Recipe
 from .steps_log import STEPS_LOG_FILENAME
 from .steps_log import StepLog
@@ -137,7 +138,10 @@ class SessionManager:
             "recipe_version": recipe.version,
             "started": datetime.datetime.now().isoformat(),
             "current_step_index": 0,
-            "context": recipe.context.copy(),
+            # Resolved, not raw: a declarative `context:` entry contributes
+            # its default here, never the schema dict, so a run interrupted
+            # before its first save resumes on values (recipes-u2f).
+            "context": resolve_context(recipe.context).values,
             "completed_steps": [],
             "project_path": str(project_path.resolve()),
             "parent_session_id": parent_session_id,
