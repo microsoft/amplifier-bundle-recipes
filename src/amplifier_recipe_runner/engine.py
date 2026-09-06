@@ -116,6 +116,13 @@ RECIPE_INTERNAL_KEYS: Final[frozenset[str]] = frozenset({"recipe", "session", "s
 #: on-disk state. The live context is never trimmed.
 CHECKPOINT_TRIM_THRESHOLD_BYTES: Final[int] = 100_000
 
+#: Advisory ceiling on one foreach step's persisted progress. A checkpointed
+#: loop rewrites its whole accumulated result set at every iteration boundary,
+#: which is O(N^2) in bytes written; past this the engine says so rather than
+#: letting a run get slower for a reason nobody can see. Same threshold the
+#: legacy engine warns at.
+FOREACH_PROGRESS_WARN_BYTES: Final[int] = 10 * 1024 * 1024
+
 #: Advisory ceiling on a rendered bash command, well under Linux's
 #: ``MAX_ARG_STRLEN``. Exceeding the real cap fails at *exec* time, with no
 #: exit code and no stderr, so warn before the cliff.
@@ -602,6 +609,7 @@ class StepSpec:
     as_var: str | None = None
     collect: str | None = None
     parallel: bool | int = False
+    checkpoint_iterations: bool = False
     max_iterations: int = 100
     timeout: int | float | str = 600
     retry: Mapping[str, Any] | None = None
@@ -752,6 +760,7 @@ def parse_step(data: Mapping[str, Any], *, index: int = 0) -> StepSpec:
         as_var=data.get("as") if isinstance(data.get("as"), str) else None,
         collect=data.get("collect") if isinstance(data.get("collect"), str) else None,
         parallel=parallel,
+        checkpoint_iterations=bool(data.get("checkpoint_iterations", False)),
         max_iterations=_int_or(data.get("max_iterations"), 100),
         timeout=timeout,
         retry=data.get("retry") if isinstance(data.get("retry"), Mapping) else None,
@@ -958,6 +967,20 @@ class ResumeState:
     context: Mapping[str, Any] = field(default_factory=dict)
     outputs: Mapping[str, Any] = field(default_factory=dict)
     pending_approval: str | None = None
+    foreach_progress: Mapping[str, Any] | None = None
+    """How far a ``checkpoint_iterations:`` foreach step got, mid-step.
+
+    Present only while one such loop is in flight, and cleared the moment the
+    step completes -- a step-level resume must never be handed the progress of
+    a loop that already finished. Shape (see ``docs/EXECUTOR_PARITY.md``)::
+
+        {"step_id": str, "total_items": int, "completed_iterations": int,
+         "completed_indices": [int, ...], "results": {"<index>": value}}
+
+    ``results`` is index-keyed rather than a list because a *parallel* loop
+    finishes out of order: a positional list could not say which slot a value
+    belongs in without inventing one.
+    """
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -968,10 +991,12 @@ class ResumeState:
             "context": json_safe(_trim_for_state(self.context)),
             "outputs": json_safe(_trim_for_state(self.outputs)),
             "pending_approval": self.pending_approval,
+            "foreach_progress": json_safe(dict(self.foreach_progress)) if self.foreach_progress else None,
         }
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> ResumeState:
+        progress = data.get("foreach_progress")
         return cls(
             completed_steps=tuple(str(step) for step in (data.get("completed_steps") or ())),
             completed_stages=tuple(str(stage) for stage in (data.get("completed_stages") or ())),
@@ -980,6 +1005,7 @@ class ResumeState:
             context=dict(data.get("context") or {}),
             outputs=dict(data.get("outputs") or {}),
             pending_approval=str(data["pending_approval"]) if data.get("pending_approval") else None,
+            foreach_progress=dict(progress) if isinstance(progress, Mapping) else None,
         )
 
 
@@ -1090,6 +1116,14 @@ class SubRecipeRunner(Protocol):
 
 ProgressHook = Callable[[str, Mapping[str, Any]], None]
 
+#: Persists a mid-run :class:`ResumeState` where a *later process* can read it.
+#: Injected, because where run state lives is the host's decision
+#: (:class:`amplifier_recipe_runner.execution.RunStateStore` writes it under the
+#: run directory) and the engine has no business knowing about a filesystem.
+#: A run with no hook simply keeps no mid-step checkpoint -- which is the whole
+#: behaviour of a run whose host passed no ``state_dir``.
+CheckpointHook = Callable[[ResumeState], None]
+
 
 # --------------------------------------------------------------------------
 # The engine
@@ -1114,6 +1148,7 @@ class StepEngine:
         sub_recipe_runner: SubRecipeRunner | None = None,
         recursion: RecursionState | None = None,
         scratch_dir: Path | None = None,
+        checkpoint: CheckpointHook | None = None,
     ) -> None:
         self._program = program
         self._invoke_agent = invoke_agent
@@ -1126,6 +1161,7 @@ class StepEngine:
         self._approvals = approvals if approvals is not None else ApprovalLedger()
         self._sub_recipe_runner = sub_recipe_runner
         self._scratch_dir = scratch_dir
+        self._checkpoint = checkpoint
         limits = program.recursion or RecursionLimits()
         self._recursion = recursion or RecursionState(
             max_depth=limits.max_depth,
@@ -1134,6 +1170,18 @@ class StepEngine:
         )
         self._outputs: dict[str, Any] = {}
         self._completed: list[str] = []
+        # Live position, so a mid-step checkpoint records where the run
+        # actually is rather than where it started.
+        self._completed_stages: list[str] = []
+        # Progress of the ONE `checkpoint_iterations:` loop currently in
+        # flight, if any. Set at each iteration boundary, cleared on step
+        # completion, and carried into every ResumeState this engine builds.
+        self._foreach_progress: dict[str, Any] | None = None
+        # Progress handed in by a resume, consumed by the first foreach step
+        # whose id matches. Consumed once: a second loop with the same id in
+        # the same run is a different loop, not a continuation of this one.
+        self._resume_foreach: dict[str, Any] | None = None
+        self._foreach_size_warned: set[str] = set()
 
     # -- public entry ------------------------------------------------------
 
@@ -1154,10 +1202,15 @@ class StepEngine:
         """Run the program. Returns an outcome; raises only for a bug here."""
         self._outputs = dict(resume.outputs) if resume else {}
         self._completed = list(resume.completed_steps) if resume else []
+        self._foreach_progress = None
+        self._resume_foreach = dict(resume.foreach_progress) if resume and resume.foreach_progress else None
 
         stage_index = resume.stage_index if resume else 0
         step_in_stage = resume.step_in_stage if resume else 0
         completed_stages = list(resume.completed_stages) if resume else []
+        # Same list object, so a mid-step checkpoint sees stages completed
+        # after this point without `_run_stages` having to report them back.
+        self._completed_stages = completed_stages
 
         try:
             if self._program.is_staged:
@@ -1188,6 +1241,7 @@ class StepEngine:
                     context=dict(context),
                     outputs=dict(self._outputs),
                     pending_approval=paused.stage,
+                    foreach_progress=self._foreach_progress,
                 ),
             )
         except SkipRemaining:
@@ -1208,6 +1262,7 @@ class StepEngine:
                     step_in_stage=step_in_stage,
                     context=dict(context),
                     outputs=dict(self._outputs),
+                    foreach_progress=self._foreach_progress,
                 ),
             )
 
@@ -1233,8 +1288,37 @@ class StepEngine:
                 step_in_stage=step_in_stage,
                 context=dict(context),
                 outputs=dict(self._outputs),
+                foreach_progress=self._foreach_progress,
             ),
         )
+
+    # -- mid-run checkpointing ---------------------------------------------
+
+    def _write_checkpoint(self, context: Mapping[str, Any]) -> None:
+        """Hand the host this run's position *now*, mid-step.
+
+        Called at every ``checkpoint_iterations:`` iteration boundary and once
+        more when such a loop's step completes. A host with no checkpoint hook
+        (no ``state_dir``) keeps nothing, which is a supported state, not a
+        failure -- and a hook that itself fails must not turn a working run
+        into a failed one, so a write error is swallowed here exactly as
+        :meth:`RunStateStore.save` swallows its own.
+        """
+        if self._checkpoint is None:
+            return
+        state = ResumeState(
+            completed_steps=tuple(self._completed),
+            completed_stages=tuple(self._completed_stages),
+            stage_index=self._paused_stage_index,
+            step_in_stage=self._paused_step_in_stage,
+            context=dict(context),
+            outputs=dict(self._outputs),
+            foreach_progress=self._foreach_progress,
+        )
+        try:
+            self._checkpoint(state)
+        except Exception:  # noqa: BLE001 - a lost checkpoint is not a lost run
+            self._emit("checkpoint:failed", {"reason": "state write failed"})
 
     # -- flat execution ----------------------------------------------------
 
@@ -1413,6 +1497,11 @@ class StepEngine:
                 self._outputs[step.id] = context[sink]
             self._completed.append(step.id)
             self._emit("step:complete", {"step_id": step.id})
+            if step.checkpoint_iterations:
+                # One last write, with `foreach_progress` now cleared: a
+                # resume after this point must see a COMPLETED step, not a
+                # loop it would try to continue.
+                self._write_checkpoint(context)
             return
 
         result = await self._run_step_body(step, context)
@@ -1671,55 +1760,184 @@ class StepEngine:
 
         loop_var = step.as_var or "item"
 
+        # What an earlier attempt of THIS step already finished. Empty for a
+        # fresh run, and for any step that did not ask to be checkpointed.
+        done = self._claim_foreach_resume(step, len(items))
+
         if step.parallel:
-            results = await self._foreach_parallel(step, context, items, loop_var)
+            results = await self._foreach_parallel(step, context, items, loop_var, done=done)
         else:
-            results = await self._foreach_sequential(step, context, items, loop_var)
+            results = await self._foreach_sequential(step, context, items, loop_var, done=done)
+
+        # The loop is over: whatever it recorded describes a step that is no
+        # longer running, so it must not survive to be applied again.
+        self._foreach_progress = None
 
         if step.collect:
             context[step.collect] = results
         elif step.output and results:
             context[step.output] = results[-1]
 
+    # -- foreach checkpointing ---------------------------------------------
+
+    def _claim_foreach_resume(self, step: StepSpec, total_items: int) -> dict[int, Any]:
+        """Recorded results of ``step``'s already-completed iterations.
+
+        Consumes the resume payload, so a later loop cannot re-apply it. An
+        index at or beyond the current item count is dropped and said out
+        loud: the list the run resumed with is not necessarily the list it
+        started with, and silently reusing a stale slot would mean claiming a
+        result for an item nobody can point at.
+        """
+        recorded = self._resume_foreach
+        if not step.checkpoint_iterations or recorded is None:
+            return {}
+        if recorded.get("step_id") != step.id:
+            return {}
+        self._resume_foreach = None
+
+        raw = recorded.get("results")
+        done: dict[int, Any] = {}
+        if isinstance(raw, Mapping):
+            for key, value in raw.items():
+                try:
+                    index = int(key)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= index < total_items:
+                    done[index] = value
+
+        saved_total = _int_or(recorded.get("total_items"), total_items)
+        if saved_total != total_items:
+            self._emit(
+                "foreach:items-changed",
+                {
+                    "step_id": step.id,
+                    "recorded_total": saved_total,
+                    "current_total": total_items,
+                    "restored": len(done),
+                },
+            )
+        if done:
+            self._emit(
+                "foreach:resumed",
+                {"step_id": step.id, "skipped": sorted(done), "total": total_items},
+            )
+        return done
+
+    def _record_foreach_progress(
+        self,
+        step: StepSpec,
+        *,
+        done: Mapping[int, Any],
+        total_items: int,
+        context: Mapping[str, Any],
+    ) -> None:
+        """Persist one iteration boundary. Nothing is inferred on the way back in."""
+        indices = sorted(done)
+        # Contiguous prefix, for a human reading the file and for the legacy
+        # engine's own `completed_iterations` reading. A parallel loop can
+        # finish out of order, so this is NOT the same as len(indices) -- and
+        # `completed_indices` is what resume actually uses.
+        prefix = 0
+        for index in indices:
+            if index != prefix:
+                break
+            prefix += 1
+        progress: dict[str, Any] = {
+            "step_id": step.id,
+            "total_items": total_items,
+            "completed_iterations": prefix,
+            "completed_indices": indices,
+            "results": json_safe({str(index): done[index] for index in indices}),
+        }
+        self._warn_if_progress_is_large(step, progress, len(indices), total_items)
+        self._foreach_progress = progress
+        self._write_checkpoint(context)
+
+    def _warn_if_progress_is_large(
+        self, step: StepSpec, progress: Mapping[str, Any], completed: int, total_items: int
+    ) -> None:
+        if step.id in self._foreach_size_warned:
+            return
+        try:
+            size = len(json.dumps(progress, ensure_ascii=False, default=_sanitize_default))
+        except (TypeError, ValueError):
+            return
+        if size <= FOREACH_PROGRESS_WARN_BYTES:
+            return
+        self._foreach_size_warned.add(step.id)
+        self._emit(
+            "foreach:checkpoint-large",
+            {
+                "step_id": step.id,
+                "bytes": size,
+                "completed": completed,
+                "total": total_items,
+                "reason": "a checkpointed loop rewrites its whole result set each iteration (O(N^2) bytes written)",
+            },
+        )
+
     async def _foreach_sequential(
-        self, step: StepSpec, context: dict[str, Any], items: list[Any], loop_var: str
+        self, step: StepSpec, context: dict[str, Any], items: list[Any], loop_var: str, *, done: dict[int, Any]
     ) -> list[Any]:
         results: list[Any] = []
         for idx, item in enumerate(items):
+            if idx in done:
+                # Not silent: a skipped iteration is a claim about earlier work.
+                results.append(done[idx])
+                self._emit("iteration:skipped", {"step_id": step.id, "index": idx, "reason": "checkpointed"})
+                continue
             self._check_cancelled()
             context[loop_var] = item
             try:
                 if step.body_steps:
-                    results.append(await self._run_sub_steps(step.body_steps, context, parent_step_id=step.id))
+                    outcome = await self._run_sub_steps(step.body_steps, context, parent_step_id=step.id)
                 else:
                     result = await self._run_step_body(step, context)
-                    results.append(process_step_result(result, step))
+                    outcome = process_step_result(result, step)
+                results.append(outcome)
             except (SkipRemaining, RunCancelled, ApprovalPaused):
                 raise
             except Exception as exc:  # noqa: BLE001
                 if step.on_error == "continue":
                     self._emit("iteration:failed", {"step_id": step.id, "index": idx, "error": str(exc)})
-                    results.append(None)
+                    outcome = None
+                    results.append(outcome)
                 elif step.on_error == "skip_remaining":
                     raise SkipRemaining() from exc
                 else:
                     raise StepFailedError(step.id, f"Step '{step.id}' iteration {idx} failed: {exc}") from exc
             finally:
                 context.pop(loop_var, None)
+
+            # Boundary reached: this iteration is finished (an absorbed
+            # failure under `on_error: continue` finished too -- it holds an
+            # index-aligned slot, so re-running it on resume would be work
+            # already accounted for).
+            if step.checkpoint_iterations:
+                done[idx] = outcome
+                self._record_foreach_progress(step, done=done, total_items=len(items), context=context)
         return results
 
     async def _foreach_parallel(
-        self, step: StepSpec, context: dict[str, Any], items: list[Any], loop_var: str
+        self, step: StepSpec, context: dict[str, Any], items: list[Any], loop_var: str, *, done: dict[int, Any]
     ) -> list[Any]:
         self._check_cancelled()
 
+        # Only what is left to do. On a fresh run that is every item, so a
+        # loop that was never checkpointed takes exactly the path it always did.
+        pending = [(idx, item) for idx, item in enumerate(items) if idx not in done]
+        for idx in sorted(done):
+            self._emit("iteration:skipped", {"step_id": step.id, "index": idx, "reason": "checkpointed"})
+
         if step.type == "agent":
-            projected = self._recursion.total_steps + len(items)
+            projected = self._recursion.total_steps + len(pending)
             if projected > self._recursion.max_total_steps:
                 raise StepFailedError(
                     step.id,
                     f"Parallel loop would exceed max_total_steps "
-                    f"({self._recursion.total_steps} + {len(items)} > {self._recursion.max_total_steps})",
+                    f"({self._recursion.total_steps} + {len(pending)} > {self._recursion.max_total_steps})",
                 )
 
         max_concurrent = step.parallel if isinstance(step.parallel, int) and step.parallel is not True else None
@@ -1732,13 +1950,22 @@ class StepEngine:
             iter_context = {**context, loop_var: item, "_parallel_group_id": group_id}
             try:
                 if step.body_steps:
-                    return await self._run_sub_steps(step.body_steps, iter_context, parent_step_id=step.id)
-                result = await self._run_step_body(step, iter_context)
-                return process_step_result(result, step)
+                    outcome = await self._run_sub_steps(step.body_steps, iter_context, parent_step_id=step.id)
+                else:
+                    result = await self._run_step_body(step, iter_context)
+                    outcome = process_step_result(result, step)
             except (SkipRemaining, RunCancelled, ApprovalPaused):
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise StepFailedError(step.id, f"Step '{step.id}' iteration {idx} failed: {exc}") from exc
+            if step.checkpoint_iterations:
+                # Per COMPLETED item, not per batch: a parallel loop finishes
+                # out of order, so a prefix count could not describe it. The
+                # checkpoint records the OUTER context -- this iteration's
+                # private copy is not the run's state.
+                done[idx] = outcome
+                self._record_foreach_progress(step, done=done, total_items=len(items), context=context)
+            return outcome
 
         async def bounded(idx: int, item: Any) -> Any:
             if semaphore:
@@ -1748,19 +1975,30 @@ class StepEngine:
 
         # return_exceptions=True: without it, one failed iteration raises
         # immediately but does NOT cancel the rest, which then run as orphans.
-        raw = await asyncio.gather(*(bounded(idx, item) for idx, item in enumerate(items)), return_exceptions=True)
+        raw = await asyncio.gather(*(bounded(idx, item) for idx, item in pending), return_exceptions=True)
+
+        # Slot every value back where its item was, so results stay
+        # input-ordered whether they were run now or restored from a checkpoint.
+        by_index: dict[int, Any] = dict(done)
+        errors: dict[int, BaseException] = {}
+        for (idx, _item), value in zip(pending, raw, strict=True):
+            if isinstance(value, BaseException):
+                errors[idx] = value
+            else:
+                by_index[idx] = value
 
         results: list[Any] = []
         failures: list[tuple[int, BaseException]] = []
-        for idx, value in enumerate(raw):
-            if isinstance(value, BaseException):
+        for idx in range(len(items)):
+            value = errors.get(idx)
+            if value is not None:
                 if isinstance(value, (RunCancelled, ApprovalPaused)):
                     raise value
                 self._emit("iteration:failed", {"step_id": step.id, "index": idx, "error": str(value)})
                 failures.append((idx, value))
                 results.append(None)
             else:
-                results.append(value)
+                results.append(by_index.get(idx))
 
         if failures and step.on_error != "continue":
             if step.on_error == "skip_remaining":
