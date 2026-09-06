@@ -16,16 +16,26 @@ part of the neutral public surface (lib Core 3).
 
 from __future__ import annotations
 
+from typing import Final
+
 __all__ = [
+    "SELF_AGENT",
     "AgentCollisionError",
     "LegacyRecipeError",
     "ManifestValidationError",
     "PreflightError",
     "ProvenanceMismatchError",
     "RecipeRunnerError",
+    "SelfAgentUnsupportedError",
     "TrustRefusedError",
     "UndeclaredAgentError",
 ]
+
+#: The legacy pseudo-agent meaning "spawn the calling session's own agent".
+#: It names no bundle agent, so no ``dependencies:`` block can ever supply it
+#: -- which is why :class:`SelfAgentUnsupportedError` exists rather than a
+#: generic "declare it" remedy nobody can follow.
+SELF_AGENT: Final[str] = "self"
 
 
 class RecipeRunnerError(Exception):
@@ -82,6 +92,62 @@ class UndeclaredAgentError(PreflightError):
             or (
                 f"Declare a dependency that supplies {agent!r} in the recipe's "
                 "`dependencies` block (and list it under `required_agents`)."
+            ),
+        )
+
+
+class SelfAgentUnsupportedError(UndeclaredAgentError):
+    """A ``schema_version: 2`` step named the legacy pseudo-agent ``self``.
+
+    ``self`` is not an undeclared agent in the ordinary sense -- it is a
+    reference no ``dependencies:`` block *can* satisfy, because it names no
+    bundle agent at all. The host's spawner defines it as an EMPTY overlay
+    merged onto the **calling session's** config, so honouring it inside a
+    closed world would restore the caller's entire world -- agent map included
+    -- for that one step. That is precisely what
+    ``recipe-dependency-manifest.v1`` Core 3/5 forbids, and it would be silent:
+    no error, no warning, no provenance entry.
+
+    So v2 refuses it, and says so in terms the author can act on. A subclass of
+    :class:`UndeclaredAgentError` on purpose: every host that already catches
+    the general case keeps catching this one, while a host that wants to say
+    something specific about ``self`` now can (lib Core 8 -- distinct, typed).
+
+    The one thing this error must never do is repeat the generic remedy.
+    Telling an author to declare ``self`` as a dependency is an instruction
+    nobody can follow.
+    """
+
+    def __init__(
+        self,
+        *,
+        step_id: str | None = None,
+        declared_agents: tuple[str, ...] = (),
+        remedy: str | None = None,
+    ) -> None:
+        self.agent = SELF_AGENT
+        self.step_id = step_id
+        self.declared_agents = declared_agents
+        where = f" referenced by step {step_id!r}" if step_id else ""
+        available = ", ".join(declared_agents) if declared_agents else "none"
+        # Deliberately NOT UndeclaredAgentError.__init__: that one composes the
+        # generic "not supplied by any declared dependency" message whose
+        # remedy is the impossible one. Same type, different sentence.
+        PreflightError.__init__(
+            self,
+            f"Agent {SELF_AGENT!r}{where} cannot be resolved in a "
+            "`schema_version: 2` recipe: `self` is a legacy pseudo-agent "
+            "meaning \"spawn the calling session's own agent\", and no "
+            "`dependencies:` block can supply it -- it names no bundle agent.",
+            remedy=remedy
+            or (
+                "Name the agent this step actually runs as. This recipe's "
+                f"closure supplies: {available}. Add the one you mean to a "
+                "`dependencies:` entry's `required_agents` if it is not there "
+                "yet. If the step genuinely needs the CALLING session's own "
+                "agent, that is a caller-bound recipe: omit `schema_version: "
+                "2` and it keeps running in labeled legacy mode, where `self` "
+                "retains its original meaning."
             ),
         )
 

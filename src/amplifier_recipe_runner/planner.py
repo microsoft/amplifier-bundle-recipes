@@ -13,6 +13,13 @@ nothing else:
 * **Undeclared reference fails, naming the remedy (manifest Core 6).** A step
   referencing an agent outside the closure raises
   :class:`~amplifier_recipe_runner.errors.UndeclaredAgentError`.
+* **``self`` is refused, not exempted.** The legacy pseudo-agent ``self``
+  denotes the *calling session*, so honouring it would reopen the closed world
+  for that step; and no ``dependencies:`` block can supply it, so the generic
+  remedy above would be an instruction nobody can follow. It raises
+  :class:`~amplifier_recipe_runner.errors.SelfAgentUnsupportedError` -- a
+  refusal that names the supported alternative instead. See that class for the
+  full reasoning, and ``docs/RECIPE_SCHEMA.md`` for the author-facing form.
 * **Provenance per agent (manifest Core 7).** Every agent in the plan records
   its supplying dependency's declared source, the resolved local path, and --
   for git sources -- the resolved immutable revision. Local sources record a
@@ -99,8 +106,10 @@ from .api import ExecutionPlan
 from .api import LockMode
 from .api import ResolvedDependency
 from .api import TrustPolicy
+from .errors import SELF_AGENT
 from .errors import AgentCollisionError
 from .errors import LegacyRecipeError
+from .errors import SelfAgentUnsupportedError
 from .errors import UndeclaredAgentError
 from .manifest import LegacyRecipe
 from .manifest import Manifest
@@ -278,6 +287,9 @@ async def plan(
             step's bare reference is ambiguous (manifest Core 5).
         UndeclaredAgentError: a step (or a dependency's ``required_agents``)
             references an agent no declared dependency supplies (Core 6).
+        SelfAgentUnsupportedError: a step references the legacy pseudo-agent
+            ``self``, which no dependency can supply and which v2 refuses
+            rather than resolving against the calling session.
         DependencyResolutionError: a declared source could not be read.
         TrustRefusedError: raised by ``trust_policy`` before any fetch.
     """
@@ -413,6 +425,14 @@ def _build_provenance(
     }
 
     for reference, step_id in references:
+        # `self` is refused before the closure is consulted, and before any
+        # alias could redirect it. It is not a name the closure is missing --
+        # it is a name the closure can never hold, because it denotes the
+        # CALLING session rather than a bundle agent. Falling through to the
+        # generic branch below would emit a remedy ("declare a dependency
+        # supplying 'self'") that no author can follow.
+        if reference == SELF_AGENT:
+            raise SelfAgentUnsupportedError(step_id=step_id, declared_agents=catalog.names)
         canonical = aliases.get(reference, reference)
         entry = catalog.resolve_reference(canonical)
         if entry is None:

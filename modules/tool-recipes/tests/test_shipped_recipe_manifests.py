@@ -29,9 +29,11 @@ pointed at by name.
 Subdirectories were deliberately NOT in scope for recipes-l46, and that
 exclusion was never silent: :func:`test_unmigrated_subdirectory_recipes_are_pinned`
 pins the exact set still on legacy, so one cannot be added or removed without
-this test saying so. recipes-c6w then migrated 28 of the 29 that were pinned,
-leaving only the entries whose reasons are spelled out on
-``_KNOWN_UNMIGRATED_SUBDIR_RECIPES`` itself.
+this test saying so. recipes-c6w then migrated 28 of the 29 that were pinned and
+recipes-80q the 29th, so what remains on
+``_KNOWN_UNMIGRATED_SUBDIR_RECIPES`` is validator FIXTURES only -- files that
+exist to be fed to ``validate_recipe`` and are never executed. The reason for
+each is spelled out on the constant itself.
 
 A migrated subdirectory recipe is held to the same parser-level standard as a
 top-level one (:func:`test_migrated_subdirectory_recipe_parses_as_v2_manifest`).
@@ -256,32 +258,20 @@ def test_shipped_surface_is_not_empty() -> None:
 #:     that skip). Migrating them would change what they test.
 #:
 #: ``examples/context-intelligence/verification/adversarial-verification.yaml``
-#:     -- blocked on a containment hazard, not an oversight, and NOT on a
-#:     missing exemption. Six of its steps use ``agent: "self"``, which the
-#:     planner refuses (``UndeclaredAgentError: Agent 'self' referenced by step
-#:     'validate_inputs' is not supplied by any declared dependency``) with a
-#:     remedy that cannot be followed, since no ``dependencies:`` block can
-#:     supply ``self``.
+#:     -- MIGRATED (recipes-80q). It was the last non-fixture entry here, held
+#:     back because six of its steps used ``agent: "self"``, which the planner
+#:     refused with a remedy no author could follow ("declare a dependency
+#:     supplying 'self'" -- no ``dependencies:`` block can).
 #:
-#:     Do NOT "fix" this by exempting ``self`` in the planner the way
-#:     ``validator.py`` and ``collect_agent_references`` already do. ``self``
-#:     is not undefined: the host's spawner defines it as an EMPTY overlay --
-#:     ``merge_configs(parent_session.config, {})`` -- and in the closed-world
-#:     path that parent session is the CALLER's (``executor.py`` passes
-#:     ``parent_session = self.coordinator.session``; ClosedWorldCoordinator
-#:     replaces the agent map and the spawn, never the session). An exempted
-#:     ``self`` step would therefore inherit the caller's whole config, agent
-#:     map included -- silently reopening the closed world that manifest Core
-#:     3/5 exists to hold shut. Closing this properly means substituting a
-#:     recipe-owned parent session at the boundary, or redefining ``self``
-#:     against the plan. Tracked as recipes-80q.
-#:
-#:     The file's stale ``lsp-python:python-code-intel`` references WERE
-#:     corrected to ``python-dev:code-intel`` (recipes-c6w), which is right
-#:     whatever schema version it ends up on.
+#:     That was settled by REFUSING ``self`` under v2 rather than exempting it
+#:     (a bare exemption would have let those steps inherit the CALLER's whole
+#:     session config, agent map included -- see
+#:     ``SelfAgentUnsupportedError`` and ``tests/test_self_agent_containment.py``),
+#:     and by naming, in the recipe, the agent each of those steps actually
+#:     runs as. The file now plan-verifies against the shipped planner with a
+#:     real ``FoundationResolver`` and no caller agents.
 _KNOWN_UNMIGRATED_SUBDIR_RECIPES = frozenset(
     {
-        "examples/context-intelligence/verification/adversarial-verification.yaml",
         "recipes/tests/fixtures/broken-recipe.yaml",
         "recipes/tests/fixtures/valid-recipe.yaml",
         "recipes/tests/fixtures/warnings-recipe.yaml",
