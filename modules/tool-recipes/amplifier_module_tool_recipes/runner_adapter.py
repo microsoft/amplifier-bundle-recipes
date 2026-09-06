@@ -248,16 +248,17 @@ class RecipeCancelledError(RuntimeError):
 class V2ResumeUnavailableError(RuntimeError):
     """A mid-run v2 resume was asked for and the library exports no ``resume``.
 
-    ``recipe-runner-lib.v1`` Core 2 names four entry points; this library
-    version exports ``plan`` and ``run`` only (:func:`library_resume` returns
-    ``None``). Continuing a *partly completed* run means skipping the steps it
-    already finished, and only the library can do that -- doing it here would
-    re-run completed steps, or make this adapter a second execution home
-    (Core 1). So the resume is refused rather than approximated.
+    ``recipe-runner-lib.v1`` Core 2 names four entry points. The library this
+    repository ships exports all four -- ``resume`` landed with recipes-4qf --
+    so this refusal is reached only against a copy that predates it, one where
+    :func:`library_resume` still returns ``None``. Continuing a *partly
+    completed* run means skipping the steps it already finished, and only the
+    library can do that -- doing it here would re-run completed steps, or make
+    this adapter a second execution home (Core 1). So the resume is refused
+    rather than approximated.
 
     The same refusal shape the standalone CLI uses for the same gap
-    (``cli.py``'s ``EXIT_UNSUPPORTED`` branch); both disappear when the
-    library's ``resume`` lands.
+    (``cli.py``'s ``EXIT_UNSUPPORTED`` branch).
     """
 
     def __init__(self, message: str, *, remedy: str) -> None:
@@ -609,13 +610,14 @@ def library_resume() -> Callable[..., Awaitable[Any]] | None:
 
     **The seam.** ``recipe-runner-lib.v1`` Core 2 names four entry points --
     ``validate``, ``plan``, ``run``, ``resume``. The shipped library exports
-    ``plan`` and ``run``; ``resume`` is declared on the
-    :class:`~amplifier_recipe_runner.api.RecipeRunner` protocol with no
-    concrete implementation (tracked as recipes-4qf, superseding recipes-10s).
+    all four: ``resume`` landed with recipes-4qf (superseding recipes-10s) as
+    ``amplifier_recipe_runner.execution.resume``, so this lookup now finds one
+    and :func:`resume_v2_recipe` routes to it.
 
-    This is a lookup rather than a hard import so the moment that entry point
-    lands, :func:`resume_v2_recipe` routes to it with no change here -- and
-    until it does, the absence is reported as itself instead of being
+    It stays a lookup rather than a hard import because the version actually
+    importable on a host is not this repository's to assume: against a copy
+    that predates recipes-4qf this still returns ``None`` and the absence is
+    reported as itself (:class:`V2ResumeUnavailableError`) instead of being
     approximated on a path that would re-run completed steps.
     """
     try:
@@ -1916,8 +1918,12 @@ async def resume_v2_recipe(
     Two routes, in this order:
 
     1. The library's ``resume`` entry point, when it exports one
-       (:func:`library_resume`). It replays recorded provenance and skips
-       completed steps -- ``recipe-dependency-manifest.v1`` Core 8.
+       (:func:`library_resume`), handed ``completed_steps`` so that it skips
+       the steps the recorded run already finished --
+       ``recipe-dependency-manifest.v1`` Core 8. Handing them over is the
+       whole point of the route: the keyword was dropped once, and every
+       completed step ran a second time under a SUCCEEDED result
+       (recipes-bpx).
     2. Nothing completed, so resuming *is* running from the start: one
        ``run`` call, against the recorded ``run_id``. This is the standalone
        CLI's own reading of the same case (``cli.py``'s ``resume_command``),
@@ -1943,7 +1949,16 @@ async def resume_v2_recipe(
 
     entry = resume or library_resume()
     if entry is not None:
-        return await entry(request)
+        # The steps the recorded run finished are the whole reason this route
+        # exists, so they are passed explicitly rather than left to the
+        # library's `completed_steps=()` default. Dropping them made a
+        # partly-completed run re-execute every step it had already done,
+        # reporting success -- the silent re-run `recipe-dependency-manifest.v1`
+        # Core 8 forbids and this function's own docstring promises against
+        # (recipes-bpx). A `resume` that does not accept the keyword fails
+        # loudly here for the same reason: contract Core 2 names it, and
+        # swallowing the TypeError would put the silence straight back.
+        return await entry(request, completed_steps=tuple(completed_steps))
 
     if completed_steps:
         raise V2ResumeUnavailableError(
