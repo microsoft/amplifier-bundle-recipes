@@ -33,6 +33,7 @@ the label rides beside the result payload rather than inside it.
 
 import json
 import logging
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,10 @@ from .runner_adapter import validate_v2_recipe
 from .runner_adapter import warn_legacy_recipe
 from .session import ApprovalStatus
 from .session import SessionManager
+from .shutdown import BackgroundBaseline
+from .shutdown import DrainReport
+from .shutdown import attach_shutdown_warning
+from .shutdown import resolve_drain_timeout
 from .validator import validate_recipe
 
 logger = logging.getLogger(__name__)
@@ -338,6 +343,12 @@ class RecipesTool:
         self.session_manager = session_manager
         self.coordinator = coordinator
         self.config = config
+        # Ceiling on the post-run drain (recipes-8sr). Read once, and refused
+        # loudly here rather than at the end of a long run, so a bad value is
+        # reported before any work is done.
+        self.shutdown_drain_timeout = resolve_drain_timeout(
+            config.get("shutdown_drain_timeout")
+        )
 
     def _get_working_dir(self) -> Path:
         """Get working directory from coordinator capability.
@@ -448,10 +459,18 @@ Example:
         operation = input.get("operation")
 
         try:
+            # `execute` and `resume` are the two operations that run the recipe
+            # engine, and so the two that can leave background work behind. Both
+            # are bounded (recipes-8sr); the read-only operations below are not,
+            # because they start nothing to drain.
             if operation == "execute":
-                return await self._execute_recipe(input)
+                return await self._run_bounded(
+                    operation, self._execute_recipe(input)
+                )
             if operation == "resume":
-                return await self._resume_recipe(input)
+                return await self._run_bounded(
+                    operation, self._resume_recipe(input)
+                )
             if operation == "list":
                 return await self._list_sessions(input)
             if operation == "validate":
@@ -474,6 +493,95 @@ Example:
                 success=False,
                 error={"message": str(e), "type": type(e).__name__},
             )
+
+    async def _run_bounded(
+        self, operation: str, coro: Awaitable[ToolResult]
+    ) -> ToolResult:
+        """Run the engine, then emit the outcome and bound the cleanup.
+
+        The failure this closes (recipes-8sr): a recipe completed every step
+        and wrote its outputs, and the process then slept indefinitely with its
+        sockets in CLOSE-WAIT. Nothing was emitted, so no caller could ever
+        learn the run had succeeded. A hang after the last step is worse than a
+        failure, because a failure at least names itself.
+
+        Two guarantees, in this order:
+
+        1. **The outcome is emitted first.** It is logged the moment the engine
+           returns -- before any wait -- so the run's result survives a later
+           stage that hangs. The log line is the record of record when the
+           process itself never gets to print one.
+        2. **The cleanup is bounded.** Background work this run started gets at
+           most ``shutdown_drain_timeout`` seconds (config, default 30) to
+           finish; whatever is still running is then named in a warning and
+           abandoned. "Completed, and <this> did not drain" is a diagnosable
+           result. Silence is not.
+
+        The drain runs on the failure path too: a run that raised can leave
+        exactly as much behind as one that succeeded, and the caller of a
+        failed run is owed the same bound.
+        """
+        baseline = BackgroundBaseline.capture()
+        try:
+            result = await coro
+        except BaseException:
+            # Bound the leftovers, then let the original failure propagate
+            # untouched -- a drain problem must never mask the real error.
+            try:
+                report = await baseline.drain(self.shutdown_drain_timeout)
+                self._warn_undrained(operation, report)
+            except Exception:
+                logger.debug("Bounded drain failed after an error", exc_info=True)
+            raise
+
+        outcome = self._log_outcome(operation, result)
+        report = await baseline.drain(self.shutdown_drain_timeout)
+        self._warn_undrained(operation, report, outcome)
+        return attach_shutdown_warning(result, report)
+
+    @staticmethod
+    def _log_outcome(operation: str, result: ToolResult | None) -> str:
+        """Record the run's outcome before anything is allowed to block on it.
+
+        Returned as well as logged, so the warning below can carry the outcome
+        with it: the *one* line a default CLI session shows is at WARNING, and
+        a warning that names only the leak would leave the user knowing what
+        broke and not whether their recipe finished.
+        """
+        try:
+            summary: Any = getattr(result, "output", None)
+            if isinstance(summary, dict):
+                summary = {
+                    key: summary.get(key)
+                    for key in ("status", "recipe", "run_id", "session_id")
+                    if key in summary
+                } or None
+            elif not isinstance(summary, str):
+                summary = None
+            if summary is None:
+                summary = getattr(result, "error", None)
+            outcome = f"success={getattr(result, 'success', None)} {summary}"
+            logger.info("recipes %s finished: %s", operation, outcome)
+            return outcome
+        except Exception:  # pragma: no cover - logging must never fail a run
+            logger.debug("Could not log recipe outcome", exc_info=True)
+            return "outcome unavailable"
+
+    @staticmethod
+    def _warn_undrained(
+        operation: str, report: DrainReport, outcome: str = ""
+    ) -> None:
+        if report.clean:
+            return
+        logger.warning(
+            "recipes %s completed (%s), but background work it started did not "
+            "drain within %gs and was abandoned: %s. The run's result is "
+            "complete; the process may stay alive until the work named here ends.",
+            operation,
+            outcome or "outcome unavailable",
+            report.timeout_seconds,
+            ", ".join(report.undrained),
+        )
 
     def _resolve_path(self, path_str: str) -> Path | None:
         """Resolve a path string, handling @mention syntax.

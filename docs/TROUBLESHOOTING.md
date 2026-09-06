@@ -13,6 +13,7 @@ This guide helps you diagnose and fix problems when creating or executing recipe
 - [Performance Issues](#performance-issues)
 - [Variable Problems](#variable-problems)
 - [JSON and Data Format Issues](#json-and-data-format-issues)
+- [The Process Hangs After the Recipe Finishes](#the-process-hangs-after-the-recipe-finishes)
 - [Debugging Tips](#debugging-tips)
 
 ---
@@ -882,6 +883,73 @@ jq -n --arg msg "$message" --argjson count "$count" \
 ```
 
 **Tip:** When using `parse_json: true` with agents, be explicit in your prompt about the expected JSON structure.
+
+---
+
+## The Process Hangs After the Recipe Finishes
+
+### Symptom: every step completed, the outputs are on disk, and nothing is ever printed
+
+```
+# The recipe's own work is finished:
+#   state.json  -> completed_steps: ['extract-mechanisms', 'synthesize-model']
+#   output file -> written, complete
+# And then... nothing. No status, no execution_mode, no result JSON.
+$ ss -tnp | grep <pid>
+CLOSE-WAIT  127.0.0.1:39188  127.0.0.1:8100     # telemetry
+CLOSE-WAIT  192.168.1.5:36822  <api-host>:443   # model provider
+```
+
+The process sleeps indefinitely and exits instantly on `SIGTERM`.
+
+**Cause:** not the recipe. Something *downstream of the run* -- a provider's
+HTTP client, a telemetry exporter, a spawned session's transport -- is closing
+a half-closed (CLOSE-WAIT) connection with no deadline. `httpx.AsyncClient
+.aclose()` has none of its own, and on a half-closed connection it can block
+forever.
+
+A hang here is worse than a failure: the work succeeded, and no caller can
+learn it.
+
+**What the recipes tool now does about it** (recipes-8sr):
+
+1. It **logs the run's outcome the moment the engine returns**, before any
+   teardown is allowed to block on it. If the process later wedges, the log
+   still carries what happened.
+2. It **bounds its own post-run drain**. Background work the run started gets
+   at most `shutdown_drain_timeout` seconds (default 30), then is named in a
+   warning and abandoned:
+
+   ```
+   recipes execute completed (success=True {'status': 'completed', ...}), but
+   background work it started did not drain within 30s and was abandoned:
+   task 'ci-exporter' (_deliver). The run's result is complete; the process may
+   stay alive until the work named here ends.
+   ```
+
+**Solution:**
+
+1. **Read the warning.** It names what did not drain. That name is the owner to
+   chase -- the recipes tool cannot close a client it does not own.
+2. **Tune the bound** if 30s is wrong for your host:
+
+   ```yaml
+   tools:
+     - module: tool-recipes
+       config:
+         shutdown_drain_timeout: 10   # seconds; 0 = report immediately, never wait
+   ```
+
+   A negative or non-numeric value is refused at mount time rather than
+   silently defaulted.
+3. **If nothing is named and the process still hangs,** the block is *outside*
+   the recipes tool -- most often in the host's own session cleanup, which runs
+   after the tool has already returned. Capture a thread dump before killing it:
+
+   ```bash
+   PYTHONFAULTHANDLER=1 amplifier tool invoke recipes ... # then: kill -ABRT <pid>
+   # or: py-spy dump --pid <pid>   (may need sudo)
+   ```
 
 ---
 
