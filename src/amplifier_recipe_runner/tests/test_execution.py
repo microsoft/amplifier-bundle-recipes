@@ -488,8 +488,9 @@ def test_run_refuses_a_step_it_cannot_execute(tmp_path: Path) -> None:
           - id: review
             agent: supplier:reviewer
             instruction: Review the change.
+          # no agent, no instruction -- and no other key either: `description:`
+          # is not a step key, and is refused before this step is reached.
           - id: summarize
-            description: no agent, no instruction
         """,
     )
     backend = RecordingBackend()

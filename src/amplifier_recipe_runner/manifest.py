@@ -23,6 +23,12 @@ Implements the parse-time half of contract ``recipe-dependency-manifest.v1``:
   ``approval_message`` / ``auto_approve_if`` are REJECTED at parse by name.
   They read as a human checkpoint and are not stage fields, so accepting them
   quietly runs a declared approval gate ungated.
+* **Core 1, applied to every step and stage key** -- a key no engine reads is
+  REJECTED at parse, naming the offending key, the step or stage it sits on,
+  and the valid keys. An unread key is not inert: ``condition:`` on a STAGE
+  read as "skip this stage" and was dropped, so the stage ran unconditionally
+  (recipes-juc); ``requires_approval:`` on a STEP read as a human checkpoint
+  and is not a step field at all (recipes-dna).
 
 Scope: **parsing only**. No dependency resolution, no network, no Foundation
 calls, no lockfile handling. Everything here is pure and offline.
@@ -48,7 +54,11 @@ __all__ = [
     "DEPENDENCY_KEYS",
     "DEPENDENCY_KINDS",
     "FLAT_STAGE_APPROVAL_KEYS",
+    "FLAT_STEP_APPROVAL_KEYS",
+    "KNOWN_STAGE_KEYS",
+    "KNOWN_STEP_KEYS",
     "KNOWN_TOP_LEVEL_KEYS",
+    "REJECTED_STAGE_KEYS",
     "SCHEMA_VERSION",
     "Dependency",
     "DependencyKind",
@@ -63,6 +73,8 @@ __all__ = [
     "parse_manifest_file",
     "parse_manifest_text",
     "resolve_context_block",
+    "unknown_stage_key_error",
+    "unknown_step_key_error",
 ]
 
 CONTRACT: Final[str] = "recipe-dependency-manifest.v1"
@@ -130,6 +142,114 @@ FLAT_STAGE_APPROVAL_KEYS: Final[Mapping[str, str]] = MappingProxyType(
             "there is no conditional auto-approval in this schema -- remove it, "
             "and gate the stage with 'approval: {required: true, prompt: <text>}' "
             "if the checkpoint is real"
+        ),
+    }
+)
+
+
+#: Every YAML key a STEP may carry. A step key outside this set is a parse
+#: ERROR naming the offending key, the step, and this list (Core 1).
+#:
+#: The set is the legacy ``Step`` dataclass's own YAML surface -- every field
+#: name, plus the three YAML spellings of the renamed ones (``as`` ->
+#: ``as_var``, ``context`` -> ``step_context``, ``steps`` -> ``while_steps``;
+#: both spellings load, and ``while_steps:`` is documented as a step key) --
+#: PLUS the two extra instruction aliases this library reads
+#: (:data:`.engine.INSTRUCTION_KEYS`). ``modules/tool-recipes``'s
+#: ``KNOWN_STEP_KEYS`` derives the same set from the dataclass directly, and
+#: ``tests/test_unknown_step_and_stage_keys.py`` pins the two together,
+#: difference included: a key is unknown to both engines or to neither.
+KNOWN_STEP_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        # identity / dispatch
+        "id",
+        "type",
+        # agent steps
+        "agent",
+        "prompt",
+        "instruction",  # library-only alias for 'prompt'
+        "message",  # library-only alias for 'prompt'
+        "mode",
+        "agent_config",
+        "provider",
+        "model",
+        "provider_preferences",
+        "model_role",
+        "spawn_mode",
+        # recipe steps
+        "recipe",
+        "context",
+        "step_context",  # the dataclass spelling of 'context'
+        "recursion",
+        # bash steps
+        "command",
+        "cwd",
+        "env",
+        "output_exit_code",
+        # common
+        "output",
+        "condition",
+        "foreach",
+        "as",
+        "as_var",  # the dataclass spelling of 'as'
+        "collect",
+        "parallel",
+        "checkpoint_iterations",
+        "max_iterations",
+        "timeout",
+        "retry",
+        "on_error",
+        "depends_on",
+        "parse_json",
+        # loops
+        "while_condition",
+        "max_while_iterations",
+        "break_when",
+        "update_context",
+        "steps",
+        "while_steps",  # the dataclass spelling of a loop body's 'steps'
+    }
+)
+
+#: Step-level approval keys -> the remedy that actually works. Approval gates
+#: are a STAGED-mode feature (``stages[].approval``); none of these is a step
+#: field, so a step declaring one has never gated anything. ``README.md``
+#: documented exactly this shape (recipes-dna), which is why each is named
+#: individually rather than folded into the generic unknown-key message.
+FLAT_STEP_APPROVAL_KEYS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "requires_approval": (
+            "approval gates are a staged-mode feature -- put the step in a "
+            "'stages:' block and gate the stage with "
+            "'approval: {required: true, prompt: <text>, when: before_stage}'"
+        ),
+        "approval_message": (
+            "the gate's text is the stage's 'approval: {prompt: <text>}' -- "
+            "a step has no approval prompt"
+        ),
+        "approval": (
+            "'approval:' belongs to a STAGE, not a step -- move it up one "
+            "level onto the stage that contains this step"
+        ),
+    }
+)
+
+#: Every YAML key a STAGE may carry. ``description`` is documentation the
+#: parsers record and no engine executes; the other three are structural.
+#: Anything else is a parse ERROR (Core 1).
+KNOWN_STAGE_KEYS: Final[frozenset[str]] = frozenset({"name", "steps", "approval", "description"})
+
+#: Stage keys that read as behaviour, are read by nobody, and therefore get a
+#: named remedy of their own rather than the generic unknown-key message.
+#: ``condition:`` is the measured one (recipes-juc): three stages of
+#: ``examples/context-intelligence/verification/adversarial-verification.yaml``
+#: declared it and documented themselves as "SKIPPED when continue_from is
+#: provided" -- and ran every time.
+REJECTED_STAGE_KEYS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "condition": (
+            "a stage has no condition -- put 'condition:' on each of the "
+            "stage's steps, which both engines evaluate and record as skipped"
         ),
     }
 )
@@ -251,9 +371,11 @@ def parse_manifest(data: Any, *, source: str | None = None) -> ParseResult:
         ManifestError: on any contract violation -- unknown top-level or
             dependency key, malformed
             ``dependencies``/``capabilities``/``agents``, an unsupported
-            ``schema_version``, an ``agent_config`` step field, or a flat
+            ``schema_version``, an ``agent_config`` step field, a flat
             stage-level approval key (``approval_required`` /
-            ``approval_message`` / ``auto_approve_if``).
+            ``approval_message`` / ``auto_approve_if``), or any other step or
+            stage key no engine reads (see :data:`KNOWN_STEP_KEYS` /
+            :data:`KNOWN_STAGE_KEYS`).
     """
     if not isinstance(data, Mapping):
         raise ManifestError(
@@ -283,6 +405,8 @@ def parse_manifest(data: Any, *, source: str | None = None) -> ParseResult:
     _check_top_level_keys(data, source=source)
     _reject_agent_config(data, source=source)
     _reject_flat_stage_approval_keys(data, source=source)
+    _reject_unknown_stage_keys(data, source=source)
+    _reject_unknown_step_keys(data, source=source)
     check_context_block(data.get("context"), source=source)
 
     if "dependencies" not in data:
@@ -680,6 +804,95 @@ def _reject_flat_stage_approval_keys(data: Mapping[str, Any], *, source: str | N
             clause="Core 1",
             source=source,
         )
+
+
+def unknown_step_key_error(step: Mapping[str, Any], *, where: str) -> tuple[str, str] | None:
+    """``(message, remedy)`` for a step carrying unread keys, else ``None``.
+
+    Shared by this module and :mod:`.engine` so the two parse paths cannot
+    describe the same file differently. ``where`` is the positional path used
+    when the step has no usable ``id``.
+    """
+    offending = sorted(str(key) for key in step if key not in KNOWN_STEP_KEYS)
+    if not offending:
+        return None
+
+    step_id = step.get("id")
+    named = f"step {step_id!r}" if isinstance(step_id, str) and step_id else f"step at {where}"
+    one = len(offending) == 1
+    message = (
+        f"{named} declares {_fmt(offending)}, which "
+        f"{'is not a step key' if one else 'are not step keys'}: "
+        f"{'it' if one else 'they'} would be read by nobody, so whatever "
+        f"{'it declares' if one else 'they declare'} never happens. Valid step keys are "
+        f"{_fmt(sorted(KNOWN_STEP_KEYS))}"
+    )
+    named_remedies = [f"{key!r}: {FLAT_STEP_APPROVAL_KEYS[key]}" for key in offending if key in FLAT_STEP_APPROVAL_KEYS]
+    remedy = (
+        "; ".join(named_remedies)
+        if named_remedies
+        else "remove the key, or correct it to one of the valid step keys named above"
+    )
+    return message, remedy
+
+
+def unknown_stage_key_error(stage: Mapping[str, Any], *, index: int) -> tuple[str, str] | None:
+    """``(message, remedy)`` for a stage carrying unread keys, else ``None``.
+
+    The flat approval keys are handled first, by
+    :func:`_reject_flat_stage_approval_keys` and its engine twin, so they keep
+    their own remedies; anything else left over lands here.
+    """
+    offending = sorted(str(key) for key in stage if key not in KNOWN_STAGE_KEYS)
+    if not offending:
+        return None
+
+    name = stage.get("name")
+    named = f"stage {name!r}" if isinstance(name, str) and name else f"stage at stages[{index}]"
+    one = len(offending) == 1
+    message = (
+        f"{named} declares {_fmt(offending)}, which "
+        f"{'is not a stage key' if one else 'are not stage keys'}: "
+        f"{'it' if one else 'they'} would be read by nobody, so whatever "
+        f"{'it declares' if one else 'they declare'} never happens. Valid stage keys are "
+        f"{_fmt(sorted(KNOWN_STAGE_KEYS))}"
+    )
+    named_remedies = [f"{key!r}: {REJECTED_STAGE_KEYS[key]}" for key in offending if key in REJECTED_STAGE_KEYS]
+    remedy = (
+        "; ".join(named_remedies)
+        if named_remedies
+        else "remove the key, or correct it to one of the valid stage keys named above"
+    )
+    return message, remedy
+
+
+def _reject_unknown_step_keys(data: Mapping[str, Any], *, source: str | None) -> None:
+    """Core 1, applied to a STEP key: an unread step key is an ERROR.
+
+    Walks flat steps, staged steps, and nested foreach/while bodies -- the
+    same population :func:`_reject_agent_config` walks.
+    """
+    for step, path in _walk_steps(data):
+        failure = unknown_step_key_error(step, where=path)
+        if failure is None:
+            continue
+        message, remedy = failure
+        raise ManifestError(f"{message}. {remedy}", clause="Core 1", source=source)
+
+
+def _reject_unknown_stage_keys(data: Mapping[str, Any], *, source: str | None) -> None:
+    """Core 1, applied to a STAGE key: an unread stage key is an ERROR."""
+    stages = data.get("stages")
+    if not isinstance(stages, list):
+        return
+    for index, stage in enumerate(stages):
+        if not isinstance(stage, Mapping):
+            continue
+        failure = unknown_stage_key_error(stage, index=index)
+        if failure is None:
+            continue
+        message, remedy = failure
+        raise ManifestError(f"{message}. {remedy}", clause="Core 1", source=source)
 
 
 def _walk_steps(data: Mapping[str, Any]) -> list[tuple[Mapping[str, Any], str]]:

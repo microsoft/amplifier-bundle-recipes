@@ -1,6 +1,6 @@
 """Recipe data models and YAML parsing."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
@@ -198,6 +198,11 @@ class Stage:
     name: str
     steps: list["Step"]
     approval: ApprovalConfig | None = None
+    # The stage's own prose, recorded verbatim. Documentation only -- nothing
+    # executes it -- but it IS a stage key, so it is parsed rather than
+    # dropped. Every other unread stage key is refused by name; see
+    # KNOWN_STAGE_KEYS and Recipe._refuse_unknown_stage_keys.
+    description: str | None = None
 
     def validate(self) -> list[str]:
         """Validate stage structure and constraints."""
@@ -708,6 +713,81 @@ class Step:
         return errors
 
 
+# YAML key -> Step field name, for the three keys whose YAML spelling differs
+# from the dataclass field (``as`` and ``context`` are taken; ``steps`` is a
+# nested body). ``Recipe._parse_step`` applies exactly these renames.
+STEP_YAML_KEY_ALIASES: dict[str, str] = {
+    "as": "as_var",
+    "context": "step_context",
+    "steps": "while_steps",
+}
+
+# Every YAML key a step may carry -- the Step dataclass's own field names PLUS
+# the three YAML spellings above. DERIVED rather than hand-listed so a new Step
+# field can never fall out of step with the refusal below.
+#
+# Both spellings of the renamed three are accepted because both load today:
+# ``Step(**{"while_steps": [...]})`` is as valid as the ``steps:`` an author
+# writes, and ``while_steps:`` is documented as a step key in
+# docs/RECIPE_SCHEMA.md. This refusal is about keys NO engine reads; it does
+# not narrow what already parses.
+#
+# The schema-2 library keeps the same set in
+# ``amplifier_recipe_runner.manifest.KNOWN_STEP_KEYS``, plus the two extra
+# instruction aliases it reads (``instruction``, ``message``);
+# ``tests/test_unknown_step_and_stage_keys.py`` pins the two together,
+# difference included.
+KNOWN_STEP_KEYS: frozenset[str] = frozenset(
+    {f.name for f in fields(Step)} | set(STEP_YAML_KEY_ALIASES)
+)
+
+
+# Step-level approval keys -> the remedy that actually works. Approval gates
+# are a STAGED-mode feature (``stages[].approval``); none of these is a Step
+# field, so a step declaring one has never gated anything -- it died on a raw
+# ``Step.__init__() got an unexpected keyword argument`` that named no remedy
+# at all. ``README.md`` documented exactly this shape (recipes-dna), so each is
+# named individually rather than folded into the generic unknown-key message.
+#
+# Deliberately duplicated from
+# ``amplifier_recipe_runner.manifest.FLAT_STEP_APPROVAL_KEYS`` rather than
+# imported, for the same reason FLAT_STAGE_APPROVAL_KEYS is: the runner library
+# is an OPTIONAL dependency of this module.
+FLAT_STEP_APPROVAL_KEYS: dict[str, str] = {
+    "requires_approval": (
+        "approval gates are a staged-mode feature -- put the step in a "
+        "'stages:' block and gate the stage with "
+        "'approval: {required: true, prompt: <text>, when: before_stage}'"
+    ),
+    "approval_message": (
+        "the gate's text is the stage's 'approval: {prompt: <text>}' -- "
+        "a step has no approval prompt"
+    ),
+    "approval": (
+        "'approval:' belongs to a STAGE, not a step -- move it up one "
+        "level onto the stage that contains this step"
+    ),
+}
+
+
+# Every YAML key a stage may carry. ``description`` is documentation the
+# parser records and no engine executes; the other three are structural.
+KNOWN_STAGE_KEYS: frozenset[str] = frozenset({"name", "steps", "approval", "description"})
+
+
+# Stage keys that read as behaviour, are read by nobody, and so get a named
+# remedy of their own. ``condition:`` is the measured one (recipes-juc): three
+# stages of examples/context-intelligence/verification/adversarial-verification.yaml
+# declared it and documented themselves as "SKIPPED when continue_from is
+# provided" -- and ran every time.
+REJECTED_STAGE_KEYS: dict[str, str] = {
+    "condition": (
+        "a stage has no condition -- put 'condition:' on each of the "
+        "stage's steps, which both engines evaluate and record as skipped"
+    ),
+}
+
+
 @dataclass
 class Recipe:
     """Represents a complete recipe specification.
@@ -771,10 +851,59 @@ class Recipe:
         return self.steps
 
     @classmethod
+    def _refuse_unknown_step_keys(cls, step_data: dict[str, Any]) -> None:
+        """Refuse a step carrying keys :class:`Step` does not define.
+
+        Before this, ``Step(**step_data)`` raised a raw
+        ``TypeError: Step.__init__() got an unexpected keyword argument
+        'requires_approval'`` -- loud, but naming no remedy and no valid keys.
+        ``README.md`` documented that exact shape as the way to declare an
+        approval gate (recipes-dna), so the error now names the offending key,
+        the step it sits on, the valid keys, and -- for the approval-shaped
+        keys -- where the gate actually lives.
+
+        Refused identically by the schema-2 library parser
+        (:func:`amplifier_recipe_runner.manifest.unknown_step_key_error`), so
+        the two engines cannot disagree about the same file.
+        """
+        offending = sorted(
+            str(key) for key in step_data if str(key) not in KNOWN_STEP_KEYS
+        )
+        if not offending:
+            return
+
+        step_id = step_data.get("id")
+        named = (
+            f"Step '{step_id}'" if isinstance(step_id, str) and step_id else "A step"
+        )
+        keys = ", ".join(f"'{key}'" for key in offending)
+        valid = ", ".join(f"'{key}'" for key in sorted(KNOWN_STEP_KEYS))
+        one = len(offending) == 1
+        named_remedies = [
+            f"'{key}': {FLAT_STEP_APPROVAL_KEYS[key]}"
+            for key in offending
+            if key in FLAT_STEP_APPROVAL_KEYS
+        ]
+        remedy = (
+            "; ".join(named_remedies)
+            if named_remedies
+            else "remove the key, or correct it to one of the valid step keys named above"
+        )
+        raise ValueError(
+            f"{named} declares {keys}, which "
+            f"{'is not a step key' if one else 'are not step keys'}: "
+            f"{'it' if one else 'they'} would be read by nobody, so whatever "
+            f"{'it declares' if one else 'they declare'} never happens. "
+            f"Valid step keys are {valid}. {remedy}"
+        )
+
+    @classmethod
     def _parse_step(cls, step_data: dict[str, Any]) -> Step:
         """Parse a single step from YAML data."""
         if not isinstance(step_data, dict):
             raise ValueError("Each step must be a dictionary")
+
+        cls._refuse_unknown_step_keys(step_data)
 
         step_data_copy = dict(step_data)
 
@@ -912,12 +1041,57 @@ class Recipe:
         )
 
     @classmethod
+    def _refuse_unknown_stage_keys(cls, stage_data: dict[str, Any]) -> None:
+        """Refuse a stage carrying keys :class:`Stage` does not define.
+
+        ``condition:`` is the measured case (recipes-juc): ``_parse_stage``
+        built ``Stage(name=..., steps=..., approval=...)`` by hand, so a stage
+        declaring a condition parsed cleanly with the condition gone and ran
+        unconditionally.
+
+        Refused rather than honoured. Honouring it would mean a second,
+        stage-shaped skip path threaded through approval gates, stage state,
+        resume and ``steps.jsonl`` in BOTH engines; the remedy costs an author
+        one line per step and uses the step-level ``condition:`` both engines
+        already evaluate and record as skipped.
+        """
+        offending = sorted(
+            str(key) for key in stage_data if str(key) not in KNOWN_STAGE_KEYS
+        )
+        if not offending:
+            return
+
+        name = stage_data.get("name")
+        named = f"Stage '{name}'" if isinstance(name, str) and name else "Stage"
+        keys = ", ".join(f"'{key}'" for key in offending)
+        valid = ", ".join(f"'{key}'" for key in sorted(KNOWN_STAGE_KEYS))
+        one = len(offending) == 1
+        named_remedies = [
+            f"'{key}': {REJECTED_STAGE_KEYS[key]}"
+            for key in offending
+            if key in REJECTED_STAGE_KEYS
+        ]
+        remedy = (
+            "; ".join(named_remedies)
+            if named_remedies
+            else "remove the key, or correct it to one of the valid stage keys named above"
+        )
+        raise ValueError(
+            f"{named} declares {keys}, which "
+            f"{'is not a stage key' if one else 'are not stage keys'}: "
+            f"{'it' if one else 'they'} would be read by nobody, so whatever "
+            f"{'it declares' if one else 'they declare'} never happens. "
+            f"Valid stage keys are {valid}. {remedy}"
+        )
+
+    @classmethod
     def _parse_stage(cls, stage_data: dict[str, Any]) -> Stage:
         """Parse a single stage from YAML data."""
         if not isinstance(stage_data, dict):
             raise ValueError("Each stage must be a dictionary")
 
         cls._refuse_flat_stage_approval_keys(stage_data)
+        cls._refuse_unknown_stage_keys(stage_data)
 
         # Parse steps within stage
         steps_data = stage_data.get("steps", [])
@@ -929,10 +1103,13 @@ class Recipe:
         # Parse approval config if present
         approval = cls._parse_approval_config(stage_data.get("approval"))
 
+        description = stage_data.get("description")
+
         return Stage(
             name=stage_data.get("name", ""),
             steps=steps,
             approval=approval,
+            description=str(description) if description is not None else None,
         )
 
     @classmethod

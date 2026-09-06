@@ -12,7 +12,7 @@ The Recipes Bundle provides a tool and agents for creating, executing, and manag
 - **Agent delegation** - Each step spawns a sub-agent with specific capabilities
 - **State persistence** - Sessions automatically checkpoint for resumability
 - **Context accumulation** - Later steps access earlier results via `{{variable}}` syntax
-- **Approval gates** - Pause for human review with `requires_approval: true`
+- **Approval gates** - Pause for human review between stages with a stage's `approval:` block
 - **Foreach loops** - Iterate over collections with parallel execution support
 
 **Use cases:**
@@ -208,21 +208,35 @@ steps:
 
 ### Approval Gates
 
-Pause for human review:
+Pause for human review. An approval gate belongs to a **stage**, so the recipe
+uses `stages:` rather than flat `steps:`:
 
 ```yaml
-steps:
-  - id: "plan-changes"
-    agent: "zen-architect"
-    prompt: "Plan dependency upgrades"
-    output: "upgrade_plan"
-    requires_approval: true  # Pauses here for human review
-    approval_message: "Review the upgrade plan before applying"
+stages:
+  - name: "plan"
+    steps:
+      - id: "plan-changes"
+        agent: "zen-architect"
+        prompt: "Plan dependency upgrades"
+        output: "upgrade_plan"
+    approval:
+      required: true
+      prompt: "Review the upgrade plan before applying"
 
-  - id: "apply-changes"
-    agent: "modular-builder"
-    prompt: "Apply these upgrades: {{upgrade_plan}}"
+  - name: "apply"
+    steps:
+      - id: "apply-changes"
+        agent: "modular-builder"
+        prompt: "Apply these upgrades: {{upgrade_plan}}"
 ```
+
+By default the gate sits **after** its stage — it pauses the transition from
+`plan` to `apply`, which is what you want here. Add `when: "before_stage"` to
+gate a stage's own steps before they run.
+
+> There is no step-level gate. `requires_approval:` and `approval_message:` on
+> a step are **refused at load**, by name, with the remedy — in both engines.
+> See [Rejected step keys](docs/RECIPE_SCHEMA.md#rejected-step-keys).
 
 ### Parallel foreach
 

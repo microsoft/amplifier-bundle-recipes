@@ -555,7 +555,12 @@ A Stage groups multiple steps together with an optional approval gate. Stages ar
 - name: string                  # Required - Unique stage name
   steps: list[Step]            # Required - At least one step
   approval: ApprovalConfig     # Optional - Approval gate configuration
+  description: string          # Optional - Documentation only; recorded, never executed
 ```
+
+Those four are the **complete** list. Any other stage key is **rejected at
+load**, by name, with the valid keys and a remedy — see
+[Rejected stage keys](#rejected-stage-keys).
 
 ### Stage Fields
 
@@ -585,6 +590,17 @@ A Stage groups multiple steps together with an optional approval gate. Stages ar
 - Steps within stage execute sequentially
 
 **Purpose:** Define the work performed in this stage.
+
+#### `description` (optional)
+
+**Type:** string
+
+**Purpose:** Documentation. Both parsers record it on the parsed stage
+(`Stage.description` / `StageSpec.description`) and nothing executes it.
+
+It is a real key rather than a tolerated one because a stage key that no
+parser records is dropped in silence, and this schema no longer does that —
+see [Rejected stage keys](#rejected-stage-keys).
 
 #### `approval` (optional)
 
@@ -671,9 +687,50 @@ approval:
 
 ### Rejected stage keys
 
-A Stage has exactly three keys: `name`, `steps`, `approval`. These three read
-like an approval gate, are **not** stage keys, and are **rejected at load** —
-named individually, with the remedy:
+A Stage has exactly four keys: `name`, `steps`, `approval`, `description`.
+**Every other stage key is rejected at load**, by name, with the valid keys
+listed and a remedy — a key no parser reads is not inert, it is a declaration
+that never happens.
+
+One of them reads as behaviour and gets a remedy of its own:
+
+| Rejected stage key | Status | Remedy |
+|---|---|---|
+| `condition` | **Rejected** — a stage has no condition | Put `condition:` on each of the stage's **steps**. Both engines evaluate a step-level condition and record the skip. |
+
+**Why `condition:` is rejected and not honoured.** It was dropped in silence:
+`Recipe._parse_stage` built its `Stage` by hand and `parse_program` read only
+`name`/`steps`/`approval`, so a stage declaring a condition ran
+unconditionally. Three stages of
+`examples/context-intelligence/verification/adversarial-verification.yaml`
+declared `condition: "{{continue_from}} == ''"` and documented themselves as
+"SKIPPED when continue_from is provided" — and ran every time, re-running the
+whole investigation in continuation mode. Honouring it would mean a second,
+stage-shaped skip path threaded through approval gates, stage state, resume
+and `steps.jsonl` in **both** engines; the remedy costs an author one line per
+step and rides the step-level condition both engines already evaluate. That
+example now carries the condition on its steps.
+
+**What rejection looks like:**
+
+```yaml
+stages:
+  - name: pre_check
+    condition: "{{continue_from}} == ''"   # ← rejected
+```
+
+```
+Stage 'pre_check' declares 'condition', which is not a stage key: it would be read
+by nobody, so whatever it declares never happens. Valid stage keys are 'approval',
+'description', 'name', 'steps'. 'condition': a stage has no condition -- put
+'condition:' on each of the stage's steps, which both engines evaluate and record
+as skipped
+```
+
+#### Flat approval keys
+
+These three read like an approval gate, are **not** stage keys, and are
+**rejected at load** — named individually, with the remedy:
 
 | Rejected stage key | Status | Remedy |
 |---|---|---|
@@ -762,6 +819,63 @@ Each step represents one unit of work in the workflow. Steps can be agent invoca
   on_error: string              # Optional - Error handling strategy
   depends_on: list[string]      # Optional - Step IDs that must complete first
 ```
+
+**Every other step key is rejected at load** — see
+[Rejected step keys](#rejected-step-keys).
+
+### Rejected step keys
+
+A key no engine reads is not inert: whatever it declared never happens. So any
+step key outside the list above is **refused at parse**, naming the offending
+key, the step it sits on, the valid keys, and a remedy — by the legacy loader
+(`Recipe.from_yaml`) and by the schema-2 parsers alike.
+
+Three of them read like an approval gate and get a remedy of their own:
+
+| Rejected step key | Status | Remedy |
+|---|---|---|
+| `requires_approval` | **Rejected** — approval is not a step feature | Put the step in a `stages:` block and gate the stage: `approval: { required: true, prompt: <text>, when: before_stage }` |
+| `approval_message` | **Rejected** — a step has no approval prompt | The gate's text is the stage's `approval: { prompt: <text> }` |
+| `approval` | **Rejected** — `approval:` belongs to a stage | Move it up one level, onto the stage containing this step |
+
+**Why this one mattered.** `README.md` documented `requires_approval: true` /
+`approval_message:` on a step as *the* way to declare an approval gate. Neither
+is a step field, so the recipe could not load at all — it died on a raw
+`TypeError: Step.__init__() got an unexpected keyword argument
+'requires_approval'`, which named no remedy and no valid keys. The README now
+documents the staged shape; no step-level gate was invented to match it,
+because none exists.
+
+**What rejection looks like:**
+
+```yaml
+steps:
+  - id: "plan-changes"
+    agent: "zen-architect"
+    prompt: "Plan dependency upgrades"
+    requires_approval: true                     # ← rejected
+    approval_message: "Review before applying"  # ← rejected
+```
+
+```
+Step 'plan-changes' declares 'approval_message', 'requires_approval', which are not
+step keys: they would be read by nobody, so whatever they declare never happens.
+Valid step keys are 'agent', 'agent_config', 'as', ... . 'approval_message': the
+gate's text is the stage's 'approval: {prompt: <text>}' -- a step has no approval
+prompt; 'requires_approval': approval gates are a staged-mode feature -- put the
+step in a 'stages:' block and gate the stage with 'approval: {required: true,
+prompt: <text>, when: before_stage}'
+```
+
+**One documented difference between the engines.** The runner library also
+accepts `instruction:` and `message:` as aliases for `prompt:` (its own
+recipes were written that way); the legacy loader never has, and still does
+not. Every other key is known to both engines or to neither — the two key
+lists are pinned to each other by
+`modules/tool-recipes/tests/test_unknown_step_and_stage_keys.py`.
+
+Scoping: only **step mappings** are checked. A `context:` variable named
+`requires_approval` is untouched.
 
 ### Step Fields
 

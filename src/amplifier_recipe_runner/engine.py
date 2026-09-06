@@ -73,6 +73,8 @@ from .expressions import ExpressionError
 from .expressions import evaluate_condition
 from .manifest import FLAT_STAGE_APPROVAL_KEYS
 from .manifest import check_context_block
+from .manifest import unknown_stage_key_error
+from .manifest import unknown_step_key_error
 
 __all__ = [
     "ApprovalLedger",
@@ -657,6 +659,11 @@ class StageSpec:
     name: str
     steps: tuple[StepSpec, ...]
     approval: ApprovalSpec | None = None
+    description: str | None = None
+    """The stage's own prose, recorded verbatim. Documentation only -- nothing
+    executes it -- but it is a real stage key, so it is parsed rather than
+    dropped (every other unread stage key is refused: see
+    :func:`_refuse_unknown_stage_keys`)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -715,6 +722,14 @@ def parse_step(data: Mapping[str, Any], *, index: int = 0) -> StepSpec:
     """
     if not isinstance(data, Mapping):
         raise UnsupportedStepError(None, "it is not a mapping")
+
+    # A key this parser does not read is refused here rather than dropped:
+    # `requires_approval:` read as a human checkpoint and was never a step
+    # field in either engine (recipes-dna). A schema-2 recipe is caught
+    # earlier, by the manifest parser; a LEGACY recipe -- including one
+    # reached from a v2 parent through a `type: recipe` step -- is parsed only
+    # here, so both paths refuse the same shape.
+    _refuse_unknown_step_keys(data, index=index)
 
     step_id = data.get("id") if isinstance(data.get("id"), str) else f"step-{index}"
 
@@ -787,6 +802,36 @@ def parse_step(data: Mapping[str, Any], *, index: int = 0) -> StepSpec:
         model_role=data.get("model_role") if isinstance(data.get("model_role"), str) else None,
         raw=dict(data),
     )
+
+
+def _refuse_unknown_step_keys(data: Mapping[str, Any], *, index: int) -> None:
+    """Refuse a step carrying keys no engine reads.
+
+    The message and remedy come from
+    :func:`amplifier_recipe_runner.manifest.unknown_step_key_error`, so this
+    parser and the manifest parser cannot describe the same step differently.
+    """
+    failure = unknown_step_key_error(data, where=f"steps[{index}]")
+    if failure is None:
+        return
+    message, remedy = failure
+    raise ExecutionError(f"{message}.", remedy=remedy)
+
+
+def _refuse_unknown_stage_keys(stage_data: Mapping[str, Any], *, index: int) -> None:
+    """Refuse a stage carrying keys no engine reads.
+
+    ``condition:`` is the measured case (recipes-juc): a stage declaring one
+    ran unconditionally, because no parser here ever read it. Refused by name
+    with the remedy that works -- ``condition:`` on the stage's steps -- rather
+    than honoured, which would mean a second, stage-shaped skip path through
+    approval gates, stage state and resume in both engines.
+    """
+    failure = unknown_stage_key_error(stage_data, index=index)
+    if failure is None:
+        return
+    message, remedy = failure
+    raise ExecutionError(f"{message}.", remedy=remedy)
 
 
 def _refuse_flat_stage_approval_keys(stage_data: Mapping[str, Any], *, index: int) -> None:
@@ -862,6 +907,7 @@ def parse_program(body: Mapping[str, Any], *, path: Path | None = None) -> Recip
             if not isinstance(stage_data, Mapping):
                 continue
             _refuse_flat_stage_approval_keys(stage_data, index=stage_index)
+            _refuse_unknown_stage_keys(stage_data, index=stage_index)
             stage_steps: list[StepSpec] = []
             for item in stage_data.get("steps") or ():
                 if isinstance(item, Mapping):
@@ -872,6 +918,9 @@ def parse_program(body: Mapping[str, Any], *, path: Path | None = None) -> Recip
                     name=str(stage_data.get("name") or ""),
                     steps=tuple(stage_steps),
                     approval=_parse_approval(stage_data.get("approval")),
+                    description=(
+                        str(stage_data["description"]) if stage_data.get("description") is not None else None
+                    ),
                 )
             )
 
