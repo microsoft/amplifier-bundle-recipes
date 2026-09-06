@@ -51,6 +51,7 @@ fabricated success (lib Core 8).
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Iterator
 from collections.abc import Mapping
@@ -63,16 +64,23 @@ from typing import Final
 from typing import Protocol
 from typing import runtime_checkable
 
-import yaml
-
 from .api import AgentProvenance
 from .api import ExecutionPlan
 from .api import RunRequest
 from .api import RunResult
 from .api import RunStatus
+from .engine import RECIPE_INTERNAL_KEYS
+from .engine import ApprovalLedger
+from .engine import ExecutionError
+from .engine import RecipeProgram
+from .engine import RecursionState
+from .engine import ResumeState
+from .engine import StepEngine
+from .engine import StepSpec
+from .engine import UnsupportedStepError
+from .engine import load_program
 from .errors import SELF_AGENT
 from .errors import PreflightError
-from .errors import RecipeRunnerError
 from .errors import SelfAgentUnsupportedError
 from .errors import UndeclaredAgentError
 from .manifest import ManifestError
@@ -93,6 +101,7 @@ __all__ = [
     "PlanCatalog",
     "PlanCatalogSpawnAdapter",
     "RecipeExecutionSession",
+    "RunStateStore",
     "SessionBuild",
     "SessionFactory",
     "SpawnBackend",
@@ -116,47 +125,14 @@ CONTRACTS: Final[tuple[str, ...]] = (
 #: :meth:`RecipeExecutionSession.invoke` calls.
 SPAWN_CAPABILITY: Final[str] = "session.spawn"
 
-#: Keys under which a step may nest further steps. Nested bodies are the
-#: orchestration work item; this executor refuses them by name.
-_NESTED_STEP_KEYS: Final[tuple[str, ...]] = ("steps", "while_steps")
-
-#: Step keys carrying the instruction text, in precedence order.
-_INSTRUCTION_KEYS: Final[tuple[str, ...]] = ("instruction", "prompt", "message")
-
-
 # --------------------------------------------------------------------------
 # Execution-time errors (post-preflight)
 # --------------------------------------------------------------------------
 
 
-class ExecutionError(RecipeRunnerError):
-    """A failure *during* execution, after preflight passed.
-
-    Deliberately distinct from
-    :class:`~amplifier_recipe_runner.errors.PreflightError`: catching that one
-    still means "nothing ran", and this one must not blur it.
-    """
-
-
-class UnsupportedStepError(ExecutionError):
-    """A step shape this executor cannot run.
-
-    Raised rather than skipped: a skipped step that reported success would be
-    exactly the fabricated success lib Core 8 forbids.
-    """
-
-    def __init__(self, step_id: str | None, reason: str, *, remedy: str | None = None) -> None:
-        self.step_id = step_id
-        self.reason = reason
-        where = f"Step {step_id!r}" if step_id else "A step"
-        super().__init__(
-            f"{where} cannot be executed by the sequential executor: {reason}.",
-            remedy=remedy
-            or (
-                "Give the step an `agent:` and an `instruction:`, or run the recipe "
-                "through the orchestration surface that supports this step type."
-            ),
-        )
+#: ``ExecutionError`` and ``UnsupportedStepError`` are defined in
+#: :mod:`amplifier_recipe_runner.engine` (which raises them) and re-exported
+#: here, where hosts have always imported them from.
 
 
 class UnknownCompletedStepError(ExecutionError):
@@ -646,9 +622,18 @@ async def create_execution_session(
     closers: tuple[Any, ...] = ()
     session: Any | None = None
     if spawn_backend is None:
-        factory = session_factory or FoundationSessionFactory()
-        build = await factory.create(plan, catalog, services, run_id=identifier)
-        spawn_backend, closers, session = build.backend, build.closers, build.session
+        if not len(catalog):
+            # The plan resolved no agents, so there is nothing an agent
+            # session could serve. Composing one anyway would make a recipe of
+            # pure `bash`/`foreach` steps require Foundation, a bundle fetch,
+            # and a provider it never uses. The empty catalog still refuses
+            # every name (`UndeclaredAgentError`), so nothing is loosened --
+            # the refusal simply happens without paying for a session first.
+            spawn_backend = _NoDeclaredAgentsBackend()
+        else:
+            factory = session_factory or FoundationSessionFactory()
+            build = await factory.create(plan, catalog, services, run_id=identifier)
+            spawn_backend, closers, session = build.backend, build.closers, build.session
 
     adapter = PlanCatalogSpawnAdapter(
         catalog,
@@ -668,6 +653,44 @@ async def create_execution_session(
         adapter=adapter,
         closers=closers,
     )
+
+
+def _load_target(dependency: Any) -> str:
+    """The path the registry should load for ``dependency``.
+
+    A ``#subdirectory=`` partial that names a FILE (``providers/anthropic-sonnet.yaml``)
+    resolves to that file's parent DIRECTORY in ``local_path`` -- which is not
+    a bundle, so loading it fails with "missing bundle.md". The declared
+    subdirectory says which file was actually asked for, so it is used when it
+    names one. Directory-style partials (a folder with its own ``bundle.md``)
+    are unaffected: no file candidate exists and the directory is loaded as
+    before.
+    """
+    local_path = getattr(dependency, "local_path", None)
+    subdirectory = getattr(dependency, "subdirectory", None)
+    if local_path and subdirectory and str(subdirectory).endswith((".yaml", ".yml")):
+        base = Path(local_path)
+        name = Path(str(subdirectory)).name
+        for candidate in (base / name, base.parent / str(subdirectory)):
+            if candidate.is_file():
+                return str(candidate)
+    return str(local_path or dependency.uri)
+
+
+class _NoDeclaredAgentsBackend:
+    """Stand-in backend for a plan that resolved no agents at all.
+
+    Unreachable by construction: :class:`PlanCatalog` refuses every name
+    before a backend is consulted, and an empty catalog refuses all of them.
+    It exists so that "no agents were declared" is a *stated* fact rather than
+    a `None` that something later dereferences.
+    """
+
+    async def spawn(self, request: SpawnRequest) -> str:  # pragma: no cover - unreachable
+        raise ExecutionError(
+            f"Step {request.step_id!r} asked for agent {request.agent!r}, but this recipe declares no agents.",
+            remedy="Declare a dependency supplying the agent in the recipe's `dependencies` block.",
+        )
 
 
 def _register_spawn_capability(session: Any, adapter: PlanCatalogSpawnAdapter) -> None:
@@ -745,7 +768,20 @@ class FoundationSessionFactory:
         workspace = Path(services.workspace)
         session = await prepared.create_session(session_cwd=workspace)
 
-        backend = FoundationSpawnBackend(prepared, workspace=workspace)
+        # Measured off the COMPOSED closure, not off the host's port. The port
+        # says which roles a host is willing to serve; this says whether the
+        # recipe's own world can actually reach a model. Without it, an agent
+        # step returns the sub-session's "No providers available" string AS ITS
+        # OUTPUT -- a run that exits 0 with that text written into its report is
+        # the fabricated success lib Core 8 forbids.
+        #
+        # A bundle that does not expose `providers` at all has made no claim,
+        # so it is not treated as a denial -- only an explicitly EMPTY list is.
+        # Refusing on an un-measurable absence would fail an embedder whose
+        # bundle object simply has a different shape.
+        declared_providers = getattr(bundle, "providers", None)
+        has_providers = True if declared_providers is None else bool(declared_providers)
+        backend = FoundationSpawnBackend(prepared, workspace=workspace, has_providers=has_providers)
         return SessionBuild(
             backend=backend,
             closers=(session.cleanup,),
@@ -788,7 +824,7 @@ class FoundationSessionFactory:
         self._dropped_agents = tuple(sorted(dropped))
 
     async def _load(self, registry: Any, dependency: Any) -> Any:
-        target = dependency.local_path or dependency.uri
+        target = _load_target(dependency)
         try:
             return await registry.load(target)
         except Exception as exc:  # registry raises its own hierarchy
@@ -828,13 +864,29 @@ class FoundationSpawnBackend:
     backends instead.
     """
 
-    __slots__ = ("_prepared", "_workspace")
+    __slots__ = ("_has_providers", "_prepared", "_workspace")
 
-    def __init__(self, prepared: Any, *, workspace: Path) -> None:
+    def __init__(self, prepared: Any, *, workspace: Path, has_providers: bool = True) -> None:
         self._prepared = prepared
         self._workspace = workspace
+        self._has_providers = has_providers
 
     async def spawn(self, request: SpawnRequest) -> str:
+        if not self._has_providers:
+            # Refused HERE, not at composition: a recipe whose agent steps are
+            # all skipped by conditions never needs a provider, and failing it
+            # up front would be a false alarm. This fires only when a step
+            # really reaches for a model.
+            raise ExecutionError(
+                f"Step {request.step_id!r} needs agent {request.canonical!r}, but this recipe's "
+                "declared closure configures no model provider, so the agent has nothing to run on.",
+                remedy=(
+                    "Declare one in the recipe's `dependencies:` block -- e.g. a provider partial "
+                    "from the same pinned source, `kind: behavior` with "
+                    "`#subdirectory=providers/<provider>.yaml`. The calling environment's providers "
+                    "are deliberately not borrowed (recipe-dependency-manifest.v1 Core 4)."
+                ),
+            )
         session = await self._prepared.create_session(session_cwd=self._workspace)
         try:
             return str(await session.execute(request.instruction))
@@ -964,6 +1016,7 @@ async def _plan_and_execute(
         )
 
     services = request.services
+    recipe_path = Path(request.recipe)
     try:
         resolved = await plan(request, resolver=resolver)
     except (PreflightError, ManifestError) as exc:
@@ -971,8 +1024,12 @@ async def _plan_and_execute(
         # the same bucket as a typed preflight refusal -- nothing ran either way.
         return RunResult(run_id=run_id, status=RunStatus.FAILED, completed_steps=already, error=exc)
 
-    steps = _recipe_steps(Path(request.recipe))
-    step_ids = _step_ids(steps)
+    try:
+        program = load_program(recipe_path)
+    except ExecutionError as exc:
+        return RunResult(run_id=run_id, status=RunStatus.FAILED, plan=resolved, completed_steps=already, error=exc)
+
+    step_ids = tuple(step.id for step in program.all_steps)
     # Refuse before a session exists: nothing should be composed for a request
     # whose recorded step list cannot be honoured. Each recorded id must name
     # exactly one step -- no match and two matches are different defects, so
@@ -996,6 +1053,17 @@ async def _plan_and_execute(
             error=AmbiguousCompletedStepError(ambiguous),
         )
 
+    # A run that was cancelled before its first step must not compose a session
+    # to discover that. The engine re-checks between every step.
+    if _cancelled(services):
+        return RunResult(
+            run_id=run_id,
+            status=RunStatus.CANCELLED,
+            plan=resolved,
+            completed_steps=already,
+        )
+
+    store = RunStateStore.for_request(request, run_id=run_id)
     session = await create_execution_session(
         resolved,
         services,
@@ -1004,127 +1072,346 @@ async def _plan_and_execute(
         session_factory=session_factory,
     )
     try:
-        return await _execute_steps(session, resolved, request, services, steps, step_ids, already)
+        return await _execute_program(
+            session,
+            resolved,
+            request,
+            services,
+            program,
+            already,
+            store=store,
+        )
     finally:
         await session.aclose()
 
 
-async def _execute_steps(
+async def _execute_program(
     session: RecipeExecutionSession,
     resolved: ExecutionPlan,
     request: RunRequest,
     services: HostServices,
-    steps: Sequence[Mapping[str, Any]],
-    step_ids: Sequence[str],
-    already_completed: Sequence[str] = (),
+    program: RecipeProgram,
+    already_completed: Sequence[str],
+    *,
+    store: RunStateStore | None = None,
 ) -> RunResult:
-    outputs: dict[str, Any] = {}
-    # Seed with what a resumed run already finished, so the result describes
-    # the run rather than only this attempt.
-    completed: list[str] = list(already_completed)
-    skip = set(already_completed)
+    """Run ``program``'s full step vocabulary in the recipe-owned session."""
+    recorded = store.load() if store is not None else None
+    approvals = ApprovalLedger.from_mapping(recorded.get("approvals") if recorded else None)
 
-    for step, step_id in zip(steps, step_ids, strict=True):
-        if step_id in skip:
-            # Visible, not silent: a skipped step is a claim about earlier work.
-            _emit(services.event_sink, "step:skipped", session.run_id, {"step_id": step_id})
-            continue
-        if _cancelled(services):
-            return RunResult(
-                run_id=session.run_id,
-                status=RunStatus.CANCELLED,
-                plan=resolved,
-                outputs=MappingProxyType(dict(outputs)),
-                completed_steps=tuple(completed),
-            )
-        try:
-            agent, instruction = _step_call(step, step_id)
-            _emit(services.event_sink, "step:start", session.run_id, {"step_id": step_id, "agent": agent})
-            outputs[step_id] = await session.invoke(
-                agent,
-                instruction,
-                context=request.context,
-                step_id=step_id,
-            )
-        except Exception as exc:  # noqa: BLE001 -- see below: every failure is a failure
-            # ANY exception, not just the typed ones. A step whose execution
-            # errored must never appear in `completed_steps`, and the run must
-            # never report SUCCEEDED with the error visible only in a summary
-            # (lib Core 8 -- a fabricated success). Narrowing this to
-            # PreflightError/ExecutionError meant a backend or host error --
-            # exactly what a real spawn raises -- escaped the loop entirely and
-            # left the caller to decide what had completed. It is surfaced here
-            # instead, at the top level of the result, with `completed` holding
-            # only the steps that really finished.
-            _emit(services.event_sink, "step:failed", session.run_id, {"step_id": step_id})
-            return RunResult(
-                run_id=session.run_id,
-                status=RunStatus.FAILED,
-                plan=resolved,
-                outputs=MappingProxyType(dict(outputs)),
-                completed_steps=tuple(completed),
-                error=exc,
-            )
-        completed.append(step_id)
-        _emit(services.event_sink, "step:complete", session.run_id, {"step_id": step_id})
+    resume_state: ResumeState | None = None
+    if recorded and recorded.get("engine_state"):
+        resume_state = ResumeState.from_mapping(recorded["engine_state"])
+    elif already_completed:
+        # No persisted state: a resume driven purely by the recorded completed
+        # list. Skipping by id (not by position) is what keeps a run that
+        # stopped with a gap from re-running a step it already finished.
+        resume_state = ResumeState(completed_steps=tuple(already_completed))
 
+    context: dict[str, Any] = {}
+    if resume_state is not None and resume_state.context:
+        context.update(resume_state.context)
+    else:
+        context.update(program.context)
+        context.update(request.context)
+    context["recipe"] = {
+        "name": program.name,
+        "version": program.version,
+        "description": program.description,
+        "path": str(Path(request.recipe).expanduser().resolve()),
+    }
+    context["session"] = {
+        "id": session.run_id,
+        "started": None,
+        "project": str(Path(services.workspace).resolve()),
+    }
+
+    engine = _build_engine(
+        program,
+        session=session,
+        request=request,
+        services=services,
+        approvals=approvals,
+        store=store,
+    )
+
+    outcome = await engine.execute(context, resume=resume_state)
+
+    if store is not None:
+        store.save(
+            engine_state=outcome.state,
+            approvals=engine.approvals,
+            status=outcome.status,
+            pending_approval=outcome.pending_approval,
+            approval_prompt=outcome.approval_prompt,
+        )
+
+    completed = tuple(outcome.completed_steps)
+    if outcome.status == "paused":
+        return RunResult(
+            run_id=session.run_id,
+            status=RunStatus.PAUSED,
+            plan=resolved,
+            outputs=MappingProxyType(dict(outcome.outputs)),
+            context=MappingProxyType(dict(outcome.context)),
+            completed_steps=completed,
+            pending_approval=outcome.pending_approval,
+        )
+    if outcome.status == "cancelled":
+        return RunResult(
+            run_id=session.run_id,
+            status=RunStatus.CANCELLED,
+            plan=resolved,
+            outputs=MappingProxyType(dict(outcome.outputs)),
+            context=MappingProxyType(dict(outcome.context)),
+            completed_steps=completed,
+        )
+    if outcome.status == "failed":
+        return RunResult(
+            run_id=session.run_id,
+            status=RunStatus.FAILED,
+            plan=resolved,
+            outputs=MappingProxyType(dict(outcome.outputs)),
+            context=MappingProxyType(dict(outcome.context)),
+            completed_steps=completed,
+            error=outcome.error,
+        )
     return RunResult(
         run_id=session.run_id,
         status=RunStatus.SUCCEEDED,
         plan=resolved,
-        outputs=MappingProxyType(dict(outputs)),
-        completed_steps=tuple(completed),
+        outputs=MappingProxyType(dict(outcome.outputs)),
+        context=MappingProxyType(dict(outcome.context)),
+        completed_steps=completed,
     )
 
 
-def _step_call(step: Mapping[str, Any], step_id: str) -> tuple[str, str]:
-    """The ``(agent, instruction)`` a step asks for, or a loud refusal."""
-    for key in _NESTED_STEP_KEYS:
-        if step.get(key):
-            raise UnsupportedStepError(step_id, f"it nests further steps under {key!r}")
+def _build_engine(
+    program: RecipeProgram,
+    *,
+    session: RecipeExecutionSession,
+    request: RunRequest,
+    services: HostServices,
+    approvals: ApprovalLedger,
+    store: RunStateStore | None,
+    recursion: RecursionState | None = None,
+) -> StepEngine:
+    """Assemble the step engine over one recipe-owned session.
 
-    agent = step.get("agent")
-    if not isinstance(agent, str) or not agent.strip():
-        raise UnsupportedStepError(step_id, "it declares no `agent`")
-    if "{{" in agent:
-        raise UnsupportedStepError(step_id, f"its agent reference {agent!r} is templated")
-
-    for key in _INSTRUCTION_KEYS:
-        value = step.get(key)
-        if isinstance(value, str) and value.strip():
-            return agent.strip(), value
-    raise UnsupportedStepError(step_id, f"it declares no instruction ({', '.join(_INSTRUCTION_KEYS)})")
-
-
-def _step_ids(steps: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
-    """The id each step is known by, positional fallback included.
-
-    One derivation, used both to execute a step and to decide whether a
-    recorded id names it -- so a resumed run can never disagree with the run
-    that recorded it about which step is which.
+    The engine never resolves an agent name: it hands the reference to
+    ``session.invoke``, which resolves it against the frozen plan catalog and
+    nothing else (manifest Core 3, Core 4).
     """
-    return tuple(
-        step["id"] if isinstance(step.get("id"), str) else f"step-{index}" for index, step in enumerate(steps)
+    workspace = Path(services.workspace)
+
+    async def invoke_agent(step: StepSpec, instruction: str, context: Mapping[str, Any]) -> Any:
+        assert step.agent is not None
+        return await session.invoke(step.agent, instruction, context=context, step_id=step.id)
+
+    async def run_sub_recipe(
+        path: Path,
+        sub_context: dict[str, Any],
+        step: StepSpec,
+        child_recursion: RecursionState,
+    ) -> Mapping[str, Any]:
+        return await _run_sub_recipe(
+            path,
+            sub_context,
+            step,
+            child_recursion,
+            parent_session=session,
+            request=request,
+            services=services,
+            store=store,
+        )
+
+    def emit(kind: str, data: Mapping[str, Any]) -> None:
+        _emit(services.event_sink, kind, session.run_id, data)
+
+    return StepEngine(
+        program,
+        invoke_agent=invoke_agent,
+        workspace=workspace,
+        run_id=session.run_id,
+        recipe_path=program.path or Path(request.recipe),
+        emit=emit,
+        cancellation=services.cancellation,
+        approval_callback=services.approval_callback,
+        approvals=approvals,
+        sub_recipe_runner=run_sub_recipe,
+        recursion=recursion,
+        scratch_dir=(store.scratch_dir if store is not None else None),
     )
 
 
-def _recipe_steps(recipe_path: Path) -> tuple[Mapping[str, Any], ...]:
-    """Top-level steps, flat then staged, in declaration order."""
-    data = yaml.safe_load(recipe_path.read_text(encoding="utf-8"))
-    if not isinstance(data, Mapping):
-        return ()
+async def _run_sub_recipe(
+    path: Path,
+    sub_context: dict[str, Any],
+    step: StepSpec,
+    child_recursion: RecursionState,
+    *,
+    parent_session: RecipeExecutionSession,
+    request: RunRequest,
+    services: HostServices,
+    store: RunStateStore | None,
+) -> Mapping[str, Any]:
+    """Run a ``type: recipe`` step's sub-recipe and return its output delta.
 
-    steps: list[Mapping[str, Any]] = []
-    for step in data.get("steps") or ():
-        if isinstance(step, Mapping):
-            steps.append(step)
-    for stage in data.get("stages") or ():
-        if not isinstance(stage, Mapping):
-            continue
-        for step in stage.get("steps") or ():
-            if isinstance(step, Mapping):
-                steps.append(step)
-    return tuple(steps)
+    ``schema_version`` is a property of the RECIPE, not of how the recipe was
+    reached (manifest Core 3/4). So a v2 sub-recipe is planned and executed
+    against **its own** declared closure -- a fresh session -- while a legacy
+    sub-recipe runs inside the parent's closure, exactly as the legacy engine
+    resolves it. Neither borrows the host's agent map.
+
+    Only the keys the sub-recipe *added* come back. Returning its entire
+    context would accumulate every intermediate variable in the parent, which
+    is unbounded growth across a foreach.
+    """
+    sub_program = load_program(path)
+    input_keys = set(sub_context) | RECIPE_INTERNAL_KEYS
+
+    context = dict(sub_program.context)
+    context.update(sub_context)
+    context["recipe"] = {
+        "name": sub_program.name,
+        "version": sub_program.version,
+        "description": sub_program.description,
+        "path": str(path),
+    }
+    context["session"] = {
+        "id": f"{parent_session.run_id}:{step.id}",
+        "started": None,
+        "project": str(Path(services.workspace).resolve()),
+    }
+
+    if sub_program.schema_version is not None and sub_program.schema_version >= 2:
+        sub_request = RunRequest(
+            recipe=path,
+            context=dict(sub_context),
+            services=services,
+            trust_policy=request.trust_policy,
+            lock_mode=request.lock_mode,
+            run_id=f"{parent_session.run_id}:{step.id}",
+            legacy_mode=request.legacy_mode,
+            state_dir=None,
+        )
+        sub_plan = await plan(sub_request)
+        sub_session = await create_execution_session(sub_plan, services, run_id=sub_request.run_id or "")
+        try:
+            engine = _build_engine(
+                sub_program,
+                session=sub_session,
+                request=sub_request,
+                services=services,
+                approvals=ApprovalLedger(),
+                store=None,
+                recursion=child_recursion,
+            )
+            outcome = await engine.execute(context)
+        finally:
+            await sub_session.aclose()
+    else:
+        engine = _build_engine(
+            sub_program,
+            session=parent_session,
+            request=request,
+            services=services,
+            approvals=ApprovalLedger(),
+            store=store,
+            recursion=child_recursion,
+        )
+        outcome = await engine.execute(context)
+
+    if outcome.status == "failed" and outcome.error is not None:
+        raise outcome.error
+    if outcome.status == "paused":
+        raise ExecutionError(
+            f"Sub-recipe {path.name!r} paused at approval gate {outcome.pending_approval!r}, "
+            "which the standalone runner cannot mirror onto the parent run.",
+            remedy="Run the staged sub-recipe directly, or move its approval gate to the parent recipe.",
+        )
+
+    return {
+        key: value
+        for key, value in outcome.context.items()
+        if key not in input_keys and not key.startswith("_child_session_")
+    }
+
+
+class RunStateStore:
+    """Where a run's resumable state lives: ``<run dir>/engine-state.json``.
+
+    Separate from the run manifest on purpose. The manifest records *what the
+    run resolved* and is verified on resume (manifest Core 8); this records
+    *how far the run got*, which is a different fact with a different
+    lifetime. A run with no state directory simply has no store, and a run
+    that never pauses never needs one.
+    """
+
+    FILENAME = "engine-state.json"
+
+    __slots__ = ("_path", "_root")
+
+    def __init__(self, root: Path) -> None:
+        self._root = Path(root)
+        self._path = self._root / self.FILENAME
+
+    @classmethod
+    def for_request(cls, request: RunRequest, *, run_id: str) -> RunStateStore | None:
+        if request.state_dir is None:
+            return None
+        return cls(Path(request.state_dir))
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def scratch_dir(self) -> Path:
+        """Run-scoped scratch a bash step can spill an oversized payload into."""
+        return self._root / "scratch"
+
+    def load(self) -> dict[str, Any] | None:
+        if not self._path.is_file():
+            return None
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def save(
+        self,
+        *,
+        engine_state: ResumeState | None,
+        approvals: ApprovalLedger,
+        status: str,
+        pending_approval: str | None = None,
+        approval_prompt: str | None = None,
+    ) -> None:
+        payload = {
+            "status": status,
+            "pending_approval": pending_approval,
+            "approval_prompt": approval_prompt,
+            "approvals": approvals.to_mapping(),
+            "engine_state": engine_state.to_mapping() if engine_state is not None else None,
+        }
+        try:
+            self._root.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError:
+            # A state write that fails must not turn a completed run into a
+            # failed one; the run's own result is still reported honestly.
+            pass
+
+    def record_decision(self, stage: str, *, approved: bool, message: str | None = None) -> None:
+        """Record a human verdict for ``stage``, for a later process to read."""
+        data = self.load() or {}
+        approvals = ApprovalLedger.from_mapping(data.get("approvals"))
+        approvals.record(stage, approved=approved, message=message)
+        data["approvals"] = approvals.to_mapping()
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _cancelled(services: HostServices) -> bool:

@@ -3148,6 +3148,54 @@ Every run records (`manifest.v1` Core 7):
 never silently re-resolves (`manifest.v1` Core 8) — a locked resume that sees a
 different resolved revision is a failure (`manifest.v1` Conformance/BAD).
 
+#### The per-agent provenance record
+
+A declared bundle composes its own `includes`, so **the dependency you declared
+is often not the tree that defines the agent you got.** Planning
+`generate-recipe-docs.yaml` (one declared dependency, `amplifier-foundation`)
+yields 39 agents drawn from **11 different checkouts** at 11 different commits.
+Recording one dependency's revision against all 39 would state something false
+about 26 of them, so the record separates the two facts:
+
+| Field | What it names |
+| --- | --- |
+| `supplied_by` | The source tree that **defines** the agent — a declared dependency's URI, or, for one reached through includes, that included bundle's own URI. Falls back to the tree's local path if the resolver recorded no URI. |
+| `declared_by` | The **declared dependency** the agent entered the closure through. Always one of the recipe's own `dependencies` — this is what a resume re-resolves. |
+| `via_includes` | The include path from `declared_by`'s bundle to the defining tree, nearest first (e.g. `["amplifier-tester", "amplifier-tester-behavior", "digital-twin-universe"]`). Empty when the defining tree is itself a declared dependency. |
+| `defined_in` | Root of `supplied_by`'s tree. `local_path` always lies inside it. |
+| `resolved_revision` / `dependency_digest` | Identity of the **defining** tree — the commit the file at `local_path` actually came from, not the declared dependency's. |
+| `local_path` | The agent's own definition file. |
+| `alias` | The alias a step referenced, when it used one. |
+
+An agent whose definition file no reported tree holds records `defined_in:
+null` and an empty `via_includes`: nothing is claimed, rather than the reaching
+dependency's tree being asserted by default.
+
+```json
+{
+  "agent": "superpowers:implementer",
+  "supplied_by": "git+https://github.com/microsoft/amplifier-bundle-superpowers@main",
+  "declared_by": "git+https://github.com/microsoft/amplifier-foundation@v2.1.2",
+  "via_includes": ["superpowers-methodology-behavior"],
+  "defined_in": "/…/cache/amplifier-bundle-superpowers-1e7a6ff3d51f6d25",
+  "local_path": "/…/cache/amplifier-bundle-superpowers-1e7a6ff3d51f6d25/agents/implementer.md",
+  "resolved_revision": "47d43aa1dad1560e98286a77bcda113f099d2e64"
+}
+```
+
+`conformance/analyze_provenance.py` checks the claim rather than the field's
+presence: every agent's `local_path` must lie inside its `defined_in`, and
+every `declared_by` must be a dependency the recipe actually declared.
+
+```bash
+PYTHONPATH=src python3 conformance/analyze_provenance.py --assert
+```
+
+**Compatibility.** `via_includes` was a boolean before it was a path; a manifest
+carrying the boolean form reads back as an empty path, because "a chain
+existed" does not name one. `declared_by` is absent in records written before
+it existed and stays absent — it is not back-filled from `supplied_by`.
+
 ### Capabilities
 
 Effective capabilities are the **intersection** of three inputs

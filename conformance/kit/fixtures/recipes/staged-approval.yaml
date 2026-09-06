@@ -1,0 +1,43 @@
+# A staged recipe with an approval gate, driven through pause -> approve ->
+# resume in three SEPARATE `recipe-runner` processes.
+#
+# Deliberately agent-free: the claim under test is that a paused run leaves
+# enough on disk for a different process to pick it up, and a model call would
+# only add cost and nondeterminism to that claim.
+#
+# Drive it with:
+#   recipe-runner run  conformance/kit/fixtures/recipes/staged-approval.yaml --offline --unlocked \
+#       --state-dir <dir> --run-id demo          # -> exit 7, status paused
+#   recipe-runner approve demo --state-dir <dir> --message "looks good"
+#   recipe-runner resume  demo --offline --unlocked --state-dir <dir>   # -> exit 0, succeeded
+schema_version: 2
+
+dependencies: []
+
+name: staged-approval
+description: Pause at a stage gate, then continue in a later process.
+version: "1.0.0"
+
+context:
+  target: world
+
+stages:
+  - name: prepare
+    steps:
+      - id: greet
+        type: bash
+        command: echo hello {{target}}
+        output: greeting
+    approval:
+      required: true
+      # Substituted before it is shown: the human approves a VALUE, not a template.
+      prompt: "Proceed after '{{greeting}}'?"
+
+  - name: finish
+    steps:
+      # Reads BOTH the approver's message and the pre-pause stage's output, so
+      # a resume that lost either would be visible in this step's result.
+      - id: report
+        type: bash
+        command: echo approved-with '{{_approval_message}}' after '{{greeting}}'
+        output: report

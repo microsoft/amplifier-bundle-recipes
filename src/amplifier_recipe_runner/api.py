@@ -166,6 +166,18 @@ class RunRequest:
     run_id: str | None = None
     """Caller-chosen run identifier; generated when omitted."""
 
+    state_dir: str | Path | None = None
+    """Where this run may persist resumable state, if the host wants it kept.
+
+    Not a host-import channel: it names a *directory this run owns*, and
+    nothing read from it can widen the recipe's agent surface (manifest Core
+    4 constrains agents, not filesystem paths). It exists because pause ->
+    approve -> resume spans separate processes: the run that pauses at an
+    approval gate must leave its context and position somewhere the run that
+    resumes can read. ``None`` means "keep nothing", which is why a run that
+    never pauses needs no directory at all.
+    """
+
     legacy_mode: bool = False
     """Labeled caller-bound legacy mode (manifest Core 10).
 
@@ -246,9 +258,28 @@ class AgentProvenance:
     """Canonical ``namespace:name``."""
 
     supplied_by: str
-    """URI of the supplying dependency, or ``"runner-baseline"``."""
+    """URI of the source tree that DEFINES this agent, or ``"runner-baseline"``.
+
+    Usually a declared dependency's URI. When a declared bundle composes its
+    own ``includes``, the agent's definition can live in a different checkout
+    at a different revision -- then this names *that* tree, and
+    :attr:`declared_by` names the declared dependency it arrived through.
+    Falls back to the tree's local path when the resolver recorded no URI for
+    it (absence of evidence, never a guess).
+    """
+
+    declared_by: str | None = None
+    """URI of the DECLARED dependency this agent entered the closure through.
+
+    Always one of the recipe's own ``dependencies`` -- that is what the recipe
+    asked for, and what a resume re-resolves. Equal to :attr:`supplied_by`
+    whenever the declared dependency's own tree defines the agent. ``None``
+    only in records written before this field existed.
+    """
 
     dependency_digest: str | None = None
+    """Content digest of :attr:`supplied_by`'s tree -- the DEFINING one."""
+
     alias: str | None = None
     """Alias used in the recipe, when the step referenced one."""
 
@@ -257,29 +288,33 @@ class AgentProvenance:
     dependency when the agent has no standalone file (manifest Core 7)."""
 
     resolved_revision: str | None = None
-    """Immutable revision of the supplying dependency, for git sources.
+    """Immutable revision of :attr:`supplied_by`'s tree, for git sources.
+
+    The DEFINING tree's revision, not the declared dependency's: for an agent
+    reached through includes those are different commits, and recording the
+    declared one would say something false about the file at
+    :attr:`local_path`.
 
     ``None`` for local file/path sources -- those record
     :attr:`dependency_digest` (a content digest) instead.
     """
 
     defined_in: str | None = None
-    """The source tree that actually holds this agent's definition, when that
-    is NOT :attr:`supplied_by`'s own tree.
+    """Root of the source tree named by :attr:`supplied_by`.
 
-    A declared dependency may *reach* an agent through its own ``includes``
-    without defining it. :attr:`supplied_by` still names the declared
-    dependency -- that is the source the recipe asked for, and the one a
-    resume re-resolves -- but stamping only that would claim the agent lives
-    in a tree it does not, which makes the Core 7 map non-discriminating.
-    ``None`` means the agent is defined inside :attr:`supplied_by`'s own tree.
+    :attr:`local_path` (the agent's own file) always lies inside it, which is
+    what makes the Core 7 map checkable rather than merely populated. ``None``
+    when the agent has no definition file, or when no reported tree holds it.
     """
 
-    via_includes: bool = False
-    """True when :attr:`supplied_by` supplies this agent *transitively*.
+    via_includes: tuple[str, ...] = ()
+    """Include path from :attr:`declared_by`'s bundle to the defining tree.
 
-    Always paired with :attr:`defined_in`; never set for an agent the declared
-    dependency defines itself.
+    Bundle names, nearest first, as recorded by the resolver that composed
+    them -- e.g. ``("amplifier-tester", "amplifier-tester-behavior",
+    "digital-twin-universe")``. Empty when the defining tree is itself a
+    declared dependency, and empty (not invented) when the resolver reported
+    no include graph.
     """
 
 
@@ -333,6 +368,18 @@ class RunResult:
     status: RunStatus
     plan: ExecutionPlan | None = None
     outputs: Mapping[str, Any] = field(default_factory=dict)
+    """Per-step result, keyed by step id."""
+
+    context: Mapping[str, Any] = field(default_factory=dict)
+    """The run's final recipe context -- every variable a step wrote.
+
+    Distinct from :attr:`outputs`, which is keyed by *step id*: a recipe reads
+    its own values by the names its `output:`/`collect:` fields chose, and a
+    host that wants to act on a finished run needs those names, not the step
+    ids that happened to produce them. Present on every terminal status, so a
+    failed or paused run still reports what it managed to compute.
+    """
+
     completed_steps: tuple[str, ...] = ()
     error: BaseException | None = None
     pending_approval: str | None = None

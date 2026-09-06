@@ -4,7 +4,7 @@
 # The kit does NOT edit the ledger; the reconciler consumes this map and
 # decides dispositions. `coverage: partial` always names what is NOT covered.
 #
-# fixtures: 16 (9 GOOD, 7 BAD)
+# fixtures: 17 (10 GOOD, 7 BAD)
 kit:
   entrypoint: conformance/kit/kit.py
   run: python3 conformance/kit/kit.py --run
@@ -73,6 +73,18 @@ fixtures:
   - RCP-105
   - RCP-008
   notes: 'No network is reachable in this fixture by construction: the resolver only reads local paths.'
+- id: good-activation-install-resolves-the-in-bundle-runner
+  polarity: GOOD
+  title: The real module-activation install succeeds and resolves the in-bundle runner
+  clauses:
+  - lib.v1 Core 1
+  satisfies:
+  - RCP-101
+  notes: 'The only fixture that leaves the in-process library and drives the CONSUMER''s command (`uv
+    pip install -e <module> --python <env> --no-sources`) into a throwaway venv. Carries its own discrimination
+    control: the same install against the pre-hotfix pyproject (02a3dfe8f071c5ee92db6266609025bca87731a1^)
+    must fail, naming allow-direct-references. Skips with a reason when uv or git is absent, or when the
+    host environment cannot supply what activation assumes.'
 - id: bad-undeclared-agent-fails-preflight-before-side-effects
   polarity: BAD
   title: UndeclaredAgentError, raised before any step or spawn
@@ -190,6 +202,25 @@ fixtures:
   notes: 'ABSENCE PROBE. Pins HOST_PORTS to the contract''s own five names in contract order, then scans
     every port protocol and payload for an agent map. Discrimination: mutations/port-carries-agent-map.patch
     -- which keeps exactly five ports and widens one, so only this probe catches it.'
+- id: good-full-step-vocabulary-matches-the-legacy-engine
+  polarity: GOOD
+  title: One full-vocabulary recipe run on BOTH engines produces the same context
+  clauses:
+  - lib.v1 Core 1
+  - lib.v1 Core 2
+  - lib.v1 Core 8
+  satisfies:
+  - RCP-101
+  - RCP-102
+  - RCP-108
+  notes: 'PARITY FIXTURE. Runs conformance/kit/fixtures/recipes/full-vocabulary.yaml -- bash, parse_json,
+    conditions (taken and not taken), on_error: continue, sequential and bounded-parallel foreach, a multi-step
+    foreach body, a convergence while loop with update_context + break_when, a `type: recipe` sub-recipe,
+    a templated timeout and an agent step -- through the LEGACY in-session engine and through the LIBRARY''s
+    public `run()`, then diffs every recipe-visible context variable. Self-discriminating: it compares
+    the library against the other implementation rather than against an authored expectation, so a drift
+    in EITHER engine fails it. Requires the legacy engine to be importable and refuses to run against
+    a stand-in.'
 rows:
   RCP-001:
     coverage: partial
@@ -296,16 +327,24 @@ rows:
   RCP-101:
     coverage: partial
     fixtures:
+    - good-full-step-vocabulary-matches-the-legacy-engine
+    - good-activation-install-resolves-the-in-bundle-runner
     - good-identical-resolved-graph-across-hosts
     covered: Two independent hosts (in-process library, separate process) produce byte-identical resolved-graph
-      identity, so neither carries resolution logic of its own.
+      identity, so neither carries resolution logic of its own. Separately, the Amplifier tool adapter
+      is INSTALLED the way production installs it (`uv pip install -e <module> --python <env> --no-sources`,
+      the command whose failure broke `amplifier update` on 2026-09-02) into a clean venv, and its load_runner()
+      is measured to resolve the ONE in-bundle library rather than a second copy -- discrimination-proved
+      in-fixture against the pre-hotfix pyproject.
     not_covered: The ledger records 'every host surface is a thin adapter' as NOT-ASSERTABLE (architectural
-      judgement). Only two hosts exist to compare; the Amplifier tool adapter is not yet a runner host
-      (residual R1).
+      judgement). Only two hosts are COMPARED; the Amplifier tool adapter is exercised only as far as
+      install + import + runner resolution, not as a runner host producing a resolved graph (residual
+      R1).
   RCP-102:
     coverage: partial
     fixtures:
     - good-declared-dependency-runs-from-lean-caller
+    - good-full-step-vocabulary-matches-the-legacy-engine
     - good-plan-reports-provenance-without-executing-anything
     covered: '`plan` and `run` are exercised with no UI and no Amplifier CLI; `plan` is proved side-effect
       free (empty workspace after) and works with no host services at all.'
@@ -365,6 +404,7 @@ rows:
     - bad-colliding-declared-dependencies-fail-preflight
     - bad-errored-step-is-never-a-completed-step
     - bad-undeclared-agent-fails-preflight-before-side-effects
+    - good-full-step-vocabulary-matches-the-legacy-engine
     covered: 'All four named preflight classes are asserted by type, not by exit code: UndeclaredAgentError,
       AgentCollisionError, TrustRefusedError, ProvenanceMismatchError. ''Never a fabricated success''
       is asserted in BOTH directions: before preflight, as FAILED status with 0 completed steps and 0

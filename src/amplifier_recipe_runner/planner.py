@@ -117,6 +117,12 @@ from .ports import WorkspacePath
 from .resolver import DependencyResolver
 from .resolver import ResolvedAgent
 from .resolver import ResolvedBundle
+from .resolver import SourceTree
+# Path containment is defined once, next to the resolver that reports the
+# trees: two copies of "is this file inside that tree?" is two places for the
+# answer to drift.
+from .resolver import _as_path
+from .resolver import _tree_contains
 from .trust import intersect_capabilities
 
 __all__ = [
@@ -449,44 +455,56 @@ def _build_provenance(
 
 @dataclass(frozen=True, slots=True)
 class _Attribution:
-    """Which declared dependency an agent is honestly stamped with."""
+    """Which source tree an agent is honestly stamped with."""
 
     supplied_by: str
+    declared_by: str
     dependency_digest: str | None
     resolved_revision: str | None
     defined_in: str | None = None
-    via_includes: bool = False
+    via_includes: tuple[str, ...] = ()
 
 
 def _attribute(entry: _CatalogEntry, resolved: tuple[ResolvedDependency, ...]) -> _Attribution:
-    """Attribute one agent to the dependency whose tree actually defines it.
+    """Attribute one agent to the tree whose files actually define it.
 
-    The dependency that *reached* an agent is not always the one that
-    *supplies* it: a declared bundle composes its own ``includes``, so its
-    agent map can carry agents defined in entirely different source trees.
-    Stamping every such agent with the reaching dependency's URI, revision and
-    digest makes the Core 7 map non-discriminating -- it reads as a claim about
-    where the definition lives, and for an included agent that claim is false.
+    The dependency that *reached* an agent is not always the tree that
+    *defines* it: a declared bundle composes its own ``includes``, so its agent
+    map can carry agents whose definition files live in entirely different
+    checkouts, each at its own revision. Stamping every such agent with the
+    reaching dependency's URI, revision and digest makes the Core 7 map
+    non-discriminating -- it reads as a claim about where the definition lives,
+    and for an included agent that claim is false. Measured on a real migrated
+    recipe: 39 agents, one declared dependency, 26 of them defined in other
+    checkouts, all 39 stamped with the same revision.
 
-    So the agent's definition file decides:
+    So the agent's definition file decides, and the record separates two
+    different facts that used to share one field:
 
-    * inside a declared dependency's resolved tree -> that dependency, with
-      *its* revision/digest. The longest matching tree wins, so a dependency
-      nested inside another is not masked by its parent; a tie prefers the
-      dependency that reached the agent, which keeps a single-tree closure
-      stamped exactly as before.
-    * inside no declared tree -> the agent came in through the reaching
-      dependency's includes. ``supplied_by`` stays that declared dependency
-      (it is what the recipe asked for, and what a resume re-resolves), and
-      the real tree is recorded as ``defined_in`` with ``via_includes``.
+    * :attr:`supplied_by` (with ``resolved_revision``/``dependency_digest``
+      and ``defined_in``) names the tree that **defines** the agent.
+    * :attr:`declared_by` names the **declared dependency** the agent entered
+      the closure through -- what the recipe asked for, and what a resume
+      re-resolves. ``via_includes`` is the include path between them.
 
-    An agent with no definition file to match (a behavior partial, a resolver
-    that reports none) is attributed to the reaching dependency and claims
-    nothing further -- absence of evidence is never recorded as evidence.
+    Resolution order:
+
+    * definition inside a declared dependency's resolved tree -> that
+      dependency, with *its* revision/digest. The longest matching tree wins,
+      so a dependency nested inside another is not masked by its parent; a tie
+      prefers the dependency that reached the agent, which keeps a single-tree
+      closure stamped exactly as before.
+    * definition inside a tree the reaching dependency *composed* (its
+      ``includes``) -> that tree, with its own revision/digest, and the include
+      path recorded in ``via_includes``.
+    * otherwise -> the reaching dependency, claiming nothing further. An agent
+      with no definition file, or one no reported tree holds, records no
+      defining tree at all: absence of evidence is never recorded as evidence.
     """
     dependency = entry.dependency
     reached = _Attribution(
         supplied_by=dependency.source,
+        declared_by=dependency.source,
         dependency_digest=dependency.content_digest,
         resolved_revision=dependency.resolved_revision,
     )
@@ -496,21 +514,44 @@ def _attribute(entry: _CatalogEntry, resolved: tuple[ResolvedDependency, ...]) -
         return reached
 
     owner = _declared_owner(definition, resolved, prefer=dependency.source)
-    if owner is None:
+    if owner is not None:
         return _Attribution(
-            supplied_by=reached.supplied_by,
-            dependency_digest=reached.dependency_digest,
-            resolved_revision=reached.resolved_revision,
-            defined_in=definition,
-            via_includes=True,
+            supplied_by=owner.uri,
+            declared_by=dependency.source,
+            dependency_digest=owner.content_digest,
+            resolved_revision=owner.resolved_revision,
+            defined_in=owner.local_path,
         )
-    if owner.uri == dependency.source:
+
+    tree = _composed_tree(definition, dependency)
+    if tree is None:
         return reached
     return _Attribution(
-        supplied_by=owner.uri,
-        dependency_digest=owner.content_digest,
-        resolved_revision=owner.resolved_revision,
+        supplied_by=tree.uri or str(tree.local_path),
+        declared_by=dependency.source,
+        dependency_digest=tree.content_digest,
+        resolved_revision=tree.resolved_revision,
+        defined_in=tree.local_path,
+        via_includes=tuple(tree.via_includes),
     )
+
+
+def _composed_tree(definition: str, dependency: ResolvedBundle) -> SourceTree | None:
+    """The composed tree holding ``definition``, most specific first.
+
+    Reads only what the resolver reported (``source_trees``). The planner never
+    walks includes itself: the include graph belongs to whatever composed it,
+    and inferring one from paths would invent a relationship.
+    """
+    matches = [
+        (len(str(_as_path(tree.local_path))), tree)
+        for tree in dependency.source_trees.values()
+        if _tree_contains(tree.local_path, definition)
+    ]
+    if not matches:
+        return None
+    longest = max(length for length, _ in matches)
+    return next(tree for length, tree in matches if length == longest)
 
 
 def _declared_owner(
@@ -540,24 +581,6 @@ def _declared_owner(
     return finalists[0]
 
 
-def _as_path(value: str | None) -> Path | None:
-    if not value:
-        return None
-    try:
-        return Path(value).resolve()
-    except (OSError, ValueError):  # pragma: no cover - exotic path values
-        return None
-
-
-def _tree_contains(tree: str | None, definition: str | None) -> bool:
-    """True when ``definition`` lies inside ``tree`` (or is it)."""
-    root = _as_path(tree)
-    target = _as_path(definition)
-    if root is None or target is None:
-        return False
-    return target == root or target.is_relative_to(root)
-
-
 def _provenance_for(
     entry: _CatalogEntry,
     *,
@@ -568,6 +591,7 @@ def _provenance_for(
     return AgentProvenance(
         agent=entry.agent.name,
         supplied_by=attribution.supplied_by,
+        declared_by=attribution.declared_by,
         dependency_digest=attribution.dependency_digest,
         alias=alias,
         local_path=entry.agent.local_path or entry.dependency.local_path,

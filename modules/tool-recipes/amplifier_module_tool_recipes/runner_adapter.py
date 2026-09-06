@@ -38,7 +38,10 @@ recipes still run, on an install that does not have the library yet.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import importlib
 import logging
+import re
 import sys
 import uuid
 import warnings
@@ -46,6 +49,7 @@ from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Mapping
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -61,7 +65,11 @@ __all__ = [
     "ACCEPTED_CONFIG_KEYS",
     "LEGACY_DEPRECATION_REMEDY",
     "LEGACY_EXECUTION_MODE",
+    "LIBRARY_SOURCE_INSTALLED",
+    "LIBRARY_SOURCE_IN_BUNDLE",
+    "LIBRARY_SOURCE_PREIMPORTED",
     "REJECTED_CONFIG_KEYS",
+    "UNKNOWN_LIBRARY_VERSION",
     "SELF_AGENT",
     "RUNNER_DISTRIBUTION",
     "RUNNER_IMPORT_NAME",
@@ -77,6 +85,7 @@ __all__ = [
     "CoordinatorProviderAccess",
     "EngineSessionRecorder",
     "RecipeRunnerUnavailableError",
+    "RunnerLibrary",
     "SessionApprovalCallback",
     "ModelRoleUnavailableError",
     "SessionCancellationToken",
@@ -104,6 +113,7 @@ __all__ = [
     "resume_v2_recipe",
     "run_v2_recipe",
     "run_v2_recipe_in_session",
+    "runner_provenance",
     "validate_v2_recipe",
     "warn_legacy_recipe",
 ]
@@ -321,35 +331,268 @@ def _in_bundle_library_src() -> Path | None:
     directories up. Returns the `src` directory to add, or None.
     """
     bundle_src = Path(__file__).resolve().parents[3] / "src"
-    if (bundle_src / "amplifier_recipe_runner" / "__init__.py").is_file():
+    if (bundle_src / RUNNER_IMPORT_NAME / "__init__.py").is_file():
         return bundle_src
     return None
+
+
+#: How this process came by the library copy it is actually using.
+LIBRARY_SOURCE_IN_BUNDLE = "in-bundle"
+LIBRARY_SOURCE_INSTALLED = "installed"
+LIBRARY_SOURCE_PREIMPORTED = "already-imported"
+
+#: Reported when the library's own ``__version__`` could not be read from a
+#: copy's source. Never guessed and never blank: an unknown version that
+#: printed as ``0.1.0`` would make a real skew look like a match.
+UNKNOWN_LIBRARY_VERSION = "unknown"
+
+_VERSION_PATTERN = re.compile(r"^__version__\s*[:=]\s*[\"']([^\"']+)[\"']", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class RunnerLibrary:
+    """Identity of one copy of the runner library on this machine.
+
+    ``version`` alone does not identify a copy. The measured defect
+    (recipes-4g5) was two clones of *this same repository* at different
+    commits, both declaring ``__version__ = "0.1.0"`` -- so a version-only
+    comparison would have reported a match while one copy was missing the
+    provenance fields the other emitted. ``fingerprint`` is therefore a digest
+    of the package's own sources, and two copies are "the same library" only
+    when it agrees.
+    """
+
+    package_dir: str
+    module_file: str
+    version: str
+    fingerprint: str
+    source: str
+
+    def to_mapping(self) -> dict[str, str]:
+        """Plain data, for the run record and the tool output."""
+        return {
+            "package_dir": self.package_dir,
+            "module_file": self.module_file,
+            "version": self.version,
+            "fingerprint": self.fingerprint,
+            "source": self.source,
+        }
+
+    def same_library_as(self, other: RunnerLibrary) -> bool:
+        """True when both copies would execute identical code.
+
+        Compares content, not location: two clones of the same commit in two
+        cache directories are the same library and must not warn.
+        """
+        return self.version == other.version and self.fingerprint == other.fingerprint
+
+
+def _library_version(package_dir: Path) -> str:
+    """The ``__version__`` a copy declares, read WITHOUT importing it.
+
+    The whole point is to describe a copy this process did *not* load; importing
+    it to ask would put a second copy of the library in ``sys.modules``.
+    """
+    try:
+        source = (package_dir / "__init__.py").read_text(encoding="utf-8")
+    except OSError:
+        return UNKNOWN_LIBRARY_VERSION
+    match = _VERSION_PATTERN.search(source)
+    return match.group(1) if match else UNKNOWN_LIBRARY_VERSION
+
+
+def _library_fingerprint(package_dir: Path) -> str:
+    """A digest over a copy's own ``*.py`` sources (tests excluded).
+
+    Excludes ``tests/`` and ``__pycache__`` so a test-only difference -- which
+    cannot change what a run does -- is not reported as a skew.
+    """
+    digest = hashlib.sha256()
+    try:
+        paths = sorted(package_dir.rglob("*.py"))
+    except OSError:
+        return UNKNOWN_LIBRARY_VERSION
+    for path in paths:
+        try:
+            relative = path.relative_to(package_dir)
+        except ValueError:  # pragma: no cover -- rglob results are relative
+            continue
+        parts = relative.parts
+        if "tests" in parts or "__pycache__" in parts:
+            continue
+        try:
+            body = path.read_bytes()
+        except OSError:
+            continue
+        digest.update(relative.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(body)
+    return digest.hexdigest()[:16]
+
+
+def _identify(package_dir: Path, module_file: str, source: str) -> RunnerLibrary:
+    return RunnerLibrary(
+        package_dir=str(package_dir),
+        module_file=module_file,
+        version=_library_version(package_dir),
+        fingerprint=_library_fingerprint(package_dir),
+        source=source,
+    )
+
+
+def _identify_copy_at(bundle_src: Path) -> RunnerLibrary:
+    """Identify the bundle-local copy from its files alone (no import)."""
+    package_dir = bundle_src / RUNNER_IMPORT_NAME
+    return _identify(
+        package_dir,
+        str(package_dir / "__init__.py"),
+        LIBRARY_SOURCE_IN_BUNDLE,
+    )
+
+
+def _identify_imported(module: ModuleType, bundle_src: Path | None) -> RunnerLibrary:
+    """Identify the copy this process actually imported.
+
+    Reads the identity off the *imported module's* ``__file__`` rather than
+    off whatever was intended, so the record describes what ran.
+    """
+    module_file = getattr(module, "__file__", None)
+    if not module_file:  # namespace package or a stub in a test
+        return RunnerLibrary(
+            package_dir="",
+            module_file="",
+            version=str(getattr(module, "__version__", UNKNOWN_LIBRARY_VERSION)),
+            fingerprint=UNKNOWN_LIBRARY_VERSION,
+            source=LIBRARY_SOURCE_PREIMPORTED,
+        )
+    package_dir = Path(module_file).resolve().parent
+    source = LIBRARY_SOURCE_INSTALLED
+    if bundle_src is not None and package_dir == (bundle_src / RUNNER_IMPORT_NAME):
+        source = LIBRARY_SOURCE_IN_BUNDLE
+    return _identify(package_dir, str(Path(module_file).resolve()), source)
+
+
+def _skew_warning(used: RunnerLibrary, in_bundle: RunnerLibrary) -> str:
+    return (
+        "Recipe runner library SKEW: this run will execute "
+        f"{RUNNER_DISTRIBUTION} from {used.module_file} "
+        f"(version {used.version}, fingerprint {used.fingerprint}), but the copy "
+        f"shipped beside this tool module is {in_bundle.module_file} "
+        f"(version {in_bundle.version}, fingerprint {in_bundle.fingerprint}). "
+        "These are different libraries, so this run's provenance record may be "
+        "missing fields the bundle's own library emits -- the shadowing copy was "
+        "already imported (or installed through a sys.meta_path finder) before "
+        "this adapter could put the bundle-local one first. Remedy: refresh or "
+        f"uninstall the shadowing copy (`uv pip uninstall {RUNNER_DISTRIBUTION}`), "
+        "or re-point its editable install at this bundle tree. Reported rather "
+        "than run silently: a degraded provenance record is indistinguishable "
+        "from a correct one once written."
+    )
+
+
+#: Cache of :func:`runner_provenance`, keyed by the module object it described.
+#: Keyed on the object (not just presence) so a test that swaps
+#: ``sys.modules`` recomputes -- and re-warns -- instead of reading a stale
+#: answer for a library that is no longer loaded.
+_PROVENANCE_CACHE: tuple[int, RunnerLibrary] | None = None
+
+
+def _describe_loaded(module: ModuleType) -> RunnerLibrary:
+    """Identify ``module``, warning once per loaded copy if it is skewed."""
+    global _PROVENANCE_CACHE
+    cached = _PROVENANCE_CACHE
+    if cached is not None and cached[0] == id(module):
+        return cached[1]
+
+    bundle_src = _in_bundle_library_src()
+    used = _identify_imported(module, bundle_src)
+    if bundle_src is not None and used.source != LIBRARY_SOURCE_IN_BUNDLE:
+        in_bundle = _identify_copy_at(bundle_src)
+        if used.same_library_as(in_bundle):
+            logger.debug(
+                "%s resolved to %s rather than the bundle-local copy at %s; their "
+                "contents are identical, so there is no skew.",
+                RUNNER_DISTRIBUTION,
+                used.module_file,
+                in_bundle.module_file,
+            )
+        else:
+            logger.warning("%s", _skew_warning(used, in_bundle))
+
+    _PROVENANCE_CACHE = (id(module), used)
+    return used
+
+
+def runner_provenance() -> dict[str, Any] | None:
+    """Which copy of the runner library this process is using, as plain data.
+
+    Recorded on every v2 run (``runner_library`` on the run record and on the
+    tool output) so "which library produced this provenance?" is answerable
+    from the record itself instead of by re-deriving it from an environment
+    that has since changed.
+
+    Returns ``None`` only when the library is not importable at all -- in which
+    case no v2 recipe ran, and :class:`RecipeRunnerUnavailableError` already
+    said so.
+    """
+    try:
+        module = load_runner()
+    except RecipeRunnerUnavailableError:
+        return None
+    return _describe_loaded(module).to_mapping()
 
 
 def load_runner() -> ModuleType:
     """Import and return the runner library, or fail loud.
 
-    Tries the installed package first, then the library shipped in this same
-    bundle tree (see :func:`_in_bundle_library_src`).
+    **Prefers the copy shipped in this same bundle tree.** The library and this
+    module are versioned together in one checkout, so the library sitting two
+    directories up (:func:`_in_bundle_library_src`) is by definition the one
+    this module was written against. Its path goes on the *front* of
+    ``sys.path`` before the first import, ahead of any installed copy.
+
+    That ordering was the defect (recipes-4g5): the Amplifier venv had
+    ``amplifier_recipe_runner`` editable-installed from a *second* cache clone
+    pinned at an older commit, while this module executed from a refreshed
+    bundle cache. A plain import bound the stale copy, and a v2 run emitted a
+    structurally degraded provenance record -- no error, no warning.
+
+    Two cases ``sys.path`` order cannot fix are detected instead of assumed:
+    a copy already in ``sys.modules`` before this ran, and an editable install
+    served by a ``sys.meta_path`` finder (which outranks ``sys.path``). In both
+    the imported copy is identified from its own ``__file__``, compared against
+    the bundle-local one by version *and* content digest, and a mismatch is
+    logged as a WARNING naming both paths and versions
+    (:func:`runner_provenance`).
 
     Raises:
-        RecipeRunnerUnavailableError: the library is not installed and not
-            found in the bundle tree. Never falls back to the legacy path --
+        RecipeRunnerUnavailableError: the library is neither installed nor
+            present in the bundle tree. Never falls back to the legacy path --
             see the class docstring.
     """
+    already_loaded = sys.modules.get(RUNNER_IMPORT_NAME)
+    if already_loaded is not None:
+        _describe_loaded(already_loaded)
+        return already_loaded
+
+    bundle_src = _in_bundle_library_src()
+    if bundle_src is not None:
+        # Moved to the FRONT, not merely ensured present: an installed copy's
+        # `.pth` entry (or a plainly-prepended path) already on `sys.path`
+        # ahead of ours is exactly the shadowing this exists to prevent, and
+        # "it is somewhere on the path" would not fix it.
+        entry = str(bundle_src)
+        while entry in sys.path:
+            sys.path.remove(entry)
+        sys.path.insert(0, entry)
+
     try:
-        import amplifier_recipe_runner  # noqa: PLC0415 -- deliberately lazy
+        module = importlib.import_module(RUNNER_IMPORT_NAME)
     except ImportError as exc:
-        bundle_src = _in_bundle_library_src()
-        if bundle_src is None:
-            raise RecipeRunnerUnavailableError(exc) from exc
-        if str(bundle_src) not in sys.path:
-            sys.path.insert(0, str(bundle_src))
-        try:
-            import amplifier_recipe_runner  # noqa: PLC0415
-        except ImportError as retry_exc:
-            raise RecipeRunnerUnavailableError(retry_exc) from retry_exc
-    return amplifier_recipe_runner
+        raise RecipeRunnerUnavailableError(exc) from exc
+
+    _describe_loaded(module)
+    return module
 
 
 def runner_available() -> bool:

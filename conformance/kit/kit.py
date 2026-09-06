@@ -34,6 +34,7 @@ import dataclasses
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,6 +67,20 @@ from _bootstrap import runner_source_path  # noqa: E402
 
 class KitFailure(AssertionError):
     """One conformance assertion did not hold. Always names what was expected."""
+
+
+class KitSkipped(Exception):
+    """This environment cannot run the fixture at all -- reported as SKIP, never PASS.
+
+    A skip is not a pass and is never counted as one: the summary line names
+    every skipped fixture and its reason, so "the tool this check needs is not
+    installed here" can never be mistaken for "the check ran and held".
+
+    Raised only for a missing *precondition of the measurement itself* (an
+    absent ``uv``, an unreadable git object, a host environment that cannot
+    supply what module activation assumes). Never for a failed assertion --
+    that is a :class:`KitFailure`.
+    """
 
 
 def _brief(value: Any, limit: int = 220) -> str:
@@ -945,6 +960,271 @@ async def good_injected_offline_resolver() -> str:
     )
 
 
+# --------------------------------------------------------------------------
+# The real module-activation install path
+# --------------------------------------------------------------------------
+#
+# Every other fixture in this kit imports the implementation the way a *test*
+# does: through PYTHONPATH, or through an editable install made WITH uv
+# sources. Production does neither. Amplifier's module activator runs exactly
+#
+#     uv pip install -e <bundle>/modules/tool-recipes --python <env> --no-sources
+#
+# and on 2026-09-02 that command -- and only that command -- failed, breaking
+# `amplifier update` and session prepare for every user while all four gates
+# stayed green (see recipes-eir, hotfixed in 02a3dfe). The gap was not a weak
+# assertion; it was that no gate ever ran the consumer's command at all.
+#
+# This fixture runs it, into a throwaway venv, and then asserts the two things
+# that make a successful install *useful*: the module imports, and
+# `load_runner()` resolves the runner shipped in THIS bundle tree rather than a
+# second copy from somewhere else (the recipes-4g5 symptom -- a cache clone
+# answering for the in-bundle library, so the code under test is not the code
+# in hand).
+
+REPO_ROOT = KIT_DIR.parents[1]
+MODULE_DIR = REPO_ROOT / "modules" / "tool-recipes"
+LIBRARY_SRC = REPO_ROOT / "src"
+
+# The activation command, verbatim, as the activator issues it.
+ACTIVATION_INSTALL = ("uv", "pip", "install", "-e", "<module>", "--python", "<env>", "--no-sources")
+
+# The commit that HOTFIXED the regression (02a3dfe, "module installs under
+# --no-sources"); its parent therefore holds the pre-hotfix pyproject -- a hard
+# direct-URL dependency on amplifier-recipe-runner with no
+# `tool.hatch.metadata.allow-direct-references`. That blob is this fixture's
+# discrimination control: the same fixture, run against it, must FAIL.
+PRE_HOTFIX_PYPROJECT_REV = "02a3dfe8f071c5ee92db6266609025bca87731a1^"
+PRE_HOTFIX_PYPROJECT_PATH = "modules/tool-recipes/pyproject.toml"
+
+# Host-provided at activation time: the activator installs into the Amplifier
+# CLI's own environment, which already carries these. They are deliberately not
+# dependencies of the module, so a bare venv cannot import it without them.
+HOST_PROVIDED = ("amplifier_core", "amplifier_foundation")
+
+
+def _host_site_packages() -> str:
+    """The site-packages of the interpreter running this kit, as a PYTHONPATH.
+
+    This is how the throwaway venv is given what the *host* environment
+    supplies at activation time -- and no more. The kit's own PYTHONPATH is
+    deliberately NOT forwarded: it usually contains ``<repo>/src``, which would
+    hand the child an importable runner and make the in-bundle fallback
+    assertion vacuous.
+    """
+    import site
+
+    dirs = [d for d in (list(site.getsitepackages()) + [site.getusersitepackages()]) if d]
+    return os.pathsep.join(dirs)
+
+
+def _run(argv: list[str], *, timeout: int, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def _tail(text: str, lines: int = 12) -> str:
+    kept = [line for line in text.strip().splitlines() if line.strip()]
+    return "\n        ".join(kept[-lines:])
+
+
+def _make_venv(path: Path) -> Path:
+    """A clean venv on the SAME interpreter as this kit, and its python."""
+    made = _run(["uv", "venv", "--python", sys.executable, str(path)], timeout=180)
+    if made.returncode != 0:
+        raise KitSkipped(f"`uv venv` failed, so no clean environment could be built: {_tail(made.stderr, 4)}")
+    python = path / "bin" / "python"
+    if not python.exists():  # pragma: no cover - non-POSIX layout
+        python = path / "Scripts" / "python.exe"
+    return python
+
+
+def _activation_install(module_dir: Path, venv_python: Path) -> subprocess.CompletedProcess[str]:
+    """Exactly what Amplifier's module activator runs. No extra flags, ever."""
+    return _run(
+        ["uv", "pip", "install", "-e", str(module_dir), "--python", str(venv_python), "--no-sources"],
+        timeout=600,
+    )
+
+
+def _probe(venv_python: Path, program: str) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = _host_site_packages()
+    return _run([str(venv_python), "-c", program], timeout=120, env=env)
+
+
+_AVAILABILITY_PROBE = (
+    "import json, importlib.util as u;"
+    "print(json.dumps({n: u.find_spec(n) is not None for n in "
+    "('amplifier_core', 'amplifier_foundation', 'amplifier_recipe_runner')}))"
+)
+
+_RESOLUTION_PROBE = (
+    "import json;"
+    "import amplifier_module_tool_recipes as m;"
+    "from amplifier_module_tool_recipes import runner_adapter;"
+    "r = runner_adapter.load_runner();"
+    "print(json.dumps({'module_file': m.__file__, 'runner_file': r.__file__,"
+    " 'runner_available': runner_adapter.runner_available()}))"
+)
+
+
+def _pre_hotfix_pyproject() -> str:
+    """The pre-hotfix ``pyproject.toml``, read from git history.
+
+    Read from the object store rather than vendored so the control is the real
+    regression this repo actually shipped, not a re-typed approximation of it.
+    """
+    if shutil.which("git") is None:
+        raise KitSkipped("git is not installed, so the pre-hotfix control blob cannot be read")
+    shown = _run(
+        ["git", "-C", str(REPO_ROOT), "show", f"{PRE_HOTFIX_PYPROJECT_REV}:{PRE_HOTFIX_PYPROJECT_PATH}"],
+        timeout=60,
+    )
+    if shown.returncode != 0 or not shown.stdout.strip():
+        raise KitSkipped(
+            f"the pre-hotfix blob {PRE_HOTFIX_PYPROJECT_REV}:{PRE_HOTFIX_PYPROJECT_PATH} is not in this "
+            f"checkout (shallow clone?), so the discrimination control cannot run: {_tail(shown.stderr, 3)}"
+        )
+    return shown.stdout
+
+
+def _pre_hotfix_bundle(root: Path) -> Path:
+    """A bundle-shaped copy of the module carrying the pre-hotfix pyproject.
+
+    Bundle-shaped on purpose: ``<root>/modules/tool-recipes`` beside
+    ``<root>/src``, because ``load_runner()``'s in-bundle fallback is defined
+    relative to that layout. A control that broke the layout as well as the
+    packaging would not tell us which one it caught.
+    """
+    module_copy = root / "modules" / "tool-recipes"
+    module_copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(MODULE_DIR, module_copy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".venv"))
+    (root / "src").symlink_to(LIBRARY_SRC, target_is_directory=True)
+    (module_copy / "pyproject.toml").write_text(_pre_hotfix_pyproject(), encoding="utf-8")
+    return module_copy
+
+
+@fixture(
+    id="good-activation-install-resolves-the-in-bundle-runner",
+    polarity="GOOD",
+    title="The real module-activation install succeeds and resolves the in-bundle runner",
+    clauses=("lib.v1 Core 1",),
+    rows=("RCP-101",),
+    notes=(
+        "The only fixture that leaves the in-process library and drives the CONSUMER's command "
+        "(`uv pip install -e <module> --python <env> --no-sources`) into a throwaway venv. Carries its "
+        "own discrimination control: the same install against the pre-hotfix pyproject "
+        f"({PRE_HOTFIX_PYPROJECT_REV}) must fail, naming allow-direct-references. Skips with a reason "
+        "when uv or git is absent, or when the host environment cannot supply what activation assumes."
+    ),
+)
+async def good_activation_install_resolves_in_bundle_runner() -> str:
+    if shutil.which("uv") is None:
+        raise KitSkipped(
+            "uv is not installed, and module activation IS a uv command "
+            f"(`{' '.join(ACTIVATION_INSTALL)}`) -- there is nothing faithful to run without it"
+        )
+
+    # Read the control blob up front: a fixture that installs for 30s and only
+    # then discovers it cannot prove it discriminates has wasted the budget.
+    pre_hotfix = _pre_hotfix_pyproject()
+    expect_in(
+        "amplifier-recipe-runner @ git+",
+        pre_hotfix,
+        "the pre-hotfix control blob does not contain the direct-URL dependency it is supposed to reintroduce",
+    )
+    expect(
+        "allow-direct-references" not in pre_hotfix,
+        "the pre-hotfix control blob already sets allow-direct-references, so it is not the pre-hotfix state",
+    )
+
+    scratch = Path(tempfile.mkdtemp(prefix="recipes-activation-install-"))
+    try:
+        venv_python = _make_venv(scratch / "venv")
+
+        # Premises, MEASURED -- each one an environment fact the assertions below
+        # depend on. Asserting them as prose would let the fixture pass vacuously.
+        available = _probe(venv_python, _AVAILABILITY_PROBE)
+        expect_eq(available.returncode, 0, f"the availability probe did not run: {_tail(available.stderr, 4)}")
+        present = json.loads(available.stdout)
+        missing = [name for name in HOST_PROVIDED if not present.get(name)]
+        if missing:
+            raise KitSkipped(
+                f"this host environment does not provide {', '.join(missing)}, which module activation "
+                "assumes (the activator installs into the Amplifier CLI's own environment). The install "
+                "half would run, but the import and load_runner() halves could not."
+            )
+        if present.get("amplifier_recipe_runner"):
+            raise KitSkipped(
+                "an installed amplifier_recipe_runner is already reachable from this host environment, so "
+                "load_runner() would legitimately return it and the IN-BUNDLE fallback could not be observed"
+            )
+
+        installed = _activation_install(MODULE_DIR, venv_python)
+        expect_eq(
+            installed.returncode,
+            0,
+            "the module-activation install FAILED -- this is the exact command `amplifier update` runs:\n"
+            f"        {_tail(installed.stderr)}",
+        )
+
+        resolved = _probe(venv_python, _RESOLUTION_PROBE)
+        expect_eq(
+            resolved.returncode,
+            0,
+            f"the installed module could not be imported, or load_runner() raised:\n        {_tail(resolved.stderr)}",
+        )
+        report = json.loads(resolved.stdout)
+
+        module_file = Path(report["module_file"]).resolve()
+        expect(
+            module_file.is_relative_to(MODULE_DIR),
+            f"the imported module is not the one installed from this repo: {module_file}",
+        )
+        expect(report["runner_available"] is True, "runner_available() is False after a successful activation install")
+
+        runner_file = Path(report["runner_file"]).resolve()
+        expect(
+            runner_file.is_relative_to(LIBRARY_SRC / "amplifier_recipe_runner"),
+            "load_runner() resolved a runner OUTSIDE this bundle tree -- the recipes-4g5 symptom "
+            f"(a second copy, e.g. a bundle-cache clone, answering for the in-bundle library):\n"
+            f"        resolved: {runner_file}\n"
+            f"        expected under: {LIBRARY_SRC / 'amplifier_recipe_runner'}",
+        )
+
+        # CONTROL -- the reason this fixture is worth its runtime.
+        # The same command, against the pyproject that shipped the outage, must
+        # fail, and must fail FOR ITS OWN NAMED REASON. A merely non-zero exit
+        # would accept a typo in the copy as proof of discrimination.
+        control_root = scratch / "pre-hotfix"
+        control_root.mkdir()
+        control_module = _pre_hotfix_bundle(control_root)
+        control_python = _make_venv(scratch / "control-venv")
+        control = _activation_install(control_module, control_python)
+        expect(
+            control.returncode != 0,
+            "THE FIXTURE DOES NOT DISCRIMINATE: the activation install SUCCEEDED against the pre-hotfix "
+            f"pyproject ({PRE_HOTFIX_PYPROJECT_REV}), which is the packaging that broke `amplifier update` "
+            "in production on 2026-09-02",
+        )
+        expect_in(
+            "allow-direct-references",
+            control.stdout + control.stderr,
+            "the pre-hotfix install failed for some OTHER reason than the direct-URL dependency it was "
+            f"built to reintroduce:\n        {_tail(control.stderr)}",
+        )
+
+        return (
+            f"`{' '.join(ACTIVATION_INSTALL)}` exited 0 into a clean venv; the installed module imported "
+            f"(with only host site-packages alongside, no amplifier_recipe_runner installed) and "
+            f"load_runner() resolved the IN-BUNDLE library at {runner_file}; the same command against the "
+            f"pre-hotfix pyproject ({PRE_HOTFIX_PYPROJECT_REV}) failed naming allow-direct-references, so "
+            "the fixture discriminates"
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 # ==========================================================================
 # BAD fixtures -- each asserts a SPECIFIC typed error
 # ==========================================================================
@@ -1384,6 +1664,15 @@ EXPECTED_RUN_REQUEST_FIELDS: tuple[str, ...] = (
     "trust_policy",
     "lock_mode",
     "run_id",
+    # A directory THIS RUN owns, for its own resumable state. Justified
+    # against manifest.v1 Core 4 (recipes-xov): Core 4 constrains what can
+    # reach a recipe's AGENT surface, and a filesystem path cannot -- nothing
+    # read back from it is consulted during agent resolution, which happens
+    # exclusively against the frozen PlanCatalog. It exists because pause ->
+    # approve -> resume spans separate processes, so the run that pauses at an
+    # approval gate must leave its position somewhere the run that resumes can
+    # read. `None` (the default) means "keep nothing".
+    "state_dir",
     "legacy_mode",
 )
 
@@ -1753,6 +2042,189 @@ async def probe_ports_carry_no_agent_map() -> str:
     )
 
 
+# ==========================================================================
+# FULL STEP VOCABULARY -- the two engines, one recipe, diffed
+# ==========================================================================
+
+
+#: The keys `execute_recipe` injects into every context. They legitimately
+#: differ between the two engines (session ids, absolute recipe paths), so a
+#: diff that included them would report noise as non-conformance.
+_ENGINE_INTERNAL_KEYS: tuple[str, ...] = ("recipe", "session", "step", "stage")
+
+#: What the agent step returns, on BOTH sides. Fixed so the comparison is of
+#: step semantics, not of two different model answers.
+_AGENT_REPLY: str = "done:supplier:reviewer"
+
+
+def legacy_engine_module() -> Any:
+    """Import the legacy in-session engine, or say why it could not be found.
+
+    Located, never stubbed -- the same rule ``_bootstrap`` applies to the
+    library. A fixture that quietly compared the library against a double
+    would prove nothing at all, which is the one failure mode a parity check
+    cannot afford.
+    """
+    try:
+        from amplifier_module_tool_recipes import executor as legacy  # type: ignore[import-not-found]
+
+        return legacy
+    except ImportError:
+        pass
+
+    module_root = KIT_DIR.parents[1] / "modules" / "tool-recipes"
+    if module_root.is_dir() and str(module_root) not in sys.path:
+        sys.path.insert(0, str(module_root))
+    try:
+        from amplifier_module_tool_recipes import executor as legacy  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise KitFailure(
+            "the legacy step engine (amplifier_module_tool_recipes.executor) is not importable, "
+            f"and this fixture refuses to compare the library against a stand-in. Tried {module_root}. "
+            "Run the kit with PYTHONPATH=src:modules/tool-recipes, as conformance/README.md documents."
+        ) from exc
+    return legacy
+
+
+async def _legacy_run(recipe_path: Path, project_path: Path) -> dict[str, Any]:
+    """Run ``recipe_path`` on the LEGACY engine and return its final context."""
+    from unittest.mock import AsyncMock
+    from unittest.mock import MagicMock
+
+    legacy = legacy_engine_module()
+    from amplifier_module_tool_recipes.models import Recipe  # type: ignore[import-not-found]
+
+    coordinator = MagicMock()
+    coordinator.session = MagicMock()
+    coordinator.config = {"agents": {}}
+    coordinator.hooks = None  # keeps _show_progress from awaiting a MagicMock
+    spawn = AsyncMock(return_value=_AGENT_REPLY)
+    coordinator.get_capability.return_value = spawn
+
+    session_manager = MagicMock()
+    session_manager.create_session.return_value = "legacy-session"
+    session_manager.load_state.return_value = {
+        "current_step_index": 0,
+        "context": {},
+        "completed_steps": [],
+        "started": "2026-01-01T00:00:00",
+    }
+    session_manager.is_cancellation_requested.return_value = False
+    session_manager.is_immediate_cancellation.return_value = False
+
+    executor = legacy.RecipeExecutor(coordinator, session_manager)
+    recipe = Recipe.from_yaml(recipe_path)
+    return await executor.execute_recipe(recipe, {}, project_path, recipe_path=recipe_path)
+
+
+async def _library_run(recipe_path: Path, project_path: Path) -> Any:
+    """Run ``recipe_path`` on the LIBRARY, through its real public entry point."""
+    from amplifier_recipe_runner.api import RunRequest
+    from amplifier_recipe_runner.execution import run as run_recipe
+
+    class FixedReplyBackend:
+        async def spawn(self, request: Any) -> str:
+            return _AGENT_REPLY
+
+    return await run_recipe(
+        RunRequest(recipe=recipe_path, services=services(project_path)),
+        resolver=local_resolver(),
+        spawn_backend=FixedReplyBackend(),
+    )
+
+
+def _comparable(context: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in context.items() if key not in _ENGINE_INTERNAL_KEYS}
+
+
+@fixture(
+    id="good-full-step-vocabulary-matches-the-legacy-engine",
+    polarity="GOOD",
+    title="One full-vocabulary recipe run on BOTH engines produces the same context",
+    clauses=("lib.v1 Core 1", "lib.v1 Core 2", "lib.v1 Core 8"),
+    rows=("RCP-101", "RCP-102", "RCP-108"),
+    notes=(
+        "PARITY FIXTURE. Runs conformance/kit/fixtures/recipes/full-vocabulary.yaml -- bash, "
+        "parse_json, conditions (taken and not taken), on_error: continue, sequential and "
+        "bounded-parallel foreach, a multi-step foreach body, a convergence while loop with "
+        "update_context + break_when, a `type: recipe` sub-recipe, a templated timeout and an "
+        "agent step -- through the LEGACY in-session engine and through the LIBRARY's public "
+        "`run()`, then diffs every recipe-visible context variable. Self-discriminating: it "
+        "compares the library against the other implementation rather than against an authored "
+        "expectation, so a drift in EITHER engine fails it. Requires the legacy engine to be "
+        "importable and refuses to run against a stand-in."
+    ),
+)
+async def good_full_vocabulary_parity() -> str:
+    from amplifier_recipe_runner.api import RunStatus
+
+    recipe_path = RECIPES / "full-vocabulary.yaml"
+    expect(recipe_path.is_file(), f"missing parity recipe {recipe_path}")
+
+    legacy_workspace = Path(tempfile.mkdtemp(prefix="recipes-parity-legacy-"))
+    library_workspace = Path(tempfile.mkdtemp(prefix="recipes-parity-library-"))
+
+    legacy_context = await _legacy_run(recipe_path, legacy_workspace)
+    result = await _library_run(recipe_path, library_workspace)
+
+    if result.status is not RunStatus.SUCCEEDED:
+        raise KitFailure(
+            f"the library could not run the full-vocabulary recipe: {result.status.value} -- "
+            f"{type(result.error).__name__ if result.error else 'no error reported'}: {result.error}"
+        )
+
+    legacy_seen = _comparable(legacy_context)
+    library_seen = _comparable(result.context)
+
+    # Non-vacuity FIRST: an empty comparison would pass while proving nothing.
+    expected_variables = {
+        "payload",
+        "restated",
+        "gated_on",
+        "absorbed_out",
+        "absorbed_code",
+        "fanned",
+        "fanned_parallel",
+        "compounded",
+        "ticks",
+        "delegated",
+        "verdict",
+        "settled",
+    }
+    missing_legacy = sorted(expected_variables - set(legacy_seen))
+    missing_library = sorted(expected_variables - set(library_seen))
+    expect(not missing_legacy, f"legacy engine produced none of {missing_legacy}; the comparison would be vacuous")
+    expect(not missing_library, f"library produced none of {missing_library}; the comparison would be vacuous")
+
+    # The condition that did NOT pass must have written nothing, on both sides.
+    expect("gated_off" not in legacy_seen, "legacy engine ran a step whose condition was false")
+    expect("gated_off" not in library_seen, "library ran a step whose condition was false")
+
+    differing = sorted(
+        key
+        for key in set(legacy_seen) | set(library_seen)
+        if legacy_seen.get(key, "<absent>") != library_seen.get(key, "<absent>")
+    )
+    if differing:
+        detail = "; ".join(
+            f"{key}: legacy={_brief(legacy_seen.get(key, '<absent>'), 120)} "
+            f"library={_brief(library_seen.get(key, '<absent>'), 120)}"
+            for key in differing
+        )
+        raise KitFailure(
+            f"the two engines disagree on {len(differing)} context variable(s): {detail}. "
+            "Every intended difference belongs in docs/EXECUTOR_PARITY.md with its reason; "
+            "an undocumented one is a parity defect."
+        )
+
+    return (
+        f"{len(legacy_seen)} recipe-visible variables identical across both engines "
+        f"(covering {len(expected_variables)} named step outputs: bash, parse_json, conditions, "
+        f"on_error, foreach sequential + parallel, compound body, convergence loop, sub-recipe, "
+        f"templated timeout, agent step)"
+    )
+
+
 # --------------------------------------------------------------------------
 # Ledger coverage -- authored judgements, emitted as ledger-map.yaml
 # --------------------------------------------------------------------------
@@ -1848,8 +2320,21 @@ LEDGER_COVERAGE: dict[str, dict[str, Any]] = {
     },
     "RCP-101": {
         "coverage": "partial",
-        "covered": "Two independent hosts (in-process library, separate process) produce byte-identical resolved-graph identity, so neither carries resolution logic of its own.",
-        "not_covered": "The ledger records 'every host surface is a thin adapter' as NOT-ASSERTABLE (architectural judgement). Only two hosts exist to compare; the Amplifier tool adapter is not yet a runner host (residual R1).",
+        "covered": (
+            "Two independent hosts (in-process library, separate process) produce byte-identical "
+            "resolved-graph identity, so neither carries resolution logic of its own. Separately, the "
+            "Amplifier tool adapter is INSTALLED the way production installs it (`uv pip install -e "
+            "<module> --python <env> --no-sources`, the command whose failure broke `amplifier update` "
+            "on 2026-09-02) into a clean venv, and its load_runner() is measured to resolve the ONE "
+            "in-bundle library rather than a second copy -- discrimination-proved in-fixture against "
+            "the pre-hotfix pyproject."
+        ),
+        "not_covered": (
+            "The ledger records 'every host surface is a thin adapter' as NOT-ASSERTABLE (architectural "
+            "judgement). Only two hosts are COMPARED; the Amplifier tool adapter is exercised only as far "
+            "as install + import + runner resolution, not as a runner host producing a resolved graph "
+            "(residual R1)."
+        ),
     },
     "RCP-102": {
         "coverage": "partial",
@@ -1986,6 +2471,13 @@ class Result:
     detail: str
     trace: str | None = None
     duration_s: float = 0.0
+    skipped: bool = False
+
+    @property
+    def status(self) -> str:
+        if self.skipped:
+            return "SKIP"
+        return "PASS" if self.passed else "FAIL"
 
 
 async def run_fixture(item: Fixture) -> Result:
@@ -1995,6 +2487,11 @@ async def run_fixture(item: Fixture) -> Result:
     try:
         detail = await item.run()
         return Result(item, True, detail, duration_s=time.monotonic() - started)
+    except KitSkipped as exc:
+        # Not a pass. Reported as SKIP with its reason and counted separately,
+        # so an environment that could not run a check never reads as one where
+        # the check held.
+        return Result(item, True, str(exc), duration_s=time.monotonic() - started, skipped=True)
     except KitFailure as exc:
         return Result(item, False, str(exc), duration_s=time.monotonic() - started)
     except Exception as exc:  # noqa: BLE001 - an unexpected error is still a failure
@@ -2070,19 +2567,21 @@ def cmd_run(only: str | None, as_json: bool) -> int:
     provenance = ensure_runner_importable()
     results = asyncio.run(run_all(only))
     failed = [r for r in results if not r.passed]
+    skipped = [r for r in results if r.skipped]
 
     if as_json:
         json.dump(
             {
                 "implementation": provenance,
                 "total": len(results),
-                "passed": len(results) - len(failed),
+                "passed": len(results) - len(failed) - len(skipped),
                 "failed": len(failed),
+                "skipped": len(skipped),
                 "results": [
                     {
                         "id": r.fixture.id,
                         "polarity": r.fixture.polarity,
-                        "status": "PASS" if r.passed else "FAIL",
+                        "status": r.status,
                         "ledger_rows": list(r.fixture.rows),
                         "detail": r.detail,
                     }
@@ -2097,13 +2596,18 @@ def cmd_run(only: str | None, as_json: bool) -> int:
 
     print(f"implementation under test: {provenance}\n")
     for r in results:
-        mark = "PASS" if r.passed else "FAIL"
-        print(f"[{mark}] {r.fixture.polarity:<4} {r.fixture.id}  ({r.duration_s:.2f}s)")
+        print(f"[{r.status}] {r.fixture.polarity:<4} {r.fixture.id}  ({r.duration_s:.2f}s)")
         print(f"       {r.detail}")
         if r.trace:
             print("       " + r.trace.replace("\n", "\n       ").rstrip())
     print()
-    print(f"{len(results) - len(failed)}/{len(results)} fixtures passed")
+    print(f"{len(results) - len(failed) - len(skipped)}/{len(results)} fixtures passed")
+    if skipped:
+        # Named, never a silent absence: a skipped fixture checked nothing.
+        print(f"\nSKIPPED ({len(skipped)} -- checked NOTHING, not a pass):")
+        for r in skipped:
+            print(f"  - {r.fixture.id} [{', '.join(r.fixture.rows)}]")
+            print(f"      {r.detail}")
     if failed:
         print("\nFAILED:")
         for r in failed:

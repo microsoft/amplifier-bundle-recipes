@@ -19,6 +19,11 @@ What these tests are actually defending:
 from __future__ import annotations
 
 import asyncio
+import importlib.machinery
+import importlib.util
+import logging
+import shutil
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -822,6 +827,254 @@ class TestLazyImport:
 
 
 # ---------------------------------------------------------------------------
+# Library version skew (recipes-4g5)
+# ---------------------------------------------------------------------------
+
+
+def _write_fake_library(root: Path, *, version: str, marker: str = "") -> Path:
+    """A minimal, importable stand-in for the runner library at `root`.
+
+    Deliberately a real package on disk rather than a `MagicMock`: the whole
+    question under test is which *file* got imported, and a mock has no file.
+    """
+    package = root / ra.RUNNER_IMPORT_NAME
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(
+        f'__version__ = "{version}"\nSTALE_MARKER = "{marker}"\n',
+        encoding="utf-8",
+    )
+    return package
+
+
+@pytest.fixture
+def isolated_runner_import(monkeypatch: pytest.MonkeyPatch):
+    """Let a test rearrange how `amplifier_recipe_runner` resolves, safely.
+
+    Restores `sys.path`, `sys.modules[...]` and the adapter's provenance cache
+    afterwards, so a skew simulation cannot leak a fake library into the rest
+    of the suite.
+    """
+    original_path = list(sys.path)
+    original_module = sys.modules.get(ra.RUNNER_IMPORT_NAME)
+    original_submodules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name.startswith(f"{ra.RUNNER_IMPORT_NAME}.")
+    }
+    monkeypatch.setattr(ra, "_PROVENANCE_CACHE", None, raising=False)
+    try:
+        yield
+    finally:
+        sys.path[:] = original_path
+        for name in [
+            name
+            for name in sys.modules
+            if name == ra.RUNNER_IMPORT_NAME or name.startswith(f"{ra.RUNNER_IMPORT_NAME}.")
+        ]:
+            del sys.modules[name]
+        if original_module is not None:
+            sys.modules[ra.RUNNER_IMPORT_NAME] = original_module
+        sys.modules.update(original_submodules)
+        ra._PROVENANCE_CACHE = None
+
+
+@pytest.mark.skipif(
+    ra._in_bundle_library_src() is None,
+    reason="this checkout ships no src/amplifier_recipe_runner to prefer",
+)
+class TestLibraryVersionSkew:
+    """The adapter must never run on a stale library copy *silently*.
+
+    The measured defect: the Amplifier venv had `amplifier_recipe_runner`
+    editable-installed from a second cache clone pinned at an older commit,
+    while the tool module executed from a refreshed bundle cache. The stale
+    copy won the plain import and the run emitted a structurally degraded
+    provenance record with no error and no warning.
+    """
+
+    def test_the_bundle_local_copy_wins_over_a_stale_one_already_on_sys_path(
+        self, tmp_path: Path, isolated_runner_import
+    ):
+        """The skew simulation: an older copy in front, and it must lose."""
+        stale_root = tmp_path / "stale-cache"
+        _write_fake_library(stale_root, version="0.0.1", marker="stale")
+        sys.modules.pop(ra.RUNNER_IMPORT_NAME, None)
+        sys.path.insert(0, str(stale_root))
+
+        # Sanity: without the adapter, the stale copy is what an import gets.
+        assert (
+            importlib.machinery.PathFinder.find_spec(ra.RUNNER_IMPORT_NAME, sys.path).origin
+            == str(stale_root / ra.RUNNER_IMPORT_NAME / "__init__.py")
+        )
+
+        module = ra.load_runner()
+
+        bundle_src = ra._in_bundle_library_src()
+        assert bundle_src is not None
+        assert Path(module.__file__).resolve().parent == bundle_src / ra.RUNNER_IMPORT_NAME
+        assert not hasattr(module, "STALE_MARKER")
+
+        provenance = ra.runner_provenance()
+        assert provenance is not None
+        assert provenance["source"] == ra.LIBRARY_SOURCE_IN_BUNDLE
+        assert provenance["module_file"] == str(module.__file__)
+
+    def test_a_stale_copy_that_shadows_us_is_warned_about_by_path_and_version(
+        self, tmp_path: Path, caplog, isolated_runner_import
+    ):
+        """`sys.path` order cannot fix an already-imported copy -- so warn.
+
+        This is the case the fix cannot repair: something imported the library
+        before the adapter ran (or an editable install served it through a
+        `sys.meta_path` finder, which outranks `sys.path` entirely). Swapping a
+        live module out from under its importers would be worse, so the run
+        proceeds on it and says so.
+        """
+        stale_root = tmp_path / "older-clone"
+        package = _write_fake_library(stale_root, version="0.0.1", marker="stale")
+        spec = importlib.util.spec_from_file_location(
+            ra.RUNNER_IMPORT_NAME,
+            package / "__init__.py",
+            submodule_search_locations=[str(package)],
+        )
+        assert spec is not None and spec.loader is not None
+        stale_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stale_module)
+        sys.modules[ra.RUNNER_IMPORT_NAME] = stale_module
+
+        with caplog.at_level(logging.WARNING, logger=ra.__name__):
+            returned = ra.load_runner()
+
+        assert returned is stale_module, "a live module must not be swapped mid-flight"
+
+        warnings_logged = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings_logged) == 1, "the skew is reported once, not per call"
+        message = warnings_logged[0].getMessage()
+
+        bundle_src = ra._in_bundle_library_src()
+        assert bundle_src is not None
+        in_bundle_file = str(bundle_src / ra.RUNNER_IMPORT_NAME / "__init__.py")
+        # Both paths and both versions, so the reader can act without guessing.
+        assert str(package / "__init__.py") in message
+        assert in_bundle_file in message
+        assert "0.0.1" in message
+        assert ra._library_version(bundle_src / ra.RUNNER_IMPORT_NAME) in message
+
+        provenance = ra.runner_provenance()
+        assert provenance is not None
+        assert provenance["source"] != ra.LIBRARY_SOURCE_IN_BUNDLE
+        assert provenance["version"] == "0.0.1"
+        assert provenance["module_file"] == str(package / "__init__.py")
+
+    def test_a_byte_identical_second_copy_is_not_reported_as_skew(
+        self, tmp_path: Path, caplog, isolated_runner_import
+    ):
+        """No false alarm: two clones of the same commit are one library.
+
+        Both cache clones on a real machine report `version: 0.1.0`. Warning on
+        location alone would cry wolf on every run and train the reader to
+        ignore the one warning that matters.
+        """
+        bundle_src = ra._in_bundle_library_src()
+        assert bundle_src is not None
+        clone_root = tmp_path / "second-clone"
+        clone_root.mkdir()
+        shutil.copytree(
+            bundle_src / ra.RUNNER_IMPORT_NAME,
+            clone_root / ra.RUNNER_IMPORT_NAME,
+            ignore=shutil.ignore_patterns("tests", "__pycache__"),
+        )
+        spec = importlib.util.spec_from_file_location(
+            ra.RUNNER_IMPORT_NAME,
+            clone_root / ra.RUNNER_IMPORT_NAME / "__init__.py",
+            submodule_search_locations=[str(clone_root / ra.RUNNER_IMPORT_NAME)],
+        )
+        assert spec is not None
+        twin = importlib.util.module_from_spec(spec)
+        # Not executed: identity is read off `__file__`, and executing a second
+        # copy of the real library would put two of them in one process.
+        sys.modules[ra.RUNNER_IMPORT_NAME] = twin
+
+        with caplog.at_level(logging.DEBUG, logger=ra.__name__):
+            ra.load_runner()
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+        assert any("no skew" in r.getMessage() for r in caplog.records)
+
+    @requires_runner
+    @pytest.mark.asyncio
+    async def test_a_v2_run_records_which_library_produced_it(
+        self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Provenance names the library copy, not just the plan.
+
+        Without this the degraded record from the measured defect is
+        indistinguishable, after the fact, from a correct one: the run says
+        which agents it resolved but never which library resolved them.
+        """
+        saved: dict[str, Any] = {}
+        session_manager = MagicMock()
+        session_manager.create_session.return_value = "sess-1"
+        session_manager.load_state.return_value = {}
+        session_manager.save_state.side_effect = lambda sid, path, state: saved.update(state)
+        tool = make_tool(session_manager=session_manager)
+        recipe = write_recipe(temp_dir, "v2.yaml", V2_RECIPE)
+        runner = ra.load_runner()
+
+        async def fake_run_v2(*args: Any, **kwargs: Any) -> Any:
+            return runner.RunResult(
+                run_id="run-lib",
+                status=runner.RunStatus.SUCCEEDED,
+                completed_steps=("review",),
+            )
+
+        monkeypatch.setattr("amplifier_module_tool_recipes.run_v2_recipe_in_session", fake_run_v2)
+
+        result = await tool._execute_recipe({"recipe_path": str(recipe)})
+
+        expected = ra.runner_provenance()
+        assert expected is not None
+        assert saved[V2_RUN_STATE_KEY]["runner_library"] == expected
+        assert result.output["runner_library"] == expected
+        assert expected["module_file"].endswith("__init__.py")
+        assert expected["version"]
+        assert expected["fingerprint"]
+
+    def test_version_is_read_without_importing_the_copy(self, tmp_path: Path):
+        """Reading a rival copy's version must not load a second library."""
+        package = _write_fake_library(tmp_path, version="9.9.9")
+
+        assert ra._library_version(package) == "9.9.9"
+        assert f"{ra.RUNNER_IMPORT_NAME}" not in {
+            name for name in sys.modules if name.endswith("9.9.9")
+        }
+
+    def test_an_unreadable_version_is_reported_as_unknown_not_guessed(self, tmp_path: Path):
+        package = tmp_path / ra.RUNNER_IMPORT_NAME
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("# no version here\n", encoding="utf-8")
+
+        assert ra._library_version(package) == ra.UNKNOWN_LIBRARY_VERSION
+
+    def test_the_fingerprint_separates_same_version_different_content(self, tmp_path: Path):
+        """Version alone cannot see the defect: both clones said `0.1.0`."""
+        first = _write_fake_library(tmp_path / "a", version="0.1.0", marker="old")
+        second = _write_fake_library(tmp_path / "b", version="0.1.0", marker="new")
+
+        assert ra._library_version(first) == ra._library_version(second)
+        assert ra._library_fingerprint(first) != ra._library_fingerprint(second)
+
+    def test_a_tests_only_difference_is_not_a_skew(self, tmp_path: Path):
+        """A different test suite cannot change what a run does."""
+        first = _write_fake_library(tmp_path / "a", version="0.1.0", marker="same")
+        second = _write_fake_library(tmp_path / "b", version="0.1.0", marker="same")
+        (second / "tests").mkdir()
+        (second / "tests" / "test_extra.py").write_text("assert True\n", encoding="utf-8")
+
+        assert ra._library_fingerprint(first) == ra._library_fingerprint(second)
+
+
+# ---------------------------------------------------------------------------
 # v2 validate (lib.v1 Core 2 `validate`)
 # ---------------------------------------------------------------------------
 
@@ -1031,6 +1284,19 @@ class TestV2Resume:
 
         Same reading the standalone CLI's `resume` takes for the same case:
         one library call, under the recorded run id, re-running nothing.
+
+        This is the FALLBACK route -- the one taken when the library exports
+        no `resume` entry point -- so the seam that decides between the two is
+        pinned here rather than left to whichever runner version happens to be
+        importable (`library_resume`; the companion test below pins it the
+        other way). Left unpinned, this test read the ambient library: once
+        `resume` landed (recipes-4qf) the adapter routed to the REAL entry
+        point, `fake_run` was never reached, and the recipe's declared
+        `git+https://example.invalid/...` dependency was resolved for real --
+        an actual `git clone` whose result depended on the host's network and
+        bundle cache (recipes-pm2). Nothing here needs dependency resolution:
+        the subject is which entry point the adapter calls, not what it
+        resolves.
         """
         runner = ra.load_runner()
         tool = make_v2_session_tool(
@@ -1050,6 +1316,57 @@ class TestV2Resume:
             return runner.RunResult(run_id=request.run_id, status=runner.RunStatus.SUCCEEDED)
 
         monkeypatch.setattr(runner, "run", fake_run)
+        monkeypatch.setattr(
+            "amplifier_module_tool_recipes.runner_adapter.library_resume", lambda: None
+        )
+
+        result = await tool._resume_recipe({"session_id": "sess-1"})
+
+        assert "request" in seen, (
+            "the library exported no `resume`, so the fallback `run` route was "
+            f"the only one left -- but it was never called: {result.error}"
+        )
+        assert result.success is True
+        assert seen["request"].run_id == "run-1"
+        assert seen["request"].legacy_mode is False
+        tool.executor.execute_recipe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_nothing_completed_still_prefers_the_library_resume_entry_point(
+        self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The other side of the seam above: `resume` wins even with nothing done.
+
+        "Nothing completed" does not demote the run to the `run` fallback --
+        `resume` with an empty completed-step set IS running from the start, on
+        the library's own path. Pinning both directions is what keeps this
+        class's outcome from depending on which runner version is installed.
+        """
+        runner = ra.load_runner()
+        tool = make_v2_session_tool(
+            temp_dir,
+            v2_run={
+                "status": "failed",
+                "run_id": "run-1",
+                "completed_steps": [],
+                "step_ids": ["review"],
+                "recipe_path": str(temp_dir / "v2.yaml"),
+            },
+        )
+        seen: dict[str, Any] = {}
+
+        async def fake_resume(request: Any) -> Any:
+            seen["request"] = request
+            return runner.RunResult(run_id=request.run_id, status=runner.RunStatus.SUCCEEDED)
+
+        async def fake_run(request: Any) -> Any:  # pragma: no cover - must not run
+            raise AssertionError("`resume` exists, so the `run` fallback must not be used")
+
+        monkeypatch.setattr(runner, "run", fake_run)
+        monkeypatch.setattr(
+            "amplifier_module_tool_recipes.runner_adapter.library_resume",
+            lambda: fake_resume,
+        )
 
         result = await tool._resume_recipe({"session_id": "sess-1"})
 
