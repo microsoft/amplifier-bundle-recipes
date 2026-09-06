@@ -106,7 +106,10 @@ Legend: **=** identical semantics · **Δ** deliberate difference (see below) ·
 |---|---|---|---|
 | Grammar, precedence, numeric-first comparison, truthiness | **vendored verbatim** | source | = by construction |
 | Top-level step: `evaluate_condition(condition, context)` (evaluator substitutes) | yes | yes | = |
-| Loop sub-step: `substitute_variables` first, then evaluate | yes | yes | = (asymmetry reproduced, not tidied) |
+| Loop sub-step / `while_condition` / `break_when`: `substitute_condition_variables` first, then evaluate | yes | yes | = (asymmetry reproduced, not tidied -- but it now resolves values *identically* to the top level, see below) |
+| A `{{var}}` in condition text renders as a **literal**: string quoted+escaped, bool `true`/`false`, `None` `null`, number bare | yes | yes | = (`recipes-kft`) |
+| A `{{var}}` the author already quoted (`'{{var}}' == ''`) is spliced in raw, not re-quoted | yes | yes | = (`recipes-kft`) |
+| A `{{var}}` absent from the context is an error; one whose *value* is `None` is not | yes | yes | = (`recipes-kft`) |
 | False condition → step skipped, id appended to `_skipped_steps`, skip announced | yes | yes | = |
 | Expression error → the *step* fails, naming the step and "condition error" | yes | yes | = |
 

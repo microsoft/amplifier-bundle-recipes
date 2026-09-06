@@ -1963,7 +1963,7 @@ Step conditions use a simple expression syntax for runtime evaluation.
 **Numeric comparison:** When both operands parse as numbers (int or float), comparison
 operators (`<`, `>`, `<=`, `>=`) compare numerically. Otherwise they compare as strings.
 
-**Boolean normalization:** These values are treated as falsy: `false`, `False`, `""`, `"0"`, `"none"`, `"None"`.
+**Boolean normalization:** These values are treated as falsy: `false`, `False`, `""`, `"0"`, `"none"`, `"None"`, `"null"`.
 All other non-empty values are truthy.
 
 **Operator precedence** (lowest to highest): `or` → `and` → `not` → comparison → `()`
@@ -1982,6 +1982,37 @@ condition: "{{report.severity}} == 'critical'"
 # From step output
 condition: "{{analysis_result}} != 'failed'"
 ```
+
+**A condition substitutes VALUES, not text.** Everywhere a condition is
+evaluated — `condition:`, `while_condition:`, `break_when:`, on a top-level
+step, a staged step or a loop sub-step — a `{{reference}}` is rendered as a
+*literal*, so the expression stays well-formed whatever the value is:
+
+| Value | Renders as | Example expression after substitution |
+|-------|-----------|----------------------------------------|
+| `""` (empty string) | `''` | `'' == ''` |
+| `"v3.md"` | `'v3.md'` | `'v3.md' != ''` |
+| `"all clear"` (spaces) | `'all clear'` | `'all clear' == 'all clear'` |
+| `"it's"` (inner quote) | `'it\'s'` (escaped) | `'it\'s' == 'it\'s'` |
+| `5`, `3.14` | `5`, `3.14` (bare) | `5 > 3` |
+| `true` / `false` | `true` / `false` | `true == true` |
+| `None` | `null` (falsy, beside `none`/`None`) | `null == ''` → false |
+
+Two consequences worth knowing:
+
+- **You do not need to quote the reference.** `condition: "{{continue_from}}
+  == ''"` is correct even when `continue_from` defaults to `""` — it renders
+  to `'' == ''`, not to a dangling `== ''`. (Before `recipes-kft` a bare
+  reference *was* pasted in as raw text inside loops, so an empty-string
+  default killed the run and a value containing a space parsed as two
+  tokens.)
+- **Quoting it anyway is still fine.** `condition: "'{{continue_from}}' ==
+  ''"` splices the value inside the quotes you wrote rather than adding a
+  second pair, so both spellings mean the same thing.
+
+A reference the context does not carry at all is still an error
+(`Undefined variable: ...`). A reference whose *value* is `None` is not — it
+compares as `null` and is falsy.
 
 ### String Literals
 
@@ -3388,6 +3419,23 @@ Every run records (`manifest.v1` Core 7):
 **Resume uses recorded provenance.** A provenance mismatch **fails visibly** and
 never silently re-resolves (`manifest.v1` Core 8) — a locked resume that sees a
 different resolved revision is a failure (`manifest.v1` Conformance/BAD).
+
+This holds for the `recipes` tool's own `resume` too, on both of its engines.
+Before it hands the run to either, it re-plans the recipe and compares that
+plan against the record above; a difference is refused as
+`V2ProvenanceMismatchError`, naming what moved (the recipe digest, a
+dependency's resolved revision, or the source supplying an agent), both
+values, and the remedy — re-run with `execute`, or restore what was recorded.
+Nothing runs. Continuing would execute the run's *remaining* steps against a
+different closure than its *completed* ones, and report success either way.
+
+Two deliberate non-refusals, both audible rather than silent: a session
+recorded before this record existed, and a closure that cannot be re-resolved
+at this moment, are **resumed with a warning** (logged, and readable on the
+result as `provenance_warning`) rather than stranded. A failed re-plan is not
+reported as drift — the resume itself re-plans and reports that failure as
+itself. See
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#error-v2provenancemismatcherror-on-resume).
 
 #### The per-agent provenance record
 
