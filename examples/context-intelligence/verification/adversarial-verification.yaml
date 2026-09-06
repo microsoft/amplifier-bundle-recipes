@@ -426,7 +426,8 @@ stages:
       Fails fast before expensive investigation if inputs are bad.
       
       SKIPPED when continue_from is provided (continuation mode).
-    approval_required: false
+    approval:
+      required: false
     condition: "{{continue_from}} == ''"
     
     steps:
@@ -531,7 +532,8 @@ stages:
       Results are confidence-tagged before synthesis.
       
       SKIPPED when continue_from is provided (continuation mode).
-    approval_required: false
+    approval:
+      required: false
     condition: "{{continue_from}} == ''"
     
     steps:
@@ -668,7 +670,8 @@ stages:
       Respects confidence tags - LOW confidence items noted as needing verification.
       
       SKIPPED when continue_from is provided (continuation mode).
-    approval_required: false
+    approval:
+      required: false
     condition: "{{continue_from}} == ''"
     
     steps:
@@ -855,7 +858,8 @@ stages:
       - Dynamic weighting: Reduced completeness_verifier weight in continuation mode
       
       In continuation mode, starts from the provided document and version number.
-    approval_required: false
+    approval:
+      required: false
     
     steps:
       # Setup step for continuation mode - copies previous document and initializes logs
@@ -1523,59 +1527,66 @@ stages:
       - Total issues ≤ auto_approve_threshold
       - Factual verifiers (LSP, logic) were clean
       - No CRITICAL severity issues
-    approval_required: true
-    
-    # v2.2: Auto-approve conditions
-    # The approval gate will be skipped if these conditions are met
-    auto_approve_if:
-      # All conditions must be true for auto-approval
-      - "{{verification_result}} contains 'Auto-approve eligible: yes'"
-      - "{{auto_approve_threshold}} > 0"
-    
-    approval_message: |
-      ## 🔍 Adversarial Deep Dive Complete (v2.2)
+    approval:
+      required: true
+      # This gate used to be declared as the flat stage keys
+      # `approval_required:` / `approval_message:`, which are NOT stage keys --
+      # the loader dropped them and this checkpoint never once prompted
+      # (recipes-c9d). Both parsers now refuse those keys by name; the block
+      # here is the real gate, with the prompt text carried over verbatim.
+      #
+      # The v2.2 `auto_approve_if:` list is GONE rather than translated: no
+      # stage key by that name exists and neither engine can evaluate a
+      # conditional auto-approval, so it never skipped anything. Its two
+      # conditions were:
+      #   - "{{verification_result}} contains 'Auto-approve eligible: yes'"
+      #   - "{{auto_approve_threshold}} > 0"
+      # The eligibility signal they read is still printed in the prompt below,
+      # for the human at the gate to act on.
+      prompt: |
+        ## 🔍 Adversarial Deep Dive Complete (v2.2)
       
-      **Topic**: {{topic}}
+        **Topic**: {{topic}}
       
-      {% if continue_from != '' %}
-      **Mode**: CONTINUATION from `{{continue_from}}` (v{{starting_version}})
-      - Completeness verifier weight reduced to 0.6 (from 1.2)
-      {% else %}
-      **Mode**: Fresh investigation
-      {% endif %}
+        {% if continue_from != '' %}
+        **Mode**: CONTINUATION from `{{continue_from}}` (v{{starting_version}})
+        - Completeness verifier weight reduced to 0.6 (from 1.2)
+        {% else %}
+        **Mode**: Fresh investigation
+        {% endif %}
       
-      ### Verification Result
-      {{verification_result}}
+        ### Verification Result
+        {{verification_result}}
       
-      ### v2.2 Exit Analysis
+        ### v2.2 Exit Analysis
       
-      Check the verification result above for:
-      - **Convergence detected?** - Issues may have plateaued (scope vs factual)
-      - **Scope-only exit?** - Document is factually verified, scope suggestions optional
-      - **Auto-approve eligible?** - Factual verifiers clean, low issue count
+        Check the verification result above for:
+        - **Convergence detected?** - Issues may have plateaued (scope vs factual)
+        - **Scope-only exit?** - Document is factually verified, scope suggestions optional
+        - **Auto-approve eligible?** - Factual verifiers clean, low issue count
       
-      ### Documents Created
-      - `{{output_dir}}/INVESTIGATION_FINAL.md` - The verified document
-      - `{{output_dir}}/verification-log.md` - Complete verification history
-      - `{{output_dir}}/metrics.json` - Performance metrics with v2.2 fields
-      - `{{output_dir}}/INVESTIGATION_v*.md` - All version files
+        ### Documents Created
+        - `{{output_dir}}/INVESTIGATION_FINAL.md` - The verified document
+        - `{{output_dir}}/verification-log.md` - Complete verification history
+        - `{{output_dir}}/metrics.json` - Performance metrics with v2.2 fields
+        - `{{output_dir}}/INVESTIGATION_v*.md` - All version files
       
-      ### What to Review
-      1. **Read the final document** - Does it accurately answer your question?
-      2. **Check verification log** - Were the corrections sensible?
-      3. **Review convergence analysis** - Did issues plateau? Are remaining issues scope suggestions?
-      4. **If scope-only exit** - Are the skipped scope suggestions actually needed?
-      5. **If convergence exit** - Are remaining issues factual errors or scope expansion?
-      {% if continue_from != '' %}
-      6. **Continuation check** - Did additional rounds improve the document?
-      {% endif %}
+        ### What to Review
+        1. **Read the final document** - Does it accurately answer your question?
+        2. **Check verification log** - Were the corrections sensible?
+        3. **Review convergence analysis** - Did issues plateau? Are remaining issues scope suggestions?
+        4. **If scope-only exit** - Are the skipped scope suggestions actually needed?
+        5. **If convergence exit** - Are remaining issues factual errors or scope expansion?
+        {% if continue_from != '' %}
+        6. **Continuation check** - Did additional rounds improve the document?
+        {% endif %}
       
-      ---
+        ---
       
-      **APPROVE** to accept the investigation as complete and verified.
+        **APPROVE** to accept the investigation as complete and verified.
       
-      **DENY** with feedback to request additional verification or changes.
-    
+        **DENY** with feedback to request additional verification or changes.
+
     steps:
       - id: present_final
         type: bash

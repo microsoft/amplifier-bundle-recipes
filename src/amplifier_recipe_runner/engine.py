@@ -71,6 +71,7 @@ import yaml
 from .errors import RecipeRunnerError
 from .expressions import ExpressionError
 from .expressions import evaluate_condition
+from .manifest import FLAT_STAGE_APPROVAL_KEYS
 
 __all__ = [
     "ApprovalLedger",
@@ -770,6 +771,37 @@ def parse_step(data: Mapping[str, Any], *, index: int = 0) -> StepSpec:
     )
 
 
+def _refuse_flat_stage_approval_keys(stage_data: Mapping[str, Any], *, index: int) -> None:
+    """Refuse a stage whose approval gate was written as flat stage keys.
+
+    ``approval_required`` / ``approval_message`` / ``auto_approve_if`` are not
+    stage fields; only ``approval:`` is. Parsing on regardless would run a
+    stage that declares a human checkpoint straight through it without a
+    prompt, which is the one failure mode a gate exists to prevent -- so this
+    refuses by name, exactly as
+    :func:`amplifier_recipe_runner.manifest._reject_flat_stage_approval_keys`
+    does at manifest-parse time. Both parsers reach this shape: a schema-2
+    recipe is caught by the manifest parser first, while a LEGACY sub-recipe
+    reached from a v2 parent through a ``type: recipe`` step is parsed only
+    here.
+    """
+    offending = [key for key in FLAT_STAGE_APPROVAL_KEYS if key in stage_data]
+    if not offending:
+        return
+    name = stage_data.get("name")
+    named = f"stage {name!r}" if isinstance(name, str) and name else f"stage at stages[{index}]"
+    keys = ", ".join(repr(key) for key in offending)
+    remedies = "; ".join(f"{key!r}: {FLAT_STAGE_APPROVAL_KEYS[key]}" for key in offending)
+    one = len(offending) == 1
+    raise ExecutionError(
+        f"{named} declares {keys}, which "
+        f"{'is not a stage key' if one else 'are not stage keys'}: a stage's only approval "
+        f"gate is its 'approval:' block, so {'this' if one else 'these'} would be read by "
+        "nobody and the declared human checkpoint would run ungated.",
+        remedy=remedies,
+    )
+
+
 def _parse_approval(data: Any) -> ApprovalSpec | None:
     if not isinstance(data, Mapping):
         return None
@@ -808,9 +840,10 @@ def parse_program(body: Mapping[str, Any], *, path: Path | None = None) -> Recip
     raw_stages = body.get("stages")
     if isinstance(raw_stages, list):
         index = len(steps)
-        for stage_data in raw_stages:
+        for stage_index, stage_data in enumerate(raw_stages):
             if not isinstance(stage_data, Mapping):
                 continue
+            _refuse_flat_stage_approval_keys(stage_data, index=stage_index)
             stage_steps: list[StepSpec] = []
             for item in stage_data.get("steps") or ():
                 if isinstance(item, Mapping):

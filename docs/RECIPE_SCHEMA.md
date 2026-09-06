@@ -528,6 +528,14 @@ of the stage it sits on.
 > context, by the time the prompt appears. To gate the work itself, say
 > `when: "before_stage"`.
 
+> **`approval:` is the only gate a stage has.** The flat stage keys
+> `approval_required:`, `approval_message:` and `auto_approve_if:` are
+> **REJECTED** at load, by name, with the remedy — by the legacy loader
+> (`Recipe.from_yaml`) and by the schema-2 manifest parser alike. They are not
+> aliases. They used to be dropped in silence, so a stage that read as a human
+> checkpoint ran straight through it without ever prompting. See
+> [Rejected stage keys](#rejected-stage-keys) below.
+
 **Structure:**
 ```yaml
 approval:
@@ -589,6 +597,54 @@ approval:
 ```
 
 **See also:** [Approval Gates](#approval-gates) for complete workflow details.
+
+### Rejected stage keys
+
+A Stage has exactly three keys: `name`, `steps`, `approval`. These three read
+like an approval gate, are **not** stage keys, and are **rejected at load** —
+named individually, with the remedy:
+
+| Rejected stage key | Status | Remedy |
+|---|---|---|
+| `approval_required` | **Rejected** — not an alias | `approval: { required: <bool>, prompt: <text> }` |
+| `approval_message` | **Rejected** — not an alias | `approval: { required: true, prompt: <text> }` |
+| `auto_approve_if` | **Rejected** — no equivalent exists | Delete it. This schema has no conditional auto-approval; gate the stage with `approval: { required: true, prompt: <text> }` if the checkpoint is real |
+
+**Why rejected and not aliased.** Before this, all three were dropped in
+silence: a stage that presented itself — often at length — as a human approval
+gate had never gated anything, and the recipe ran through it to completion with
+no prompt. Two of the three could have been aliased, but `auto_approve_if`
+cannot: no engine here evaluates a conditional auto-approval, so "translating"
+it would still drop the behaviour while now claiming to have honoured it. A
+partial alias would leave the same silent hole in a different key, so all three
+fail loudly instead.
+
+**What rejection looks like:**
+
+```yaml
+stages:
+  - name: final_review
+    approval_required: true          # ← rejected
+    approval_message: "Approve?"     # ← rejected
+```
+
+```
+Stage 'final_review' declares 'approval_required', 'approval_message', which are
+not stage keys: a stage's only approval gate is its 'approval:' block, so these
+would be read by nobody and the declared human checkpoint would run ungated.
+'approval_required': use 'approval: {required: <bool>, prompt: <text>}';
+'approval_message': use 'approval: {required: true, prompt: <text>}'
+```
+
+Both engines refuse the same shape, so a recipe cannot be accepted by one and
+refused by the other: the legacy loader (`Recipe.from_yaml`) and the schema-2
+manifest parser (`parse_manifest`, which every `validate`, `plan` and `run` of a
+`schema_version: 2` recipe passes through).
+
+Scoping: only **stage mappings** are checked. `approval_required` as a
+`context:` variable or a step field of the same name is untouched — see
+`examples/context-intelligence/synthesis/action-executor.yaml`, which declares
+exactly that.
 
 ---
 
