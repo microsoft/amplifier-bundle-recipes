@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import logging
 import shutil
 import uuid
 from enum import Enum
@@ -9,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from .models import Recipe
+from .steps_log import STEPS_LOG_FILENAME
+from .steps_log import StepLog
+
+logger = logging.getLogger(__name__)
 
 
 class ApprovalStatus(str, Enum):
@@ -147,6 +152,31 @@ class SessionManager:
         """Get session directory path."""
         sessions_dir = self.get_sessions_dir(project_path)
         return sessions_dir / session_id
+
+    def get_steps_log_path(self, session_id: str, project_path: Path) -> Path:
+        """Path of this session's append-only per-step run log.
+
+        The session directory already belongs to this manager, so the location
+        of the third artifact belongs here too -- the executor asks for the
+        path rather than reconstructing the layout.  See ``steps_log`` for the
+        record shape and why ``state.json`` is deliberately left alone.
+        """
+        return self.get_session_dir(session_id, project_path) / STEPS_LOG_FILENAME
+
+    def open_steps_log(self, session_id: str | None, project_path: Path | None) -> StepLog:
+        """Return a writer for this session's ``steps.jsonl``.
+
+        Returns an inert writer (every method a no-op) when there is no session
+        to write into, or when the log is disabled by configuration, so callers
+        never branch on availability.
+        """
+        if not session_id or project_path is None:
+            return StepLog(None)
+        try:
+            return StepLog(self.get_steps_log_path(session_id, project_path))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("No steps.jsonl for session %s: %s", session_id, exc)
+            return StepLog(None)
 
     def save_state(self, session_id: str, project_path: Path, state: dict[str, Any]) -> None:
         """Save session state to disk."""

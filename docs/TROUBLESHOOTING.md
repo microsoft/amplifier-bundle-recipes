@@ -14,6 +14,7 @@ This guide helps you diagnose and fix problems when creating or executing recipe
 - [Variable Problems](#variable-problems)
 - [JSON and Data Format Issues](#json-and-data-format-issues)
 - [The Process Hangs After the Recipe Finishes](#the-process-hangs-after-the-recipe-finishes)
+- [Auditing a Finished Run: `steps.jsonl`](#auditing-a-finished-run-stepsjsonl)
 - [Debugging Tips](#debugging-tips)
 
 ---
@@ -953,6 +954,153 @@ learn it.
 
 ---
 
+## Auditing a Finished Run: `steps.jsonl`
+
+Every recipe session writes an append-only per-step log beside `recipe.yaml`
+and `state.json`:
+
+```
+<session-id>/
+├── recipe.yaml     # the recipe as it was when the run started
+├── state.json      # resumability checkpoint (which steps finished)
+└── steps.jsonl     # what each step was asked, what came back, how long it took
+```
+
+`state.json` answers *which* steps finished. `steps.jsonl` answers **what was
+this step actually asked, and how long did it take** — the two facts that exist
+only at run time and cannot be reconstructed from the recipe file: the prompt
+*after* `{{variable}}` substitution, and the provider/model the step actually
+resolved to.
+
+### Two lines per step attempt
+
+A step writes a `started` line **before** its body runs and a `finished` line
+when it settles. The pair shares a `record_id`.
+
+The `started` line is the point: `state.json` is rewritten only at step
+boundaries, so a run killed mid-step leaves no trace that a step was ever in
+flight. A `started` line with no matching `finished` line is exactly that
+trace — **the step that was running when the process died**.
+
+```bash
+SESSION=$(ls -td ~/.amplifier/projects/*/recipe-sessions/*/ | head -1)
+
+# Which step died in flight?
+jq -s 'group_by(.record_id)[] | select(length == 1) | .[0]
+       | {step_id, started_at, prompt_resolved}' "$SESSION/steps.jsonl"
+```
+
+### Common questions
+
+```bash
+# Timeline: what ran, in what order, with what outcome and duration
+jq -r 'select(.event=="finished")
+       | "\(.started_at)  \(.status|ascii_upcase)  \(.step_id)  \(.duration_s)s"' \
+  "$SESSION/steps.jsonl"
+
+# Which step was slow?
+jq -s 'map(select(.event=="finished"))
+       | sort_by(-.duration_s)[:5]
+       | map({step_id, duration_s, step_type})' "$SESSION/steps.jsonl"
+
+# What was this step ACTUALLY asked, post-substitution?
+jq -r 'select(.step_id=="identify-key-points" and .event=="finished")
+       | .prompt_resolved' "$SESSION/steps.jsonl"
+
+# Which model did it really resolve to? (not what the YAML asked for)
+jq -r 'select(.event=="finished" and .provider)
+       | "\(.step_id): \(.provider)/\(.model)"' "$SESSION/steps.jsonl"
+
+# Anything that did not simply succeed
+jq -c 'select(.event=="finished" and .status != "completed")
+       | {step_id, status, reason, error}' "$SESSION/steps.jsonl"
+
+# What a bash step ran, and what it printed
+jq -r 'select(.step_type=="bash" and .event=="finished")
+       | "$ \(.command)\nexit \(.exit_code)\n\(.stdout)"' "$SESSION/steps.jsonl"
+```
+
+### Record fields
+
+| Field | Meaning |
+|-------|---------|
+| `v` | Record schema version (currently `1`) |
+| `record_id` | Joins a step's `started` line to its `finished` line |
+| `event` | `started` (in flight) or `finished` (settled) |
+| `status` | On `finished` only — see the status table below |
+| `step_id`, `step_type` | `agent` / `bash` / `recipe` / `foreach` / `while` |
+| `attempt` | 1-based; a retried step writes one record **per attempt** |
+| `started_at`, `finished_at`, `duration_s` | ISO-8601 UTC, and elapsed seconds |
+| `parent_step_id`, `iteration` | Set for foreach/while bodies and sub-recipe steps; `null` at top level |
+| `stage`, `step_index`, `parallel_group_id` | Position within the run |
+| `prompt_resolved` | Agent steps: the prompt **as sent**, mode prefix and all |
+| `response` | Agent steps: what came back |
+| `provider`, `model`, `model_role` | What the step resolved to. Absent when no chain was pinned and the spawn ran on the parent session's own ordering — that is a different fact from "no provider", so it is left unstated rather than guessed |
+| `agent_session_id`, `turn_count`, `agent_status` | The spawned agent's own Amplifier session — the hop to its full transcript |
+| `command`, `cwd`, `exit_code`, `stdout`, `stderr` | Bash steps |
+| `sub_recipe`, `sub_recipe_path` | Recipe steps: what the path resolved to |
+| `error`, `reason` | Why it failed / why it was skipped |
+
+### Status vocabulary
+
+| Status | Meaning |
+|--------|---------|
+| `completed` | Succeeded |
+| `failed` | Raised, or exited non-zero — recorded even when `on_error: continue` absorbed it |
+| `skipped` | Never ran: condition was false, or a `foreach` list was empty |
+| `retried` | This attempt failed and another followed |
+| `timed_out` | Exceeded the step's `timeout` |
+| `paused` | Stopped at an approval gate — not a failure |
+| `cancelled` | Cancellation was requested |
+
+A step that is simply **absent** from the log was never reached. That is the
+distinction `state.json` cannot make: a skipped step and an unreached step are
+both merely missing from `completed_steps`.
+
+### Sub-recipes span two files
+
+A `type: recipe` step gets a record in the **parent's** log (how long the
+sub-recipe took as a unit, and which file it resolved to). The sub-recipe's own
+steps are recorded in the **child's** session directory, each naming the
+composing step as its `parent_step_id`. The child's `state.json` also carries
+`parent_session_id`, so the link can be walked from either end.
+
+### Truncation is marked, never silent
+
+Large payloads are capped at 64 KB each. Any capped field is written with two
+companions:
+
+```json
+{"response": "…first 64 KB…", "response_truncated": true, "response_bytes": 5242880}
+```
+
+`<field>_truncated` is **always** present (`false` when the value is whole), so
+completeness never has to be inferred from a missing marker, and
+`<field>_bytes` preserves the original size.
+
+The cap is safe precisely because nothing is actually lost: the agent's own
+Amplifier session keeps the full transcript, and `agent_session_id` is the hop
+to it.
+
+```bash
+# Full detail for a step whose response was truncated here
+jq -r 'select(.step_id=="summarise" and .response_truncated==true)
+       | .agent_session_id' "$SESSION/steps.jsonl"
+```
+
+### Configuration
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `AMPLIFIER_RECIPE_STEPS_LOG` | on | `0`/`false`/`no`/`off` disables the log entirely |
+| `AMPLIFIER_RECIPE_STEPS_LOG_MAX_BYTES` | `65536` | Per-field byte cap; `0` means no cap |
+
+Writing the log is fail-soft: if it cannot be written, the run continues
+without it and the reason is logged at DEBUG level. It never changes what a run
+does, and it never changes `state.json`.
+
+---
+
 ## Debugging Tips
 
 ### Enable Detailed Logging
@@ -972,6 +1120,10 @@ tools:
 SESSION=$(ls -t ~/.amplifier/projects/*/recipe-sessions/ | head -1)
 cat ~/.amplifier/projects/*//recipe-sessions/$SESSION/state.json | jq '.'
 ```
+
+`state.json` tells you *which* steps finished. For what each step was actually
+asked, what it replied, and how long it took, read `steps.jsonl` in the same
+directory — see [Auditing a Finished Run](#auditing-a-finished-run-stepsjsonl).
 
 ### Test Steps Individually
 
