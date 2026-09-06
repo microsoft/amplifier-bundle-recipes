@@ -146,6 +146,16 @@ Recipes are declarative YAML workflows that provide:
 
 The `recipe_path` parameter supports `@bundle:path` format for referencing recipes within bundles. Prefer this format over absolute paths for portability. See the `recipes` tool description for examples.
 
+## Example Recipes
+
+Reach for a worked example before writing a recipe from scratch — they live in `@recipes:examples/`:
+
+- `simple-analysis-recipe.yaml` — basic sequential workflow
+- `code-review-recipe.yaml` — multi-stage review with conditional execution
+- `dependency-upgrade-staged-recipe.yaml` — workflow with human approval gates
+
+For the complete catalog, read `recipes:docs/EXAMPLES_CATALOG.md`.
+
 ## Provider and Model Selection
 
 Recipe steps can specify which provider and model to use, enabling cost/capability optimization per step.
