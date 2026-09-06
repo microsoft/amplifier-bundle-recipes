@@ -12,6 +12,7 @@ import shutil
 import sys
 import uuid
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -33,6 +34,31 @@ from .models import Step
 from .models import coerce_timeout
 from .session import ApprovalStatus
 from .session import SessionManager
+from .steps_log import STATUS_CANCELLED
+from .steps_log import STATUS_COMPLETED
+from .steps_log import STATUS_FAILED
+from .steps_log import STATUS_PAUSED
+from .steps_log import STATUS_RETRIED
+from .steps_log import STATUS_SKIPPED
+from .steps_log import STATUS_TIMED_OUT
+from .steps_log import STEPS_LOG_FILENAME
+from .steps_log import StepAttempt
+from .steps_log import StepLog
+from .steps_log import set_capped_field
+
+# Enclosing (parent step id, iteration index) for the step currently executing.
+#
+# A foreach body, a while body and a sub-recipe all run steps that are NOT
+# top-level steps of the recipe they appear in, and their records have to say
+# so.  Threading a parent id through every executor signature would touch every
+# call site (and every other lane's diff); a ContextVar carries it without
+# changing a single signature.  asyncio copies the context when it creates a
+# Task, so parallel foreach iterations each get their own value and cannot see
+# a sibling's -- which is exactly the isolation a shared attribute would not
+# give us.
+_STEP_PARENT: ContextVar[tuple[str | None, int | None]] = ContextVar(
+    "recipe_step_parent", default=(None, None)
+)
 
 # Relative path from a Git for Windows install root to its bash executable.
 _GIT_BASH_RELATIVE = r"\bin\bash.exe"
@@ -1449,12 +1475,21 @@ class RecipeExecutor:
                         skipped_steps = context.get("_skipped_steps", [])
                         skipped_steps.append(step.id)
                         context["_skipped_steps"] = skipped_steps
+                        # Absence from completed_steps cannot tell a skipped
+                        # step from one that was never reached; say so.
+                        self._record_skipped_step(
+                            step,
+                            context,
+                            session_id,
+                            project_path,
+                            f"condition false: {step.condition}",
+                        )
                         continue
 
                 # Handle foreach loops and while loops
                 if step.foreach or step.while_condition:
                     try:
-                        await self._execute_loop(
+                        await self._execute_loop_recorded(
                             step,
                             context,
                             project_path,
@@ -1485,7 +1520,7 @@ class RecipeExecutor:
                 # Execute step based on type (agent, recipe, or bash)
                 try:
                     if step.type == "recipe":
-                        result = await self._execute_recipe_step(
+                        result = await self._execute_recipe_step_recorded(
                             step,
                             context,
                             project_path,
@@ -1497,7 +1532,7 @@ class RecipeExecutor:
                         )
                     elif step.type == "bash":
                         # Bash steps don't count against agent recursion limits
-                        bash_result = await self._execute_bash_step(
+                        bash_result = await self._execute_bash_step_recorded(
                             step,
                             context,
                             project_path,
@@ -1782,12 +1817,19 @@ class RecipeExecutor:
                             skipped_steps = context.get("_skipped_steps", [])
                             skipped_steps.append(step.id)
                             context["_skipped_steps"] = skipped_steps
+                            self._record_skipped_step(
+                                step,
+                                context,
+                                session_id,
+                                project_path,
+                                f"condition false: {step.condition}",
+                            )
                             continue
 
                     # Handle foreach loops and while loops
                     if step.foreach or step.while_condition:
                         try:
-                            await self._execute_loop(
+                            await self._execute_loop_recorded(
                                 step,
                                 context,
                                 project_path,
@@ -1817,7 +1859,7 @@ class RecipeExecutor:
                     # Execute step based on type (agent, recipe, or bash)
                     try:
                         if step.type == "recipe":
-                            result = await self._execute_recipe_step(
+                            result = await self._execute_recipe_step_recorded(
                                 step,
                                 context,
                                 project_path,
@@ -1829,7 +1871,7 @@ class RecipeExecutor:
                             )
                         elif step.type == "bash":
                             # Bash steps don't count against agent recursion limits
-                            bash_result = await self._execute_bash_step(
+                            bash_result = await self._execute_bash_step_recorded(
                                 step, context, project_path, session_id=session_id
                             )
                             # Store exit code if requested
@@ -2099,6 +2141,243 @@ class RecipeExecutor:
         }
         self.session_manager.save_state(session_id, project_path, state)
 
+    # ------------------------------------------------------------------
+    # Per-step run log (steps.jsonl)
+    #
+    # `state.json` is a resumability checkpoint and stays one: it is rewritten
+    # each step, it trims oversized values, and it records finished steps as
+    # bare ids.  None of that can answer "what was this step actually asked,
+    # and how long did it take?", so the answer lives in a separate
+    # append-only file instead of as more fields in the checkpoint.
+    #
+    # Everything below is fail-soft by construction: an audit record must
+    # never change what a run does.  See steps_log.py for the record shape.
+    # ------------------------------------------------------------------
+
+    def _open_step_log(
+        self, session_id: str | None, project_path: Path | None
+    ) -> StepLog:
+        """Get a writer for the session's steps.jsonl, or an inert one.
+
+        The session manager is duck-typed -- hosts and tests supply their own
+        stand-ins -- so this degrades through three levels rather than assuming
+        the newest interface: the dedicated method, then the session directory
+        it can always give us, then nothing at all.  A stand-in that predates
+        this file makes a run lose its audit log, never break.
+        """
+        if not session_id or project_path is None:
+            return StepLog(None)
+        opener = getattr(self.session_manager, "open_steps_log", None)
+        if callable(opener):
+            try:
+                return opener(session_id, project_path)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("steps.jsonl: opener failed: %s", exc)
+                return StepLog(None)
+        try:
+            session_dir = self.session_manager.get_session_dir(session_id, project_path)
+            return StepLog(Path(session_dir) / STEPS_LOG_FILENAME)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("steps.jsonl: no session dir for %s: %s", session_id, exc)
+            return StepLog(None)
+
+    def _step_log_base(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        session_id: str | None,
+        *,
+        step_type: str | None = None,
+        attempt: int = 1,
+    ) -> dict[str, Any]:
+        """Build the fields every record for this step attempt carries."""
+        parent_step_id, iteration = _STEP_PARENT.get()
+        recipe_info = context.get("recipe") if isinstance(context, dict) else None
+        step_info = context.get("step") if isinstance(context, dict) else None
+        if not isinstance(recipe_info, dict):
+            recipe_info = {}
+        if not isinstance(step_info, dict):
+            step_info = {}
+
+        # A while-loop injects its own iteration counter into the context; a
+        # foreach sets the ContextVar.  Prefer the explicit one.
+        if iteration is None and isinstance(context, dict):
+            loop_index = context.get("_loop_index")
+            iteration = loop_index if isinstance(loop_index, int) else None
+
+        base: dict[str, Any] = {
+            "step_id": step.id,
+            "step_type": step_type or (step.type or "agent"),
+            "attempt": attempt,
+            "session_id": session_id,
+            "recipe_name": recipe_info.get("name"),
+            "stage": step_info.get("stage"),
+            "parent_step_id": parent_step_id,
+            "iteration": iteration,
+            "agent": step.agent,
+            "mode": step.mode,
+            "output_key": step.output,
+        }
+        # `context["step"]["index"]` is the index of the ENCLOSING top-level
+        # step, which is only this step's index when they are the same step.
+        # Recording it otherwise would attribute a sub-step to a position it
+        # does not occupy.
+        if step_info.get("id") == step.id:
+            base["step_index"] = step_info.get("index")
+        if isinstance(context, dict) and context.get("_parallel_group_id"):
+            base["parallel_group_id"] = context["_parallel_group_id"]
+        return base
+
+    def _begin_step_record(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        session_id: str | None,
+        project_path: Path | None,
+        *,
+        step_type: str | None = None,
+        attempt: int = 1,
+        **start_fields: Any,
+    ) -> StepAttempt:
+        """Open an attempt record and write its ``started`` line.
+
+        The ``started`` line is written BEFORE the body runs, which is the
+        whole point: a run that dies mid-step leaves a record saying the step
+        was in flight, which `state.json` -- rewritten only at step boundaries
+        -- structurally cannot.
+        """
+        log = self._open_step_log(session_id, project_path)
+        attempt_record = log.begin(
+            **self._step_log_base(
+                step, context, session_id, step_type=step_type, attempt=attempt
+            )
+        )
+        try:
+            attempt_record.start(**start_fields)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("steps.jsonl: start record failed for %s: %s", step.id, exc)
+        return attempt_record
+
+    def _record_skipped_step(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        session_id: str | None,
+        project_path: Path | None,
+        reason: str,
+    ) -> None:
+        """Record a step that never ran.
+
+        Absence from ``completed_steps`` cannot distinguish "condition was
+        false" from "never reached", so a skip is stated rather than implied.
+        No ``started`` line is written: nothing was ever in flight.
+        """
+        try:
+            log = self._open_step_log(session_id, project_path)
+            if not log.enabled:
+                return
+            base = self._step_log_base(step, context, session_id)
+            record: dict[str, Any] = dict(base)
+            set_capped_field(record, "reason", reason)
+            log.record(STATUS_SKIPPED, **record)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("steps.jsonl: skip record failed for %s: %s", step.id, exc)
+
+    @staticmethod
+    def _step_response_text(result: Any) -> Any:
+        """Unwrap a spawn() envelope down to the text an agent actually replied.
+
+        Mirrors ``_process_step_result``'s first move, but never parses JSON:
+        the log records what came back, not what the recipe made of it.
+        """
+        if isinstance(result, dict) and "output" in result:
+            return result["output"]
+        return result
+
+    def _step_payload_fields(
+        self,
+        resolved: Mapping[str, Any] | None,
+        result: Any = None,
+        *,
+        include_result: bool = False,
+    ) -> dict[str, Any]:
+        """Assemble the capped payload fields for a finished agent record.
+
+        ``resolved`` is the sink ``execute_step`` fills in as it goes, so a
+        failed attempt still records the prompt it sent and the model it sent
+        it to -- the two facts that exist only at run time and cannot be
+        reconstructed from ``recipe.yaml``.
+        """
+        fields: dict[str, Any] = {}
+        resolved = resolved or {}
+        if resolved.get("prompt_resolved") is not None:
+            set_capped_field(fields, "prompt_resolved", resolved["prompt_resolved"])
+        for key in ("provider", "model", "model_role", "spawn_mode", "timeout_s"):
+            value = resolved.get(key)
+            if value is not None:
+                fields[key] = value
+        if include_result:
+            set_capped_field(fields, "response", self._step_response_text(result))
+            # Never let the envelope overwrite what the executor itself
+            # resolved -- `provider`/`model` above are what this step ASKED
+            # for, and that is a different claim from what the envelope
+            # reports.  The envelope only fills gaps.
+            for key, value in self._spawn_envelope_fields(result).items():
+                fields.setdefault(key, value)
+        return fields
+
+    @staticmethod
+    def _spawn_envelope_fields(result: Any) -> dict[str, Any]:
+        """Facts the spawn envelope knows and the executor does not.
+
+        The agent runs in its OWN Amplifier session, which keeps its own full
+        transcript.  Recording that session id is the link between a recipe
+        step and the complete detail of the turn it caused -- so this log can
+        stay bounded (64 KB a field) while the whole story stays reachable.
+        """
+        if not isinstance(result, dict):
+            return {}
+        fields: dict[str, Any] = {}
+        if result.get("session_id"):
+            fields["agent_session_id"] = result["session_id"]
+        if result.get("status"):
+            fields["agent_status"] = result["status"]
+        if isinstance(result.get("turn_count"), int):
+            fields["turn_count"] = result["turn_count"]
+        metadata = result.get("metadata")
+        if isinstance(metadata, dict):
+            # Only if the executor could not name them itself: a spawn that
+            # went out on the parent's provider ordering has no chain to read,
+            # and the envelope is then the only witness.
+            for key in ("provider", "model"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value:
+                    fields[key] = value
+        return fields
+
+    @staticmethod
+    def _step_failure_status(error: BaseException) -> str:
+        """Map a raised error to a terminal status.
+
+        A timeout is called a timeout: ``execute_step`` converts
+        ``asyncio.TimeoutError`` into a ``ValueError`` naming the deadline
+        before it reaches the retry loop, so the message is checked as well as
+        the type.
+
+        A gate pause and a cancellation are not failures, and are not recorded
+        as one -- the log would otherwise report a run the user paused as a run
+        that broke.
+        """
+        if isinstance(error, ApprovalGatePausedError):
+            return STATUS_PAUSED
+        if isinstance(error, CancellationRequestedError):
+            return STATUS_CANCELLED
+        if isinstance(error, asyncio.TimeoutError):
+            return STATUS_TIMED_OUT
+        if "timed out after" in str(error):
+            return STATUS_TIMED_OUT
+        return STATUS_FAILED
+
     async def execute_step_with_retry(
         self,
         step: Step,
@@ -2140,16 +2419,33 @@ class RecipeExecutor:
             if session_id and project_path:
                 self._check_coordinator_cancellation(session_id, project_path)
                 self._check_cancellation(session_id, project_path, current_step=step.id)
+
+            # One audit record per ATTEMPT, opened before the body runs so a
+            # crash leaves the in-flight marker behind.  `resolved` is the sink
+            # execute_step fills with the post-substitution prompt and the
+            # provider/model it actually reached for.
+            resolved: dict[str, Any] = {}
+            attempt_record = self._begin_step_record(
+                step, context, session_id, project_path, attempt=attempt + 1
+            )
             try:
                 # Acquire rate limiter slot if configured
                 if rate_limiter:
                     await rate_limiter.acquire()
 
                 try:
-                    result = await self.execute_step(step, context, orchestrator_config)
+                    result = await self.execute_step(
+                        step, context, orchestrator_config, record_sink=resolved
+                    )
                     # Record success for backoff tracking
                     if rate_limiter:
                         rate_limiter.record_success()
+                    attempt_record.finish(
+                        STATUS_COMPLETED,
+                        **self._step_payload_fields(
+                            resolved, result, include_result=True
+                        ),
+                    )
                     return result
                 finally:
                     # Always release rate limiter slot
@@ -2164,6 +2460,19 @@ class RecipeExecutor:
                 is_rate_limit = "429" in error_str or "rate limit" in error_str
                 if is_rate_limit and rate_limiter:
                     rate_limiter.record_rate_limit()
+
+                # This attempt is over either way; the status is what
+                # distinguishes "gave up" from "about to try again", which
+                # `completed_steps` has never been able to express.
+                attempt_record.finish(
+                    (
+                        self._step_failure_status(e)
+                        if attempt == max_attempts - 1
+                        else STATUS_RETRIED
+                    ),
+                    error=str(e),
+                    **self._step_payload_fields(resolved),
+                )
 
                 # If final attempt or not retryable
                 if attempt == max_attempts - 1:
@@ -2366,6 +2675,7 @@ class RecipeExecutor:
         step: Step,
         context: dict[str, Any],
         orchestrator_config: OrchestratorConfig | None = None,
+        record_sink: dict[str, Any] | None = None,
     ) -> Any:
         """
         Execute single step by spawning sub-agent.
@@ -2374,6 +2684,12 @@ class RecipeExecutor:
             step: Step to execute
             context: Current context variables
             orchestrator_config: Optional orchestrator config for spawned sessions
+            record_sink: Optional dict this method fills in as it resolves the
+                step -- the post-substitution prompt, and the provider/model
+                the spawn actually reached for.  Those two facts exist only at
+                run time, so the caller's audit record (steps.jsonl) gets them
+                from here rather than re-deriving them.  Filled progressively,
+                so a step that fails mid-resolution still records what it had.
 
         Returns:
             Step result from agent
@@ -2433,6 +2749,13 @@ Or raw JSON at the end:
 DO NOT return the JSON as a string or with escape characters. Return actual JSON structure.
 """
             instruction = instruction + json_instruction
+
+        # The prompt as the agent will actually receive it -- mode prefix, JSON
+        # rider and all.  Recorded here rather than after the spawn so a step
+        # that times out still says what it asked for.
+        if record_sink is not None:
+            record_sink["prompt_resolved"] = instruction
+            record_sink["spawn_mode"] = step.spawn_mode or "in-process"
 
         # Get parent session and agents config from coordinator
         parent_session = self.coordinator.session
@@ -2603,6 +2926,16 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         if provider_preferences is None:
             used_model_role = None
 
+        # The chain's head is the provider/model this spawn will actually try
+        # first.  A None chain means the parent's own ordering decides, which
+        # is a different fact from "no provider" -- so it is left unrecorded
+        # rather than guessed at.
+        if record_sink is not None and provider_preferences:
+            head = provider_preferences[0]
+            record_sink["provider"] = getattr(head, "provider", None) or None
+            record_sink["model"] = getattr(head, "model", None) or None
+            record_sink["model_role"] = used_model_role
+
         # ...and the overlay this spawn carries declares that same chain, so
         # the child's own routing re-assert reads instance ids rather than the
         # module names its definition file was written with (see
@@ -2636,6 +2969,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # than after the spawn) means an unresolvable template never burns an
         # agent invocation.
         effective_timeout = self._resolve_step_timeout(step, context)
+        if record_sink is not None:
+            record_sink["timeout_s"] = effective_timeout
 
         # Spawn sub-session with agent via capability (with step timeout)
         spawn_coro = spawn_fn(
@@ -2665,6 +3000,67 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         gc.collect()
 
         return result
+
+    async def _execute_loop_recorded(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        project_path: Path,
+        recursion_state: RecursionState,
+        recipe_path: Path | None = None,
+        rate_limiter: RateLimiter | None = None,
+        orchestrator_config: OrchestratorConfig | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """``_execute_loop`` with an audit record, and parentage for its body.
+
+        Two jobs, both of which have to span the whole loop:
+
+        1. The loop step gets its own record, so a run's timing shows how long
+           the loop took as a unit rather than only its iterations.
+        2. ``_STEP_PARENT`` is set for the duration, so every record written
+           by the body -- sub-steps, nested loops, sub-recipes -- names this
+           step as its parent instead of appearing to be a top-level step.
+        """
+        record = self._begin_step_record(
+            step,
+            context,
+            session_id,
+            project_path,
+            step_type="while" if step.while_condition else "foreach",
+        )
+        skipped_before = len(context.get("_skipped_steps", []) or [])
+        token = _STEP_PARENT.set((step.id, None))
+        try:
+            await self._execute_loop(
+                step,
+                context,
+                project_path,
+                recursion_state,
+                recipe_path,
+                rate_limiter,
+                orchestrator_config,
+                session_id,
+            )
+        except Exception as e:
+            record.finish(self._step_failure_status(e), error=str(e))
+            raise
+        finally:
+            _STEP_PARENT.reset(token)
+
+        # A foreach over an empty list runs no body at all -- the loop marks
+        # itself skipped rather than executing.  Reporting that as `completed`
+        # would make "iterated over nothing" indistinguishable from "iterated
+        # successfully", which is the exact ambiguity this log exists to end.
+        newly_skipped = (context.get("_skipped_steps", []) or [])[skipped_before:]
+        if step.id in newly_skipped:
+            reason_fields: dict[str, Any] = {}
+            set_capped_field(
+                reason_fields, "reason", f"foreach list '{step.foreach}' is empty"
+            )
+            record.finish(STATUS_SKIPPED, **reason_fields)
+        else:
+            record.finish(STATUS_COMPLETED)
 
     async def _execute_loop(
         self,
@@ -2838,6 +3234,11 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             # Set loop variable in context
             context[loop_var] = item
 
+            # Stamp this iteration's index onto every record the body writes,
+            # so "iteration 7 of the foreach" is recoverable from the log
+            # rather than inferred from line order.
+            _STEP_PARENT.set((step.id, idx))
+
             try:
                 if step.while_steps:
                     # Multi-step foreach body: execute each sub-step per iteration.
@@ -2984,7 +3385,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         for the single-step-per-iteration case.
         """
         if step.type == "recipe":
-            return await self._execute_recipe_step(
+            return await self._execute_recipe_step_recorded(
                 step,
                 context,
                 project_path,
@@ -2995,7 +3396,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 parent_session_id=session_id,
             )
         elif step.type == "bash":
-            bash_result = await self._execute_bash_step(
+            bash_result = await self._execute_bash_step_recorded(
                 step, context, project_path, session_id=session_id
             )
             if step.output_exit_code:
@@ -3052,11 +3453,18 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 from .expression_evaluator import evaluate_condition
 
                 if not evaluate_condition(resolved_cond, context):
+                    self._record_skipped_step(
+                        sub_step,
+                        context,
+                        session_id,
+                        project_path,
+                        f"condition false: {resolved_cond}",
+                    )
                     continue
 
             # Route loops through the main loop executor for proper nesting
             if sub_step.foreach or sub_step.while_condition:
-                await self._execute_loop(
+                await self._execute_loop_recorded(
                     sub_step,
                     context,
                     project_path,
@@ -3161,10 +3569,15 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 "_parallel_group_id": parallel_group_id,
             }
 
+            # Each iteration runs in its own Task, so asyncio has already given
+            # it a private copy of the context -- setting the index here cannot
+            # be seen by a sibling and needs no reset.
+            _STEP_PARENT.set((step.id, idx))
+
             try:
                 # Execute based on step type (agent, recipe, or bash)
                 if step.type == "recipe":
-                    result = await self._execute_recipe_step(
+                    result = await self._execute_recipe_step_recorded(
                         step,
                         iter_context,
                         project_path,
@@ -3176,7 +3589,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     )
                 elif step.type == "bash":
                     # Bash steps don't count against agent recursion limits
-                    bash_result = await self._execute_bash_step(
+                    bash_result = await self._execute_bash_step_recorded(
                         step, iter_context, project_path, session_id=session_id
                     )
                     # Store exit code if requested (in iteration context)
@@ -3487,6 +3900,55 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         )
         return type(self)(scoped, self.session_manager)
 
+    async def _execute_recipe_step_recorded(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        project_path: Path,
+        recursion_state: RecursionState,
+        parent_recipe_path: Path | None = None,
+        rate_limiter: RateLimiter | None = None,
+        orchestrator_config: OrchestratorConfig | None = None,
+        parent_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """``_execute_recipe_step`` with an audit record, and parentage below it.
+
+        The composing step gets a record in the PARENT's log (how long the
+        sub-recipe took as a unit, and which file it resolved to), while
+        ``_STEP_PARENT`` makes the child's own records -- written into the
+        child's own session directory -- name this step as their parent.  That
+        is the link that lets a reader walk a composed run from either end.
+        """
+        resolved: dict[str, Any] = {}
+        record = self._begin_step_record(
+            step, context, parent_session_id, project_path, step_type="recipe"
+        )
+        token = _STEP_PARENT.set((step.id, _STEP_PARENT.get()[1]))
+        try:
+            result = await self._execute_recipe_step(
+                step,
+                context,
+                project_path,
+                recursion_state,
+                parent_recipe_path,
+                rate_limiter,
+                orchestrator_config,
+                parent_session_id=parent_session_id,
+                record_sink=resolved,
+            )
+        except Exception as e:
+            fields = {k: v for k, v in resolved.items() if v is not None}
+            if isinstance(e, ApprovalGatePausedError):
+                fields["child_session_id"] = e.session_id
+            record.finish(self._step_failure_status(e), error=str(e), **fields)
+            raise
+        finally:
+            _STEP_PARENT.reset(token)
+        record.finish(
+            STATUS_COMPLETED, **{k: v for k, v in resolved.items() if v is not None}
+        )
+        return result
+
     async def _execute_recipe_step(
         self,
         step: Step,
@@ -3498,6 +3960,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         orchestrator_config: OrchestratorConfig | None = None,
         parent_session_id: str
         | None = None,  # optional: keyword-passed at call sites per Python convention
+        record_sink: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Execute a recipe composition step by loading and running a sub-recipe.
@@ -3543,6 +4006,10 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             sub_recipe_path = base_dir / recipe_path_str
             if not sub_recipe_path.exists():
                 raise FileNotFoundError(f"Sub-recipe not found: {sub_recipe_path}")
+
+        if record_sink is not None:
+            record_sink["sub_recipe"] = recipe_path_str
+            record_sink["sub_recipe_path"] = str(sub_recipe_path)
 
         # Load sub-recipe
         sub_recipe = Recipe.from_yaml(sub_recipe_path)
@@ -3869,12 +4336,72 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             logger.debug("No bash scratch dir for session %s: %s", session_id, exc)
             return None
 
+    async def _execute_bash_step_recorded(
+        self,
+        step: Step,
+        context: dict[str, Any],
+        project_path: Path,
+        session_id: str | None = None,
+    ) -> BashResult:
+        """``_execute_bash_step`` with an audit record wrapped around it.
+
+        Wrapping rather than instrumenting in place is deliberate: the bash
+        executor has four distinct exits (clean, non-zero, exec refusal under
+        ``on_error: continue``, timeout) and every one of them passes through
+        here exactly once, without re-indenting a body other work is editing.
+
+        A non-zero exit is recorded as ``failed`` even when ``on_error:
+        continue`` absorbs it, because the step did fail -- what the recipe
+        chose to do about it is a separate fact.
+        """
+        resolved: dict[str, Any] = {}
+        record = self._begin_step_record(
+            step, context, session_id, project_path, step_type="bash"
+        )
+        try:
+            result = await self._execute_bash_step(
+                step, context, project_path, session_id=session_id, record_sink=resolved
+            )
+        except Exception as e:
+            record.finish(
+                self._step_failure_status(e),
+                error=str(e),
+                **self._bash_payload_fields(resolved),
+            )
+            raise
+
+        fields = self._bash_payload_fields(resolved)
+        fields["exit_code"] = result.exit_code
+        # stdout/stderr keep their TAIL: a command that produced a wall of
+        # output failed at the end of it, not the start.
+        set_capped_field(fields, "stdout", result.stdout, keep="tail")
+        set_capped_field(fields, "stderr", result.stderr, keep="tail")
+        record.finish(
+            STATUS_COMPLETED if result.exit_code == 0 else STATUS_FAILED,
+            **fields,
+        )
+        return result
+
+    @staticmethod
+    def _bash_payload_fields(resolved: Mapping[str, Any] | None) -> dict[str, Any]:
+        """Capped command/cwd fields for a bash record."""
+        fields: dict[str, Any] = {}
+        resolved = resolved or {}
+        if resolved.get("command") is not None:
+            set_capped_field(fields, "command", resolved["command"])
+        if resolved.get("cwd") is not None:
+            fields["cwd"] = resolved["cwd"]
+        if resolved.get("timeout_s") is not None:
+            fields["timeout_s"] = resolved["timeout_s"]
+        return fields
+
     async def _execute_bash_step(
         self,
         step: Step,
         context: dict[str, Any],
         project_path: Path,
         session_id: str | None = None,
+        record_sink: dict[str, Any] | None = None,
     ) -> BashResult:
         """
         Execute a bash step by running shell command directly.
@@ -3897,6 +4424,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
 
         # Substitute variables in command
         command = self.substitute_variables(step.command, context)
+        if record_sink is not None:
+            record_sink["command"] = command
 
         # A command that has grown past the advisory ceiling is one repo-size
         # bump away from failing at exec time with E2BIG. Say so now, while the
@@ -3917,6 +4446,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 raise ValueError(f"Step '{step.id}': cwd is not a directory: {cwd}")
         else:
             cwd = project_path
+        if record_sink is not None:
+            record_sink["cwd"] = str(cwd)
 
         # Build environment variables
         env = os.environ.copy()
@@ -3939,6 +4470,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # Resolve the step timeout before spawning the subprocess, so an
         # unresolvable template fails before any command runs.
         effective_timeout = self._resolve_step_timeout(step, context)
+        if record_sink is not None:
+            record_sink["timeout_s"] = effective_timeout
 
         # Execute command with timeout.
         # Spawn a resolved bash explicitly rather than the platform default
