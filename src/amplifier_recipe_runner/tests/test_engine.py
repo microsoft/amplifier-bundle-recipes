@@ -1010,8 +1010,9 @@ class TestAgentSteps:
         outcome, _ctx = run_program(
             """
             steps:
+              # no agent, no command -- and no other key either: `description:`
+              # is not a step key, and is refused before this step is reached.
               - id: nothing
-                description: no agent, no command
             """,
             workspace=tmp_path,
         )

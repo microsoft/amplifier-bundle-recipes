@@ -425,17 +425,17 @@ stages:
       Quick validation that the topic is investigable and inputs are valid.
       Fails fast before expensive investigation if inputs are bad.
       
-      SKIPPED when continue_from is provided (continuation mode).
+      SKIPPED when continue_from is provided (continuation mode): every step
+      below carries that condition. A STAGE has no `condition:` -- it is
+      refused at load -- so the condition sits on the steps, which both
+      engines evaluate and record as skipped.
     approval:
       required: false
-    # Fresh-run gate. It sits on every step of this stage, not on the stage:
-    # `condition:` is a STEP field -- a stage-level one is dropped silently by
-    # both engines, so a gate written there never gates anything.
     
     steps:
       - id: validate_inputs
+        condition: "{{continue_from}} == ''"  # continuation mode: skip
         agent: "foundation:explorer"
-        condition: "{{continue_from}} == ''"
         timeout: 120  # 2 minutes max
         prompt: |
           # Quick Pre-Check (Max 2 minutes)
@@ -496,8 +496,8 @@ stages:
         output: "precheck_result"
       
       - id: check_proceed
+        condition: "{{continue_from}} == ''"  # continuation mode: skip
         agent: "foundation:zen-architect"
-        condition: "{{continue_from}} == ''"
         prompt: |
           # Evaluate Pre-Check Result
           
@@ -535,17 +535,17 @@ stages:
       Each agent brings a different perspective and toolset.
       Results are confidence-tagged before synthesis.
       
-      SKIPPED when continue_from is provided (continuation mode).
+      SKIPPED when continue_from is provided (continuation mode): every step
+      below carries that condition. A STAGE has no `condition:` -- it is
+      refused at load -- so the condition sits on the steps, which both
+      engines evaluate and record as skipped.
     approval:
       required: false
-    # Fresh-run gate. It sits on every step of this stage, not on the stage:
-    # `condition:` is a STEP field -- a stage-level one is dropped silently by
-    # both engines, so a gate written there never gates anything.
     
     steps:
       - id: parallel_investigation
+        condition: "{{continue_from}} == ''"  # continuation mode: skip
         agent: "foundation:zen-architect"
-        condition: "{{continue_from}} == ''"
         prompt: |
           # Parallel Investigation Orchestrator
           
@@ -630,8 +630,8 @@ stages:
         timeout: 900  # 15 minutes
 
       - id: confidence_tagging
+        condition: "{{continue_from}} == ''"  # continuation mode: skip
         agent: "foundation:zen-architect"
-        condition: "{{continue_from}} == ''"
         prompt: |
           # Confidence Consolidation Pass
           
@@ -677,17 +677,17 @@ stages:
       Combine investigation findings into a structured document (v1).
       Respects confidence tags - LOW confidence items noted as needing verification.
       
-      SKIPPED when continue_from is provided (continuation mode).
+      SKIPPED when continue_from is provided (continuation mode): every step
+      below carries that condition. A STAGE has no `condition:` -- it is
+      refused at load -- so the condition sits on the steps, which both
+      engines evaluate and record as skipped.
     approval:
       required: false
-    # Fresh-run gate. It sits on every step of this stage, not on the stage:
-    # `condition:` is a STEP field -- a stage-level one is dropped silently by
-    # both engines, so a gate written there never gates anything.
     
     steps:
       - id: create_v1_document
+        condition: "{{continue_from}} == ''"  # continuation mode: skip
         agent: foundation:zen-architect
-        condition: "{{continue_from}} == ''"
         prompt: |
           # Synthesize Investigation Findings
           
@@ -769,8 +769,8 @@ stages:
         output: "document_v1"
       
       - id: save_v1
+        condition: "{{continue_from}} == ''"  # continuation mode: skip
         type: bash
-        condition: "{{continue_from}} == ''"
         command: |
           # Pre-compute timestamp to avoid HEREDOC issues
           TIMESTAMP=$(date -Iseconds)

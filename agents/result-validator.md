@@ -170,7 +170,7 @@ performance problems, with human approval before applying any fixes."
 Checking requirements:
 ✓ Security analysis step present (step: security-scan, agent: security-guardian)
 ✓ Performance analysis step present (step: perf-scan, agent: performance-optimizer)
-✓ Human approval gate present (stage: review-gate, requires_approval: true)
+✓ Human approval gate present (stage: review-gate, approval.required: true)
 ✓ Fix step properly gated behind approval (depends_on: review-gate)
 ✗ No scope creep detected
 
