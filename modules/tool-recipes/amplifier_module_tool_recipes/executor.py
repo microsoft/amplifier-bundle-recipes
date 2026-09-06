@@ -1191,6 +1191,60 @@ class RecipeExecutor:
             session_id, project_path, immediate=is_immediate
         )
 
+    def _open_run_session(
+        self,
+        recipe: Recipe,
+        project_path: Path,
+        recipe_path: Path | None,
+        *,
+        parent_session_id: str | None = None,
+        attach_session_id: str | None = None,
+    ) -> tuple[str, str]:
+        """The session a NEW run checkpoints into: one adopted, or one created.
+
+        ``attach_session_id`` ADOPTS a session the caller already created. It
+        is deliberately not the same request as ``session_id`` (resume): the
+        run still starts at step 0 with the caller's ``context_vars``, and
+        nothing is read out of the adopted session's stored state.
+
+        This exists because the v2 path binds an Amplifier session *before*
+        the run so the approval and cancellation ports have real state to
+        read, and then handed the engine nothing -- so the engine made a
+        second session, and the id the caller was given held none of the run
+        (recipes-ppu). Passing that bound id as ``session_id`` instead is the
+        trap: ``is_resuming = session_id is not None`` would take the resume
+        branch, load ``state["context"]`` and silently discard the caller's
+        ``context_vars``.
+
+        Returns:
+            ``(session_id, started)``. The start time is read back from the
+            adopted session so its own recorded ``started`` stays
+            authoritative rather than being overwritten with "now".
+        """
+        if attach_session_id is None:
+            return (
+                self.session_manager.create_session(
+                    recipe,
+                    project_path,
+                    recipe_path,
+                    parent_session_id=parent_session_id,
+                ),
+                datetime.datetime.now().isoformat(),
+            )
+
+        started: Any = None
+        try:
+            state = self.session_manager.load_state(attach_session_id, project_path)
+            started = (state or {}).get("started")
+        except Exception as exc:  # noqa: BLE001 - an unreadable start time is not fatal
+            logger.warning(
+                "Could not read the start time of adopted session %s (%s); "
+                "recording this run as starting now.",
+                attach_session_id,
+                exc,
+            )
+        return attach_session_id, str(started or datetime.datetime.now().isoformat())
+
     async def execute_recipe(
         self,
         recipe: Recipe,
@@ -1203,6 +1257,7 @@ class RecipeExecutor:
         orchestrator_config: OrchestratorConfig | None = None,
         parent_session_id: str
         | None = None,  # optional: keyword-passed at call sites per Python convention
+        attach_session_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute recipe with checkpointing and resumption.
@@ -1217,10 +1272,28 @@ class RecipeExecutor:
             rate_limiter: Optional rate limiter (inherited from parent recipe)
             orchestrator_config: Optional orchestrator config (inherited from parent recipe)
             parent_session_id: Parent session ID for cancellation checks in sub-recipes
+            attach_session_id: Adopt this ALREADY-CREATED session as the new run's
+                own session, instead of creating one. This is *not* resumption:
+                the run starts at step 0 with ``context_vars``, and nothing is
+                loaded from the adopted session's stored state. Mutually
+                exclusive with ``session_id``; see :meth:`_open_run_session`.
 
         Returns:
             Final context dict with all step outputs
+
+        Raises:
+            ValueError: if both ``session_id`` and ``attach_session_id`` are given
+                -- "resume that session" and "start a new run in that session"
+                are different requests and one cannot silently win.
         """
+        if session_id is not None and attach_session_id is not None:
+            raise ValueError(
+                "execute_recipe was given both session_id="
+                f"{session_id!r} (resume) and attach_session_id="
+                f"{attach_session_id!r} (start a new run in an existing session). "
+                "These are different requests; pass exactly one."
+            )
+
         # Initialize or inherit recursion state
         if recursion_state is None:
             # Top-level recipe: create initial state from recipe config
@@ -1263,14 +1336,14 @@ class RecipeExecutor:
                 context = state["context"]
                 session_started = state["started"]
             else:
-                session_id = self.session_manager.create_session(
+                session_id, session_started = self._open_run_session(
                     recipe,
                     project_path,
                     recipe_path,
                     parent_session_id=parent_session_id,
+                    attach_session_id=attach_session_id,
                 )
                 context = {**recipe.context, **context_vars}
-                session_started = datetime.datetime.now().isoformat()
 
             # Add metadata to context
             context["recipe"] = {
@@ -1358,13 +1431,16 @@ class RecipeExecutor:
                         state.pop("pending_child_approval", None)
                         self.session_manager.save_state(session_id, project_path, state)
         else:
-            session_id = self.session_manager.create_session(
-                recipe, project_path, recipe_path, parent_session_id=parent_session_id
+            session_id, session_started = self._open_run_session(
+                recipe,
+                project_path,
+                recipe_path,
+                parent_session_id=parent_session_id,
+                attach_session_id=attach_session_id,
             )
             current_step_index = 0
             context = {**recipe.context, **context_vars}
             completed_steps = []
-            session_started = datetime.datetime.now().isoformat()
 
         # Effective session ID for cancellation checks
         # For sub-recipes (session_id=None), use parent_session_id to inherit cancellation state

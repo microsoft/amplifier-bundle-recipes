@@ -677,6 +677,11 @@ Example:
         # Bind an Amplifier recipe session so the approval and cancellation
         # ports have real state to read, and so `approvals`/`cancel`/`list`
         # work for a v2 run exactly as they do for a legacy one.
+        #
+        # The step engine is then ATTACHED to this same session rather than
+        # left to make one of its own, so the id reported below is the id whose
+        # state.json holds the run's completed_steps and context, and `list`
+        # shows one run once (recipes-ppu).
         session_id: str | None = None
         try:
             session_id = self.session_manager.create_session(

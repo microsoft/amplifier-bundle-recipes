@@ -1307,11 +1307,15 @@ async def run_v2_recipe(
 class EngineSessionRecorder:
     """A session-manager view that remembers the FIRST session the engine makes.
 
-    The step engine creates its own session inside ``execute_recipe``. *That*
-    session -- not the one the tool bound around the run -- is where the
-    approval gate, the checkpoint and the completed-step list live. Nothing
-    else reports it: a run that stops at a gate raises from inside the engine,
-    and a run that fails may not reach a context at all.
+    The fallback for a run with no session to attach to. When the caller bound
+    one, :func:`run_v2_recipe_in_session` hands it to the engine and the engine
+    creates none -- the bound session holds the approval gate, the checkpoint
+    and the completed-step list, and this recorder sees only later sub-recipe
+    children, which are not the run's identity. When the caller bound nothing
+    (session binding failed), the engine creates its own inside
+    ``execute_recipe`` and this is the only report of it: a run that stops at a
+    gate raises from inside the engine, and a run that fails may not reach a
+    context at all.
 
     Capturing it is what makes a later ``resume`` able to re-enter the run that
     was actually interrupted instead of starting a second one beside it.
@@ -1459,7 +1463,16 @@ async def run_v2_recipe_in_session(
     those step shapes (recipes-5c6). ``resume_engine_session_id`` names the
     engine session to re-enter; the engine skips what it checkpointed there.
 
+    One run, one session. On a first run the engine is *attached* to the
+    session the caller bound rather than left to create a second one, so the
+    id the caller is handed is the id whose ``state.json`` answers "what did
+    this run do?", and ``list`` shows the run once (recipes-ppu). Attaching is
+    not resuming -- see ``executor.RecipeExecutor._open_run_session``.
+
     Args:
+        session_id: the Amplifier session this run belongs to. On a first run
+            the engine adopts it; when ``resume_engine_session_id`` is given
+            it is the addressed session and the engine re-enters that one.
         run_id: the recorded run id to continue under, when resuming.
         resume_engine_session_id: re-enter this engine session instead of
             creating one. Its own checkpoint decides what is skipped.
@@ -1468,7 +1481,8 @@ async def run_v2_recipe_in_session(
             only report of it -- see :class:`EngineSessionRecorder`.
         plan/engine: injection seams for tests. ``engine`` receives
             ``(scoped_coordinator, recipe_path, context, project_path,
-            session_manager)`` plus a keyword ``session_id``.
+            session_manager)`` plus keywords ``session_id`` (resume) and
+            ``attach_session_id`` (adopt); at most one is ever non-None.
 
     Returns:
         The library's ``RunResult``, so every caller translates one shape. A
@@ -1488,8 +1502,20 @@ async def run_v2_recipe_in_session(
 
     recorder = EngineSessionRecorder(session_manager)
 
+    # A first run checkpoints into the session the caller already bound, so the
+    # run has ONE session and the id the caller was handed is the id holding
+    # its state (recipes-ppu). This is an *attach*, never a resume: the engine
+    # still starts at step 0 with `context_vars`. Resuming addresses the
+    # engine's session directly and never attaches.
+    attach_session_id = None if resume_engine_session_id else session_id
+
     def report_engine_session() -> str | None:
-        engine_session_id = resume_engine_session_id or recorder.session_id
+        # Order matters: when we attached, the bound session IS the engine's,
+        # and `recorder` would otherwise report the first SUB-recipe session
+        # the run created -- a child, not the run's identity.
+        engine_session_id = (
+            resume_engine_session_id or attach_session_id or recorder.session_id
+        )
         if on_engine_session is not None:
             on_engine_session(engine_session_id)
         return engine_session_id
@@ -1511,6 +1537,7 @@ async def run_v2_recipe_in_session(
             project_path,
             recorder,
             session_id=resume_engine_session_id,
+            attach_session_id=attach_session_id,
         )
     except Exception as exc:  # noqa: BLE001 -- one place turns any failure into a result
         engine_session_id = report_engine_session()
@@ -1561,12 +1588,20 @@ async def _legacy_engine_run(
     session_manager: Any,
     *,
     session_id: str | None = None,
+    attach_session_id: str | None = None,
 ) -> Mapping[str, Any]:
     """Run the recipe on the legacy step engine, against the scoped coordinator.
 
     ``session_id`` re-enters an existing engine session -- the engine's own
-    resumption path, which skips what that session checkpointed. Left None,
-    the engine creates a fresh session, which is what a first run wants.
+    resumption path, which skips what that session checkpointed.
+
+    ``attach_session_id`` is the *other* request, and deliberately a separate
+    parameter: run this recipe from the start, but checkpoint into a session
+    that already exists. That is what makes a v2 run have ONE session instead
+    of two (recipes-ppu). Reusing ``session_id`` for it would read as resume
+    and discard the caller's context.
+
+    With neither, the engine creates a fresh session of its own.
 
     Imported lazily so this module keeps importing without the engine's own
     dependencies, exactly as the library import is lazy.
@@ -1582,6 +1617,7 @@ async def _legacy_engine_run(
         project_path,
         session_id=session_id,
         recipe_path=recipe_path,
+        attach_session_id=attach_session_id,
     )
 
 
