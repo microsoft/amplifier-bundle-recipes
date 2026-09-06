@@ -506,6 +506,51 @@ Error: Session state corrupted or incomplete
          checkpoint_frequency: "per_step"  # Checkpoint after every step
    ```
 
+### Error: `V2ProvenanceMismatchError` on resume
+
+**Symptom** (schema-v2 recipes only):
+
+```
+Run run-9f2c1b recorded the digest of recipe /path/to/my-recipe.yaml as
+'sha256:1a2b…', and it now re-resolves to 'sha256:9f8e…'. It was NOT resumed:
+the steps this run already completed ran against the recorded closure, and
+continuing would run the remaining ones against a different one
+(recipe-dependency-manifest.v1 Core 8).
+```
+
+**Cause:** the recipe body, or a declared dependency, moved while the run was
+paused or interrupted. Every v2 run records its resolved closure — recipe
+digest, each dependency's resolved revision, and the per-agent provenance map.
+`resume` re-plans the recipe and compares. The three things it names:
+
+| `diverged.source` | What moved |
+| --- | --- |
+| `<recipe>` | The recipe file was edited after the run started. |
+| a dependency URI | That dependency now resolves to a different revision / content digest, vanished, or is newly declared. |
+| an agent name | That agent is now defined by a different source tree. |
+
+This is a refusal, not a failure of your recipe: resuming would run the
+*remaining* steps against a different closure than the *completed* ones did,
+and report success either way. Nothing was run and the recorded run is
+untouched.
+
+**Solution — pick one:**
+
+1. **Start a fresh run** against the current closure (the usual answer when the
+   edit was intentional):
+   ```bash
+   amplifier run "execute my-recipe.yaml with [context vars]"
+   ```
+2. **Restore what the run recorded** — put the recipe body back, or pin the
+   dependency to the revision named as `expected` — and resume again. A refused
+   resume leaves the session resumable.
+
+**A resume that says it could not verify.** Sessions recorded by builds older
+than this record, an unreadable record, or a closure that cannot be re-resolved
+right now do **not** strand: they resume with a logged warning, also readable
+on the result as `provenance_warning`. That warning means the check did not
+run — not that it passed.
+
 ---
 
 ## Agent Problems

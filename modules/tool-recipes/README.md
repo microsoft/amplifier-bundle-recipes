@@ -67,6 +67,13 @@ which of four answers you get:
 | completed some steps | refused (`V2ResumeUnavailableError`) until the library exports a `resume` entry point -- the completed steps cannot be skipped without it |
 | recorded nothing usable | refused (`V2RunNotRecorded` / `V2CompletedStepsUnknown`) rather than assuming no step ran |
 
+Ahead of all of those, the closure the run recorded is checked against a fresh
+re-plan (`recipe-dependency-manifest.v1` Core 8). An edited recipe, a moved
+dependency, or an agent now defined by a different tree is refused as
+`V2ProvenanceMismatchError` naming what diverged -- the remaining steps never
+run against a closure the completed ones did not. A session recorded before
+that record existed warns and resumes rather than being stranded.
+
 A v2 session is never resumed on the legacy path: that would resolve its
 agents from the calling session instead of its declared dependencies
 (`recipe-dependency-manifest.v1` Core 3).

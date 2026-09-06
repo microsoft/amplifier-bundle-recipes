@@ -68,6 +68,7 @@ __all__ = [
     "LIBRARY_SOURCE_INSTALLED",
     "LIBRARY_SOURCE_IN_BUNDLE",
     "LIBRARY_SOURCE_PREIMPORTED",
+    "PROVENANCE_MISMATCH_REMEDY",
     "REJECTED_CONFIG_KEYS",
     "UNKNOWN_LIBRARY_VERSION",
     "SELF_AGENT",
@@ -89,13 +90,16 @@ __all__ = [
     "SessionApprovalCallback",
     "ModelRoleUnavailableError",
     "SessionCancellationToken",
+    "V2ProvenanceMismatchError",
     "V2ResumeUnavailableError",
+    "attach_provenance_warning",
     "build_host_services",
     "build_run_request",
     "build_validate_request",
     "check_adapter_config",
     "check_legacy_agents_available",
     "check_model_roles",
+    "check_recorded_provenance",
     "collect_agent_references",
     "declared_model_roles",
     "declared_schema_version",
@@ -109,6 +113,7 @@ __all__ = [
     "library_resume",
     "load_runner",
     "manifest_header",
+    "provenance_warning_of",
     "provider_roles_label",
     "resume_v2_recipe",
     "run_v2_recipe",
@@ -137,6 +142,17 @@ LEGACY_DEPRECATION_REMEDY = (
     "Legacy recipes run ONLY through this Amplifier tool adapter "
     "(recipe-dependency-manifest.v1 Core 10); the standalone recipe-runner CLI "
     "rejects them."
+)
+
+#: What to do about a resume whose closure moved (manifest.v1 Core 8). There is
+#: deliberately no "resume anyway" here: the completed steps already ran against
+#: the recorded closure, so the only honest continuations are a fresh run or
+#: restoring what was recorded.
+PROVENANCE_MISMATCH_REMEDY = (
+    "Re-run the recipe with the `execute` operation to start a fresh run against the "
+    "current closure -- the recorded run is left untouched -- or restore what that run "
+    "recorded (the recipe body and the dependency revisions it resolved) and resume "
+    "again."
 )
 
 #: The duck-typed host capability that serves model roles.
@@ -265,6 +281,52 @@ class V2ResumeUnavailableError(RuntimeError):
         self.message = message
         self.remedy = remedy
         super().__init__(f"{message} Remedy: {remedy}")
+
+
+class V2ProvenanceMismatchError(RuntimeError):
+    """A resume re-resolved to something other than what the run recorded.
+
+    ``recipe-dependency-manifest.v1`` Core 8: a resume verifies the recorded
+    closure before continuing, and a difference fails visibly rather than
+    being silently re-resolved. Without it the *remaining* steps of a run can
+    execute against a different recipe body, or different dependency
+    revisions, than its *completed* steps did -- and nothing says so.
+
+    Deliberately shaped like :class:`V2ResumeUnavailableError` (``message`` +
+    ``remedy``), so ``_resume_v2_recipe`` surfaces it exactly the same way,
+    and carrying :attr:`diverged` so the caller is told *what* moved rather
+    than only that something did.
+    """
+
+    def __init__(
+        self,
+        *,
+        what: str,
+        source: str,
+        expected: str | None,
+        actual: str | None,
+        run_id: str | None = None,
+        remedy: str | None = None,
+    ) -> None:
+        self.source = source
+        self.expected = expected
+        self.actual = actual
+        self.run_id = run_id
+        self.diverged = {
+            "what": what,
+            "source": source,
+            "expected": expected,
+            "actual": actual,
+        }
+        self.message = (
+            f"Run {run_id or '(unrecorded)'} recorded {what} as {expected!r}, and it "
+            f"now re-resolves to {actual!r}. It was NOT resumed: the steps this run "
+            "already completed ran against the recorded closure, and continuing would "
+            "run the remaining ones against a different one "
+            "(recipe-dependency-manifest.v1 Core 8)."
+        )
+        self.remedy = remedy or PROVENANCE_MISMATCH_REMEDY
+        super().__init__(f"{self.message} Remedy: {self.remedy}")
 
 
 class ModelRoleUnavailableError(RuntimeError):
@@ -1898,6 +1960,183 @@ def _engine_completed_steps(
     if isinstance(completed, Sequence) and not isinstance(completed, (str, bytes)):
         return tuple(str(step) for step in completed)
     return ()
+
+
+# ---------------------------------------------------------------------------
+# Resume provenance verification (manifest.v1 Core 8)
+# ---------------------------------------------------------------------------
+
+
+def attach_provenance_warning(result: Any, warning: str | None) -> Any:
+    """Attach an "unverified provenance" note *beside* a tool result.
+
+    Same mechanism, and same reason, as :func:`label_execution_mode`: the
+    serialized ``ToolResult`` payload is what the legacy-compat baselines pin
+    byte-for-byte, so a diagnostic rides alongside it rather than inside it.
+    """
+    if not warning:
+        return result
+    try:
+        object.__setattr__(result, "provenance_warning", warning)
+    except (AttributeError, TypeError):  # pragma: no cover - exotic result types
+        logger.debug("Could not attach provenance_warning to %r", type(result))
+    return result
+
+
+def provenance_warning_of(result: Any) -> str | None:
+    """Read back the note set by :func:`attach_provenance_warning`."""
+    warning = getattr(result, "provenance_warning", None)
+    return warning if isinstance(warning, str) else None
+
+
+def _agent_provenance_divergence(recorded: Any, fresh: Any) -> tuple[str, str, str] | None:
+    """The first agent whose *supplying* tree is not the recorded one.
+
+    :func:`~amplifier_recipe_runner.provenance.check_resume_provenance`
+    compares the recipe digest and every declared dependency's resolved
+    identity -- not the per-agent map. Usually that suffices, because the map
+    is derived from those. It does not when a dependency's identity cannot
+    move even though its content did: a source that recorded neither a
+    revision nor a content digest reads as ``<unresolved>`` on both sides, and
+    an agent that came to be defined by a different tree behind it would pass
+    unremarked. Core 7 records the map precisely so it can be compared, so it
+    is.
+
+    One compatibility carve-out, from ``AgentProvenance``'s own note: a record
+    written before ``declared_by`` existed put the DECLARED dependency in
+    ``supplied_by``. Comparing that against a newer plan's DEFINING tree would
+    report a divergence that is only a library-version difference, so an agent
+    whose recorded ``declared_by`` is absent and whose recorded ``supplied_by``
+    is the fresh plan's ``declared_by`` is read as agreeing.
+    """
+    recorded_agents = dict(getattr(recorded, "agents", None) or {})
+    fresh_agents = dict(getattr(fresh, "agents", None) or {})
+
+    for name, prov in sorted(recorded_agents.items()):
+        current = fresh_agents.get(name)
+        if current is None:
+            return (name, prov.supplied_by, "<not supplied>")
+        if prov.supplied_by == current.supplied_by:
+            continue
+        if prov.declared_by is None and prov.supplied_by == current.declared_by:
+            continue
+        return (name, prov.supplied_by, current.supplied_by)
+
+    for name, current in sorted(fresh_agents.items()):
+        if name not in recorded_agents:
+            return (name, "<not recorded>", current.supplied_by)
+    return None
+
+
+async def check_recorded_provenance(
+    coordinator: Any,
+    session_manager: Any,
+    recipe_path: Path,
+    project_path: Path,
+    recorded: Any,
+    *,
+    session_id: str | None = None,
+    run_id: str | None = None,
+    plan: Callable[..., Awaitable[Any]] | None = None,
+) -> str | None:
+    """Verify a recorded v2 run still resolves to what it recorded (Core 8).
+
+    The library's ``resume`` is explicit that it does **not** do this and that
+    the caller must, before handing over (``execution.resume``'s docstring;
+    the standalone CLI does it in ``resume_command``). This is that check for
+    the Amplifier tool: re-plan the recipe *fresh*, compare the plan against
+    the manifest ``_record_v2_run`` persisted, and refuse on a difference.
+
+    The fresh plan is built exactly as the resume routes build theirs -- same
+    host services, so the same workspace roots relative dependency paths.
+    Planning against a different workspace would resolve local sources
+    somewhere else and report that as drift, which is a false alarm wearing
+    the same error.
+
+    Args:
+        recorded: the persisted ``v2_provenance`` mapping, or ``None``.
+        plan: injection seam for tests; defaults to the library's own ``plan``.
+
+    Returns:
+        ``None`` when the comparison was made and everything matched, or a
+        warning sentence when it could **not** be made -- an older session
+        that recorded no provenance, an unreadable record, or a re-plan that
+        failed. Those resume rather than strand, and say so; the alternative
+        would refuse every session recorded before this record existed.
+
+    Raises:
+        V2ProvenanceMismatchError: the comparison was made and something
+            diverged. Never re-resolves silently, and never prefers the newly
+            resolved value.
+    """
+    runner = load_runner()
+
+    if not isinstance(recorded, Mapping) or not recorded:
+        return (
+            f"Run {run_id or '(unrecorded)'} recorded no dependency provenance, so this "
+            "resume could not verify that it re-resolves to the closure its completed "
+            "steps ran against. Sessions recorded before that record existed are "
+            "resumed rather than stranded -- but a moved dependency or an edited "
+            "recipe would not be reported here."
+        )
+
+    from amplifier_recipe_runner.provenance import RunManifest  # noqa: PLC0415 -- lazy
+    from amplifier_recipe_runner.provenance import check_resume_provenance  # noqa: PLC0415
+
+    try:
+        manifest = RunManifest.from_mapping(recorded)
+    except Exception as exc:  # noqa: BLE001 -- an unreadable record is reported, not guessed
+        return (
+            f"Run {run_id or '(unrecorded)'} recorded provenance this build cannot read "
+            f"({type(exc).__name__}: {exc}), so the resume could not verify it. It was "
+            "resumed rather than stranded, unverified."
+        )
+
+    try:
+        services = await build_host_services(
+            coordinator, session_manager, project_path, session_id=session_id
+        )
+        request = build_run_request(recipe_path, {}, services, coordinator, run_id=run_id)
+        fresh = await (plan or runner.plan)(request)
+    except Exception as exc:  # noqa: BLE001 -- a failed re-plan is not a mismatch
+        # Reporting this as drift would name the wrong defect. Both resume
+        # routes re-plan for themselves moments later and surface the real
+        # failure typed, so this says only that nothing was verified.
+        return (
+            f"Run {run_id or '(unrecorded)'} could not be re-resolved for comparison "
+            f"({type(exc).__name__}: {exc}), so its recorded provenance was not "
+            "verified. The resume itself re-plans and reports that failure as its own."
+        )
+
+    where = run_id or manifest.run_id or None
+    try:
+        check_resume_provenance(manifest, fresh, run_id=where)
+    except runner.ProvenanceMismatchError as exc:
+        source = getattr(exc, "source", None) or "<recipe>"
+        what = (
+            f"the digest of recipe {recipe_path}"
+            if source == "<recipe>"
+            else f"the resolved revision of dependency {source!r}"
+        )
+        raise V2ProvenanceMismatchError(
+            what=what,
+            source=source,
+            expected=getattr(exc, "expected", None),
+            actual=getattr(exc, "actual", None),
+            run_id=where,
+        ) from exc
+
+    divergence = _agent_provenance_divergence(manifest, fresh)
+    if divergence is not None:
+        agent, expected, actual = divergence
+        raise V2ProvenanceMismatchError(
+            what=f"the source supplying agent {agent!r}",
+            source=agent,
+            expected=expected,
+            actual=actual,
+            run_id=where,
+        )
+    return None
 
 
 async def resume_v2_recipe(
