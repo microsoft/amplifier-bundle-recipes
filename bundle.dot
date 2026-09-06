@@ -2,18 +2,18 @@ digraph recipes {
     rankdir=LR
     fontname="Helvetica"
     fontsize=12
-    label="recipes v1.0.0 — bundle repo"
+    label="recipes v1.0.1 — bundle repo"
     labelloc=t
     labeljust=c
     nodesep=0.6
     ranksep=0.7
     bgcolor="white"
-    source_hash="d0b0042e56a3979e5aa416bbff50d9242c280208a46589c7863ed01549573a9e"
+    source_hash="a982bff6d18bb715d3db4c2dbc2e127001e3ab04b6def120d05a5951f872fcbc"
 
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
 
-    root_recipes [label="recipes v1.0.0\n0 tools · 0 agents\n~2376 tok aggregate", shape=box, fillcolor="#80cbc4", style="filled,rounded,bold", penwidth=2]
+    root_recipes [label="recipes v1.0.1\n0 tools · 0 agents\n~2989 tok aggregate", shape=box, fillcolor="#80cbc4", style="filled,rounded,bold", penwidth=2]
 
     subgraph cluster_behaviors {
         label="Behaviors"
@@ -21,7 +21,7 @@ digraph recipes {
         fillcolor="#f9f9f9"
         color="#999999"
 
-        beh_recipes_behavior [label="recipes-behavior\n1 tools · 1 ctx\n~1393 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_recipes_behavior [label="recipes-behavior\n1 tools · 1 ctx\n~873 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
     }
 
     subgraph cluster_agents {
@@ -30,8 +30,8 @@ digraph recipes {
         fillcolor="#f9f9f9"
         color="#999999"
 
-        agt_recipe_author [label="recipe-author\n~408 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_result_validator [label="result-validator\n~396 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_recipe_author [label="recipe-author\n~140 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_result_validator [label="result-validator\n~144 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
     }
 
     subgraph cluster_modules {
@@ -40,7 +40,7 @@ digraph recipes {
         fillcolor="#f9f9f9"
         color="#999999"
 
-        mod_tool_recipes [label="tool-recipes\n1 tool · ~680 tok", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        mod_tool_recipes [label="tool-recipes\n1 tool · ~765 tok", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
     }
 
     subgraph cluster_context {
@@ -50,7 +50,7 @@ digraph recipes {
         color="#999999"
 
         ctx_recipe_awareness_md [label="recipe-awareness.md\n~460 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
-        ctx_recipe_instructions_md [label="recipe-instructions.md\n~2001 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
+        ctx_recipe_instructions_md [label="recipe-instructions.md\n~2771 tok", shape=box, fillcolor="#e1bee7", style="filled,rounded"]
     }
 
     subgraph cluster_legend {
