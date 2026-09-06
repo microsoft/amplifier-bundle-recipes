@@ -878,6 +878,14 @@ model: "gpt-5.?"                # gpt-5.0, gpt-5.1, gpt-5.2, etc.
   that provider's **default model** and logs a WARNING naming the dropped pattern. The
   pattern itself is never handed to the provider: no model is literally named
   `claude-haiku-*`, so passing it through would guarantee a `not_found_error` (404).
+  The fallback resolves to a **real model id** — the one the mount plan declares for that
+  provider instance, or failing that the one the mounted provider itself reports. It is
+  never the empty string: a preference's model is written straight onto the promoted
+  provider's `default_model`, so an empty model *blanks* that provider's configured model
+  and the request fails with `invalid_request_error` — "model: String should have at least
+  1 character" (a 400 instead of a 404 is not a fallback). On the rare host that names no
+  default at all, the preference is **dropped** with a WARNING and the step runs on the
+  calling session's provider ordering.
 - If the provider's model list **could not be read** (no provider configured, no
   `list_models` support, query failed), the pattern is left as-is for the host to resolve
   against whichever provider instance it finally selects. "Could not enumerate" is not
@@ -887,7 +895,12 @@ model: "gpt-5.?"                # gpt-5.0, gpt-5.1, gpt-5.2, etc.
 **Validation:**
 - Only valid for agent steps (`type: "agent"` or default)
 - Ignored if specified on bash or recipe steps (validation error)
-- If `model` specified without `provider`, applies to the default (highest priority) provider
+- **`model` without `provider` is discarded, not applied.** The engine honours a
+  step-level `model:` only together with a `provider:` (`executor.execute_step`'s
+  `elif step.provider and step.model:` branch); written alone it matches no branch, no
+  preference is built, and the step silently runs on the session's default model.
+  Validation reports this as a warning coded `RECIPE_MODEL_WITHOUT_PROVIDER`. Add the
+  `provider:` the model belongs to, or drop the `model:` line.
 
 **Combining provider and model:**
 ```yaml

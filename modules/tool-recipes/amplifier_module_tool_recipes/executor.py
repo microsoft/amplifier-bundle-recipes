@@ -65,7 +65,9 @@ def _model_role_label(role: Any) -> str | None:
     return str(role)
 
 
-def _model_after_pattern_resolution(resolution: Any, provider_name: str) -> str:
+def _model_after_pattern_resolution(
+    resolution: Any, provider_name: str, coordinator: Any = None
+) -> str:
     """The model a step should spawn with, honouring the documented fallback.
 
     ``resolve_model_pattern`` reports "nothing matched" in one of two shapes,
@@ -76,11 +78,22 @@ def _model_after_pattern_resolution(resolution: Any, provider_name: str) -> str:
     dies with a 404 (``not_found_error``) instead of running. The documented
     contract is the opposite: "if model pattern has no matches -> uses
     provider's default model" (``context/recipe-instructions.md``,
-    ``docs/BEST_PRACTICES.md``). An empty model is how this executor already
-    spells "use the provider's default" (see the ``step.provider``-only branch),
-    so that is what an unmatched pattern collapses to under either shape,
-    loudly. ``None`` in particular must never reach a provider as the string
-    ``"None"``.
+    ``docs/BEST_PRACTICES.md``). ``None`` in particular must never reach a
+    provider as the string ``"None"``.
+
+    "The provider's default model" is resolved to a REAL model id here
+    (:func:`_provider_default_model`), not spelled as the empty string. The
+    empty string looks like "leave the model alone" and is not: the spawner
+    stamps whatever a preference carries onto the promoted instance's config
+    (``spawn_utils._apply_single_override`` -> ``config["default_model"] =
+    model``), so an empty model BLANKS that provider's configured default and
+    the run dies on a 400 -- ``invalid_request_error``, "model: String should
+    have at least 1 character" -- measured with ``model:
+    "claude-nosuchfamily-*"`` + ``provider: anthropic``. Turning a 404 into a
+    400 is not a fallback. If no default can be named at all the empty string
+    is still returned here, and :func:`resolve_default_models` -- the last stop
+    before the spawn -- drops the preference rather than emit the blanking
+    value.
 
     The fallback fires only on POSITIVE evidence of no match: a pattern was
     resolved, a non-empty catalogue came back from the provider, and nothing in
@@ -98,19 +111,25 @@ def _model_after_pattern_resolution(resolution: Any, provider_name: str) -> str:
     if not pattern or not available_models or matched_models:
         return resolved_model
 
+    default_model = _provider_default_model(coordinator, provider_name)
     logger.warning(
         "model pattern %r matched none of the %d model(s) provider %r offers - "
-        "falling back to that provider's default model, as documented. "
+        "falling back to that provider's default model (%s), as documented. "
         "Passing the pattern through would 404 (no model is literally named "
         "%r). Available: %s",
         pattern,
         len(available_models),
         provider_name or "(unnamed)",
+        repr(default_model)
+        if default_model
+        else "not nameable from this provider name alone - it is resolved "
+        "again against the pinned instance just before the spawn, and the "
+        "preference is dropped if nothing names one",
         pattern,
         ", ".join(str(m) for m in list(available_models)[:10])
         + ("..." if len(available_models) > 10 else ""),
     )
-    return ""
+    return default_model
 
 
 def _is_wsl_bash(path: str) -> bool:
@@ -867,6 +886,202 @@ def pin_preferences_to_instances(
         )
         return None
     return pinned
+
+
+# ---------------------------------------------------------------------------
+# "Use the provider's default" must name a model, because "" BLANKS one
+# ---------------------------------------------------------------------------
+#
+# A ProviderPreference's `model` is not advisory and it is not optional: the
+# spawner stamps it onto the promoted instance's mount config verbatim --
+# `spawn_utils._apply_single_override` does `config["default_model"] = model`
+# with no emptiness check -- and the provider module then reads that key back
+# as its own default (`provider-anthropic/__init__.py:882`:
+# `self.config.get("default_model", "claude-sonnet-5")`; the key is PRESENT, so
+# the module's built-in default never applies). An empty model therefore does
+# not mean "leave this provider alone"; it means "run this provider with no
+# model", and the request dies with
+#   InvalidRequestError ... "model: String should have at least 1 character".
+#
+# That is what a step with `provider: anthropic` + an unmatchable
+# `model: "claude-nosuchfamily-*"` measured: the fallback fired, said the right
+# thing, and substituted "". `pin_preferences_to_instances` above already
+# rewrites an empty model to the CHOSEN INSTANCE'S configured `default_model`
+# -- but only when the mount entry declares one. A host whose provider entry
+# carries no `default_model` (the module supplies its own) leaves the empty
+# string in place, and it reaches the API.
+#
+# So the chain gets one last pass before it is handed to the spawn: every
+# remaining empty model is filled from the provider itself, and any preference
+# still unfillable is DROPPED rather than emitted. Dropping costs the
+# promotion (the child inherits the parent session's provider ordering, which
+# is exactly what an unpinned `delegate` of the same agent does) and the step
+# runs; emitting "" costs the whole run.
+
+
+def _mount_entries(coordinator: Any) -> list[dict[str, Any]]:
+    """The mount plan's provider entries, or ``[]`` for a host without them."""
+    config = getattr(coordinator, "config", None)
+    if not isinstance(config, dict):
+        return []
+    entries = config.get("providers")
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _configured_default_model(coordinator: Any, provider_name: str) -> str:
+    """``default_model`` as the mount plan declares it for ``provider_name``.
+
+    ``provider_name`` may be an instance id (the shape a pinned chain carries)
+    or a bare module name (the shape an unpinnable chain keeps), so both are
+    matched. Ties are broken the way :func:`_pin_preference_to_instance` breaks
+    them -- lowest priority number, then declaration order -- so this names the
+    same instance the rest of the engine would.
+    """
+    if not provider_name:
+        return ""
+    variants = _provider_name_variants(provider_name)
+    candidates = [
+        (index, entry)
+        for index, entry in enumerate(_mount_entries(coordinator))
+        if _provider_mount_key(entry) == provider_name
+        or variants & _provider_name_variants(str(entry.get("module", "")))
+    ]
+    if not candidates:
+        return ""
+    _, chosen = min(candidates, key=lambda pair: (_provider_priority(pair[1]), pair[0]))
+    configured = _provider_entry_config(chosen).get("default_model")
+    return configured if isinstance(configured, str) else ""
+
+
+def _live_default_model(coordinator: Any, provider_name: str) -> str:
+    """``default_model`` as the MOUNTED provider instance itself reports it.
+
+    The authoritative answer, and the only one available on a host whose mount
+    entry declares no ``default_model``: a provider module resolves its own
+    default at construction (config value, else the module's built-in), and
+    exposes it as an attribute. Read defensively -- a test double or an exotic
+    provider may not have one, and a ``MagicMock``'s auto-attribute is not a
+    model name, so only a non-empty ``str`` counts.
+
+    Mounted providers are keyed by INSTANCE ID, so a bare module name
+    (``anthropic``) matches none of them on a host that mounts instances
+    (``opus``, ``sonnet``, ...). Each live name is therefore also resolved
+    through its own mount entry, exactly as
+    ``spawn_utils._find_provider_instance`` does, and the lowest priority
+    number wins -- the instance this session resolves for that module anyway.
+    """
+    if not provider_name:
+        return ""
+    try:
+        providers = coordinator.get("providers")
+    except Exception:  # pragma: no cover - defensive: bare coordinator doubles
+        return ""
+    if not isinstance(providers, Mapping):
+        return ""
+
+    variants = _provider_name_variants(provider_name)
+    entries = _mount_entries(coordinator)
+    by_mount_key = {_provider_mount_key(entry): entry for entry in entries}
+
+    candidates: list[tuple[float, int, Any]] = []
+    for order, (name, instance) in enumerate(providers.items()):
+        if not isinstance(name, str):
+            continue
+        entry = by_mount_key.get(name)
+        named_directly = name == provider_name or bool(
+            variants & _provider_name_variants(name)
+        )
+        named_by_module = entry is not None and bool(
+            variants & _provider_name_variants(str(entry.get("module", "")))
+        )
+        if not (named_directly or named_by_module):
+            continue
+        priority = _provider_priority(entry) if entry is not None else float("inf")
+        candidates.append((priority, order, instance))
+
+    for _, _, instance in sorted(candidates, key=lambda item: item[:2]):
+        default = getattr(instance, "default_model", None)
+        if isinstance(default, str) and default:
+            return default
+    return ""
+
+
+def _provider_default_model(coordinator: Any, provider_name: str) -> str:
+    """The model ``provider_name`` runs on this host when nothing pins one.
+
+    Mount-plan config first (it is instance-exact and is what the spawner will
+    write anyway), then the live instance (which knows the module's built-in
+    default the mount plan never spelled out). ``""`` means "this host cannot
+    name it" -- never a value to pass on as a model.
+    """
+    return _configured_default_model(coordinator, provider_name) or _live_default_model(
+        coordinator, provider_name
+    )
+
+
+def resolve_default_models(
+    preferences: list[Any] | None, coordinator: Any
+) -> list[Any] | None:
+    """Replace every "use the provider's default" placeholder with a real id.
+
+    The last stop before the spawn. A preference whose model is empty is filled
+    from :func:`_provider_default_model`; one that cannot be filled is dropped,
+    because emitting it would blank the promoted provider's configured model
+    (see this section's header comment). An emptied chain becomes ``None`` --
+    inherit the parent session's ordering -- matching
+    :func:`pin_preferences_to_instances`.
+    """
+    if not preferences:
+        return preferences
+
+    resolved: list[Any] = []
+    for pref in preferences:
+        model = getattr(pref, "model", "") or ""
+        if model:
+            resolved.append(pref)
+            continue
+
+        provider = getattr(pref, "provider", "") or ""
+        default = _provider_default_model(coordinator, provider)
+        if not default:
+            logger.warning(
+                "provider preference %r carries no model and this host does "
+                "not name a default for it (no `default_model` in its mount "
+                "entry, and no mounted instance reports one) - dropping the "
+                "preference. Passing an empty model on would overwrite that "
+                "provider's own default model with the empty string and the "
+                "request would fail with \"model: String should have at least "
+                "1 character\"; the spawn instead inherits the parent "
+                "session's provider ordering",
+                provider or "(unnamed)",
+            )
+            continue
+
+        config = getattr(pref, "config", None)
+        logger.debug(
+            "provider preference %r had no model; using that provider's own "
+            "default model %r rather than an empty string the spawner would "
+            "write over its configured default",
+            provider,
+            default,
+        )
+        resolved.append(
+            ProviderPreference(
+                provider=provider,
+                model=default,
+                config=dict(config) if isinstance(config, dict) else {},
+            )
+        )
+
+    if not resolved:
+        logger.warning(
+            "no provider preference survived default-model resolution; "
+            "spawning with the parent session's provider ordering"
+        )
+        return None
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -2509,7 +2724,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                         coordinator=self.coordinator,
                     )
                     resolved_model = _model_after_pattern_resolution(
-                        model_resolution, pref.provider
+                        model_resolution, pref.provider, self.coordinator
                     )
                 provider_preferences.append(
                     ProviderPreference(provider=pref.provider, model=resolved_model)
@@ -2523,7 +2738,7 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                 coordinator=self.coordinator,
             )
             resolved_model = _model_after_pattern_resolution(
-                model_resolution, step.provider
+                model_resolution, step.provider, self.coordinator
             )
             provider_preferences = [
                 ProviderPreference(provider=step.provider, model=resolved_model)
@@ -2593,6 +2808,15 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         provider_preferences = pin_preferences_to_instances(
             provider_preferences,
             host_config.get("providers") if isinstance(host_config, dict) else None,
+        )
+
+        # ...and whatever "use the provider's default model" is still spelled
+        # as an empty string becomes a real model id here, or the preference is
+        # dropped. An empty model is not inert: the spawner writes it straight
+        # into the promoted provider's `default_model`, blanking it (see
+        # `resolve_default_models`).
+        provider_preferences = resolve_default_models(
+            provider_preferences, self.coordinator
         )
 
         # Pinning can drop the entire chain (`pin_preferences_to_instances`
