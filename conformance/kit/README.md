@@ -16,8 +16,14 @@ python3 conformance/kit/kit.py --run --json   # machine-readable
 ./conformance/kit/discriminate.sh             # THE PROOF -- see §3
 ```
 
-No network, no model call, no Foundation install. Everything resolves from
-local fixture bundles under `fixtures/` through injected spawn backends.
+No model call, no Foundation install. Everything resolves from local fixture
+bundles under `fixtures/` through injected spawn backends.
+
+**One documented exception:** `good-activation-install-...` (§2.4) shells out to
+`uv` and `git` and installs into a throwaway venv, because the defect it exists
+to catch lives in that command and nowhere else. It may consult the package
+index for the module's own `pyyaml` dependency, and skips with a named reason
+when its tools or premises are absent. Every other fixture is offline.
 
 ### Pointing the kit at a specific runner checkout
 
@@ -60,8 +66,13 @@ Two things follow, and both are enforced here:
 
 ## 2. Fixture inventory
 
-Run `kit.py --list` for the authoritative list. As of authoring: **15 fixtures,
-9 GOOD, 6 BAD** — 5 behavioural GOOD, 6 BAD, and 4 absence probes (§2.3).
+Run `kit.py --list` for the authoritative list. As of authoring: **17 fixtures,
+10 GOOD, 7 BAD** — 6 behavioural GOOD, 7 BAD, and 4 absence probes (§2.3).
+
+One fixture (`good-activation-install-...`, §2.4) can report **SKIP** instead of
+PASS/FAIL when this host cannot run it. A skip is *not* a pass: it is counted
+separately, excluded from the `N/N fixtures passed` line, and printed under a
+`SKIPPED (… — checked NOTHING, not a pass)` heading with its reason.
 
 ### GOOD
 
@@ -72,6 +83,7 @@ Run `kit.py --list` for the authoritative list. As of authoring: **15 fixtures,
 | `good-behavior-partial-composes-only-declared-contribution` | A `#subdirectory=` behavior partial contributes only `supplier:reviewer`. Control: the same bundle *whole* contributes `summarizer` too, so the narrowing is real. |
 | `good-plan-reports-provenance-without-executing-anything` | `plan()` records the full Core 7 field set, leaves the workspace empty, and works with no host services at all. |
 | `good-injected-offline-resolver-satisfies-a-locked-run` | An embedder-injected offline resolver satisfies `update-lock` then `locked` verification with no network; `locked` does not rewrite; `unlocked` warns. |
+| `good-activation-install-resolves-the-in-bundle-runner` | The **real module-activation install** (`uv pip install -e <module> --python <env> --no-sources`) exits 0 into a clean venv, the installed module imports, and `load_runner()` resolves the **in-bundle** library. See §2.4 — the only fixture that leaves the in-process library. |
 
 ### BAD — each names its typed error
 
@@ -128,6 +140,58 @@ One deliberate non-choice: the port scan bans agent-map *names*
 banning the word would ban the conforming design along with the violation.
 There, provenance is the discriminator — where the type comes from.
 
+### 2.4 The activation-install fixture — the one that leaves the process
+
+Every other fixture imports the implementation the way a *test* does: through
+`PYTHONPATH`, or an editable install made **with** uv sources. Production does
+neither. Amplifier's module activator runs exactly:
+
+```bash
+uv pip install -e <bundle>/modules/tool-recipes --python <env> --no-sources
+```
+
+On **2026-09-02** that command — and only that command — failed, breaking
+`amplifier update` and session prepare for every user, **while all four gates
+stayed green** (recipes-eir; hotfixed in `02a3dfe`). The gap was not a weak
+assertion. No gate ran the consumer's command at all.
+
+`good-activation-install-resolves-the-in-bundle-runner` runs it, into a
+throwaway venv, and asserts three things:
+
+| # | Assertion |
+|---|---|
+| a | the activation install exits **0** |
+| b | `import amplifier_module_tool_recipes` succeeds **in that venv** |
+| c | `load_runner()` resolves the library under `<repo>/src` — the **in-bundle** copy, not a second one (the recipes-4g5 symptom: a cache clone answering for the in-bundle library, so the code under test is not the code in hand) |
+
+Its premises are **measured, not assumed**, before the assertions run: the venv
+is built on this kit's own interpreter, given only the *host* site-packages
+(never the kit's `PYTHONPATH`, which would hand the child an importable runner
+and make (c) vacuous), and `amplifier_recipe_runner` is confirmed **not**
+importable there — so the only path to (c) is the fallback.
+
+**Its discrimination proof is carried inside the fixture**, not in
+`mutations/*.patch`: the regression is a *packaging* one, so a patch against
+the runner source could not express it. The fixture builds a bundle-shaped temp
+copy of the module carrying the **pre-hotfix** `pyproject.toml`, read from git
+at `02a3dfe…^` (a hard direct-URL dependency with no
+`tool.hatch.metadata.allow-direct-references`), runs the same install against
+it, and requires that it **fail naming `allow-direct-references`** — a specific
+reason, not merely a non-zero exit.
+
+It **skips with a named reason** — never silently, never as a pass — when:
+
+- `uv` is absent (module activation *is* a uv command);
+- `git`, or the pre-hotfix blob, is unavailable (a shallow clone) — a control
+  that cannot run is not a control;
+- the host cannot supply `amplifier_core` / `amplifier_foundation`, which
+  activation assumes (the activator installs into the CLI's own environment);
+- the host already provides an **installed** `amplifier_recipe_runner`, in
+  which case `load_runner()` would legitimately return it and the in-bundle
+  fallback could not be observed.
+
+Cost on a warm uv cache: **~2s**, two venvs, both removed in a `finally`.
+
 ## 3. The discrimination proof
 
 `discriminate.sh` reintroduces known violations into the runner, runs the kit,
@@ -136,7 +200,7 @@ and requires at least one fixture to fail. Then it reverts.
 ```
 $ PYTHONPATH="$PWD/src" ./conformance/kit/discriminate.sh
 === BASELINE (unmutated implementation) ===
-15/15 fixtures passed
+17/17 fixtures passed
 ...
 RESULT: DISCRIMINATING -- every mutation was caught, and the baseline passes.
 ```
