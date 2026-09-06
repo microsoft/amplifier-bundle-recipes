@@ -1357,7 +1357,18 @@ class StepEngine:
                 return
 
         self._emit("step:start", {"step_id": step.id, "type": step.type, "agent": step.agent})
+        try:
+            await self._run_declared_step(step, context)
+        except (SkipRemaining, RunCancelled, ApprovalPaused):
+            raise
+        except Exception as exc:  # noqa: BLE001 - announce, then let it fail the run
+            # A step that failed the run says so on the event sink as well as
+            # in the result. Absence from `completed_steps` alone cannot tell a
+            # failed step from one that was never reached.
+            self._emit("step:failed", {"step_id": step.id, "absorbed": False, "error": str(exc)})
+            raise
 
+    async def _run_declared_step(self, step: StepSpec, context: dict[str, Any]) -> None:
         if step.is_loop:
             await self._run_loop(step, context)
             # A loop writes its results into the context under `collect:`/

@@ -345,6 +345,18 @@ class RunResult:
     status: RunStatus
     plan: ExecutionPlan | None = None
     outputs: Mapping[str, Any] = field(default_factory=dict)
+    """Per-step result, keyed by step id."""
+
+    context: Mapping[str, Any] = field(default_factory=dict)
+    """The run's final recipe context -- every variable a step wrote.
+
+    Distinct from :attr:`outputs`, which is keyed by *step id*: a recipe reads
+    its own values by the names its `output:`/`collect:` fields chose, and a
+    host that wants to act on a finished run needs those names, not the step
+    ids that happened to produce them. Present on every terminal status, so a
+    failed or paused run still reports what it managed to compute.
+    """
+
     completed_steps: tuple[str, ...] = ()
     error: BaseException | None = None
     pending_approval: str | None = None

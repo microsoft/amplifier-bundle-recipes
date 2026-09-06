@@ -645,6 +645,28 @@ async def create_execution_session(
     )
 
 
+def _load_target(dependency: Any) -> str:
+    """The path the registry should load for ``dependency``.
+
+    A ``#subdirectory=`` partial that names a FILE (``providers/anthropic-sonnet.yaml``)
+    resolves to that file's parent DIRECTORY in ``local_path`` -- which is not
+    a bundle, so loading it fails with "missing bundle.md". The declared
+    subdirectory says which file was actually asked for, so it is used when it
+    names one. Directory-style partials (a folder with its own ``bundle.md``)
+    are unaffected: no file candidate exists and the directory is loaded as
+    before.
+    """
+    local_path = getattr(dependency, "local_path", None)
+    subdirectory = getattr(dependency, "subdirectory", None)
+    if local_path and subdirectory and str(subdirectory).endswith((".yaml", ".yml")):
+        base = Path(local_path)
+        name = Path(str(subdirectory)).name
+        for candidate in (base / name, base.parent / str(subdirectory)):
+            if candidate.is_file():
+                return str(candidate)
+    return str(local_path or dependency.uri)
+
+
 class _NoDeclaredAgentsBackend:
     """Stand-in backend for a plan that resolved no agents at all.
 
@@ -736,7 +758,20 @@ class FoundationSessionFactory:
         workspace = Path(services.workspace)
         session = await prepared.create_session(session_cwd=workspace)
 
-        backend = FoundationSpawnBackend(prepared, workspace=workspace)
+        # Measured off the COMPOSED closure, not off the host's port. The port
+        # says which roles a host is willing to serve; this says whether the
+        # recipe's own world can actually reach a model. Without it, an agent
+        # step returns the sub-session's "No providers available" string AS ITS
+        # OUTPUT -- a run that exits 0 with that text written into its report is
+        # the fabricated success lib Core 8 forbids.
+        #
+        # A bundle that does not expose `providers` at all has made no claim,
+        # so it is not treated as a denial -- only an explicitly EMPTY list is.
+        # Refusing on an un-measurable absence would fail an embedder whose
+        # bundle object simply has a different shape.
+        declared_providers = getattr(bundle, "providers", None)
+        has_providers = True if declared_providers is None else bool(declared_providers)
+        backend = FoundationSpawnBackend(prepared, workspace=workspace, has_providers=has_providers)
         return SessionBuild(
             backend=backend,
             closers=(session.cleanup,),
@@ -779,7 +814,7 @@ class FoundationSessionFactory:
         self._dropped_agents = tuple(sorted(dropped))
 
     async def _load(self, registry: Any, dependency: Any) -> Any:
-        target = dependency.local_path or dependency.uri
+        target = _load_target(dependency)
         try:
             return await registry.load(target)
         except Exception as exc:  # registry raises its own hierarchy
@@ -819,13 +854,29 @@ class FoundationSpawnBackend:
     backends instead.
     """
 
-    __slots__ = ("_prepared", "_workspace")
+    __slots__ = ("_has_providers", "_prepared", "_workspace")
 
-    def __init__(self, prepared: Any, *, workspace: Path) -> None:
+    def __init__(self, prepared: Any, *, workspace: Path, has_providers: bool = True) -> None:
         self._prepared = prepared
         self._workspace = workspace
+        self._has_providers = has_providers
 
     async def spawn(self, request: SpawnRequest) -> str:
+        if not self._has_providers:
+            # Refused HERE, not at composition: a recipe whose agent steps are
+            # all skipped by conditions never needs a provider, and failing it
+            # up front would be a false alarm. This fires only when a step
+            # really reaches for a model.
+            raise ExecutionError(
+                f"Step {request.step_id!r} needs agent {request.canonical!r}, but this recipe's "
+                "declared closure configures no model provider, so the agent has nothing to run on.",
+                remedy=(
+                    "Declare one in the recipe's `dependencies:` block -- e.g. a provider partial "
+                    "from the same pinned source, `kind: behavior` with "
+                    "`#subdirectory=providers/<provider>.yaml`. The calling environment's providers "
+                    "are deliberately not borrowed (recipe-dependency-manifest.v1 Core 4)."
+                ),
+            )
         session = await self._prepared.create_session(session_cwd=self._workspace)
         try:
             return str(await session.execute(request.instruction))
@@ -1092,6 +1143,7 @@ async def _execute_program(
             status=RunStatus.PAUSED,
             plan=resolved,
             outputs=MappingProxyType(dict(outcome.outputs)),
+            context=MappingProxyType(dict(outcome.context)),
             completed_steps=completed,
             pending_approval=outcome.pending_approval,
         )
@@ -1101,6 +1153,7 @@ async def _execute_program(
             status=RunStatus.CANCELLED,
             plan=resolved,
             outputs=MappingProxyType(dict(outcome.outputs)),
+            context=MappingProxyType(dict(outcome.context)),
             completed_steps=completed,
         )
     if outcome.status == "failed":
@@ -1109,6 +1162,7 @@ async def _execute_program(
             status=RunStatus.FAILED,
             plan=resolved,
             outputs=MappingProxyType(dict(outcome.outputs)),
+            context=MappingProxyType(dict(outcome.context)),
             completed_steps=completed,
             error=outcome.error,
         )
@@ -1117,6 +1171,7 @@ async def _execute_program(
         status=RunStatus.SUCCEEDED,
         plan=resolved,
         outputs=MappingProxyType(dict(outcome.outputs)),
+        context=MappingProxyType(dict(outcome.context)),
         completed_steps=completed,
     )
 
