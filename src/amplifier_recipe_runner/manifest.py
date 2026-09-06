@@ -38,6 +38,8 @@ from typing import Literal
 import yaml
 
 __all__ = [
+    "CONTEXT_DECLARATION_KEYS",
+    "CONTEXT_DECLARED_TYPES",
     "CONTRACT",
     "DEPENDENCY_KEYS",
     "DEPENDENCY_KINDS",
@@ -49,9 +51,13 @@ __all__ = [
     "Manifest",
     "ManifestError",
     "ParseResult",
+    "ResolvedContext",
+    "check_context_block",
+    "is_context_declaration",
     "parse_manifest",
     "parse_manifest_file",
     "parse_manifest_text",
+    "resolve_context_block",
 ]
 
 CONTRACT: Final[str] = "recipe-dependency-manifest.v1"
@@ -66,6 +72,18 @@ DEPENDENCY_KINDS: Final[tuple[str, ...]] = ("bundle", "behavior")
 
 #: Keys a dependency entry may carry.
 DEPENDENCY_KEYS: Final[frozenset[str]] = frozenset({"source", "kind", "required_agents"})
+
+#: Keys a schema-form ``context:`` entry may carry. A non-empty mapping whose
+#: keys are all drawn from this set is a DECLARATION, not a value: the runner
+#: binds its ``default:``, never the mapping itself. See
+#: :func:`resolve_context_block`.
+CONTEXT_DECLARATION_KEYS: Final[frozenset[str]] = frozenset({"type", "required", "default", "description", "enum"})
+
+#: Accepted values of a declaration's ``type:``. Documentation only -- nothing
+#: coerces a value -- but a typo is still worth naming.
+CONTEXT_DECLARED_TYPES: Final[frozenset[str]] = frozenset(
+    {"string", "number", "integer", "boolean", "array", "object", "any"}
+)
 
 #: Manifest keys introduced by schema 2.
 _MANIFEST_KEYS: Final[frozenset[str]] = frozenset({"schema_version", "dependencies", "agents", "capabilities"})
@@ -166,6 +184,25 @@ class LegacyRecipe:
 ParseResult = Manifest | LegacyRecipe
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedContext:
+    """A recipe's ``context:`` block read into values plus diagnostics."""
+
+    values: Mapping[str, Any]
+    """Variable -> value, every declaration replaced by its ``default:``.
+    A declaration with no default is ABSENT, not ``None``."""
+
+    required: tuple[str, ...] = ()
+    """Variables declared ``required: true`` with no ``default:``. The caller
+    must supply each one; :mod:`.execution` refuses the run otherwise."""
+
+    errors: tuple[str, ...] = ()
+    """Malformed declarations, each message naming its variable."""
+
+    warnings: tuple[str, ...] = ()
+    """Non-fatal oddities, each message naming its variable."""
+
+
 def parse_manifest_file(path: str | Path) -> ParseResult:
     """Parse a recipe YAML file's manifest. See :func:`parse_manifest`."""
     p = Path(path)
@@ -220,6 +257,7 @@ def parse_manifest(data: Any, *, source: str | None = None) -> ParseResult:
     _check_schema_version(data["schema_version"], source=source)
     _check_top_level_keys(data, source=source)
     _reject_agent_config(data, source=source)
+    check_context_block(data.get("context"), source=source)
 
     if "dependencies" not in data:
         raise ManifestError(
@@ -240,6 +278,128 @@ def parse_manifest(data: Any, *, source: str | None = None) -> ParseResult:
         agents=agents,
         source=source,
     )
+
+
+# --------------------------------------------------------------------------
+# The declarative `context:` entry
+# --------------------------------------------------------------------------
+
+
+def is_context_declaration(value: Any) -> bool:
+    """True when a ``context:`` value is a schema-form declaration.
+
+    A recipe's ``context:`` is a variable -> VALUE mapping, but authors reach
+    for the shape every other tool's input schema uses::
+
+        context:
+          topic:
+            type: string
+            required: true
+
+    Nothing used to recognise that, so the whole mapping was bound as the
+    variable's value and ``{{topic}}`` substituted ``{'type': 'string',
+    'required': True}`` into prompts and conditions (recipes-u2f). A non-empty
+    mapping whose every key is drawn from :data:`CONTEXT_DECLARATION_KEYS` is
+    a declaration; anything else -- including ``{}`` and any mapping carrying
+    one other key -- is an ordinary literal value, bound unchanged.
+    """
+    if not isinstance(value, Mapping) or not value:
+        return False
+    return all(isinstance(key, str) and key in CONTEXT_DECLARATION_KEYS for key in value)
+
+
+def _declaration_issues(name: str, declaration: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """``(errors, warnings)`` for one declaration, every message naming ``name``."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    where = f"context variable {name!r}"
+
+    if "required" in declaration and not isinstance(declaration["required"], bool):
+        errors.append(f"{where}: 'required' must be true or false, got {declaration['required']!r}")
+
+    if "type" in declaration:
+        declared = declaration["type"]
+        if not isinstance(declared, str) or declared not in CONTEXT_DECLARED_TYPES:
+            errors.append(
+                f"{where}: 'type' must be one of {', '.join(sorted(CONTEXT_DECLARED_TYPES))}, got {declared!r}"
+            )
+
+    if "description" in declaration and not isinstance(declaration["description"], str):
+        errors.append(f"{where}: 'description' must be a string, got {type(declaration['description']).__name__}")
+
+    if "enum" in declaration:
+        choices = declaration["enum"]
+        if not isinstance(choices, list) or not choices:
+            errors.append(f"{where}: 'enum' must be a non-empty list, got {choices!r}")
+        elif "default" in declaration and declaration["default"] not in choices:
+            errors.append(f"{where}: default {declaration['default']!r} is not one of its 'enum' values {choices!r}")
+
+    if declaration.get("required") is True and "default" in declaration:
+        warnings.append(
+            f"{where} declares both 'required: true' and a default; the default is bound, "
+            "so the variable is never missing (drop one)"
+        )
+
+    return errors, warnings
+
+
+def resolve_context_block(context: Any) -> ResolvedContext:
+    """Read a ``context:`` block into values plus diagnostics.
+
+    Never raises and never binds a declaration mapping: a malformed
+    declaration contributes an error and is left unbound. ``default:`` binds;
+    ``required: true`` without a default defers to the caller; a declaration
+    that is neither is deliberately UNBOUND, so referencing it fails loudly
+    through the engine's own "variable not found" path.
+    """
+    if not isinstance(context, Mapping):
+        return ResolvedContext(values=MappingProxyType({}))
+
+    values: dict[str, Any] = {}
+    required: list[str] = []
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    for name, value in context.items():
+        if not is_context_declaration(value):
+            values[name] = value
+            continue
+
+        key = str(name)
+        entry_errors, entry_warnings = _declaration_issues(key, value)
+        errors.extend(entry_errors)
+        warnings.extend(entry_warnings)
+        if entry_errors:
+            continue
+
+        if "default" in value:
+            values[name] = value["default"]
+        elif value.get("required") is True:
+            required.append(key)
+
+    return ResolvedContext(
+        values=values,
+        required=tuple(required),
+        errors=tuple(errors),
+        warnings=tuple(warnings),
+    )
+
+
+def check_context_block(context: Any, *, source: str | None = None) -> ResolvedContext:
+    """Resolve a ``context:`` block, raising on a malformed declaration.
+
+    Raises:
+        ManifestError: naming every offending variable. Binding the schema
+            mapping as the value is the one outcome this refuses.
+    """
+    resolved = resolve_context_block(context)
+    if resolved.errors:
+        raise ManifestError(
+            "malformed 'context' declaration(s): " + "; ".join(resolved.errors),
+            clause="Core 1",
+            source=source,
+        )
+    return resolved
 
 
 # --------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from .context_schema import merge_recipe_context
 from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
 from amplifier_foundation import ProviderPreference
@@ -1602,7 +1603,12 @@ class RecipeExecutor:
                     parent_session_id=parent_session_id,
                     attach_session_id=attach_session_id,
                 )
-                context = {**recipe.context, **context_vars}
+                # Was `{**recipe.context, **context_vars}`. Identical for a
+                # plain variable -> value block; a declarative entry
+                # (`type:`/`required:`/`default:`) now binds its default or
+                # fails by name instead of binding the schema dict
+                # (recipes-u2f).
+                context = merge_recipe_context(recipe.context, context_vars)
 
             # Add metadata to context
             context["recipe"] = {
@@ -1698,7 +1704,9 @@ class RecipeExecutor:
                 attach_session_id=attach_session_id,
             )
             current_step_index = 0
-            context = {**recipe.context, **context_vars}
+            # Declarative `context:` entries bind their default here too --
+            # see the staged branch above (recipes-u2f).
+            context = merge_recipe_context(recipe.context, context_vars)
             completed_steps = []
 
         # Effective session ID for cancellation checks

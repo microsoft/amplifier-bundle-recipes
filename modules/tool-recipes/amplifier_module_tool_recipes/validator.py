@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .context_schema import resolve_context
 from .models import Recipe
 from .runner_adapter import collect_agent_references
 
@@ -35,6 +36,11 @@ def validate_recipe(recipe: Recipe, coordinator: Any = None) -> ValidationResult
     # Basic structure validation
     structure_errors = recipe.validate()
     errors.extend(structure_errors)
+
+    # `context:` entries written in the declarative schema form
+    context_errors, context_warnings = check_context_declarations(recipe)
+    errors.extend(context_errors)
+    warnings.extend(context_warnings)
 
     # Variable reference validation
     var_errors = check_variable_references(recipe)
@@ -190,6 +196,23 @@ def _check_var_ref(
     return None
 
 
+def check_context_declarations(recipe: Recipe) -> tuple[list[str], list[str]]:
+    """Check `context:` entries written in the declarative schema form.
+
+    A `context:` entry whose value is a mapping carrying only
+    ``type``/``required``/``default``/``description``/``enum`` is a
+    DECLARATION, not a value: the engine binds its ``default:`` (see
+    :mod:`.context_schema`). A declaration whose own fields are wrong is
+    reported here BY VARIABLE NAME -- the alternative, which this replaces, was
+    binding the schema dict itself and letting ``{{var}}`` substitute
+    ``{'type': 'string', ...}`` into a prompt or a condition (recipes-u2f).
+
+    Returns ``(errors, warnings)``.
+    """
+    resolved = resolve_context(recipe.context)
+    return list(resolved.errors), list(resolved.warnings)
+
+
 def check_variable_references(recipe: Recipe) -> list[str]:
     """Check all {{variable}} references are defined or will be defined."""
     errors = []
@@ -197,8 +220,14 @@ def check_variable_references(recipe: Recipe) -> list[str]:
     # Reserved variables always available
     reserved = {"recipe", "session", "step"}
 
-    # Build set of available variables step by step
+    # Build set of available variables step by step. Every DECLARED name is
+    # available -- including one declared `required: true` with no default,
+    # which the caller supplies at run time -- so `available` is keyed off the
+    # raw block. Dot-path traversal, though, must see the RESOLVED values: a
+    # declarative entry's value is its `default:`, never the schema dict
+    # (recipes-u2f).
     available = set(recipe.context.keys()) | reserved
+    context_values = resolve_context(recipe.context).values
 
     for step in recipe.get_all_steps():
         # For foreach loops, the loop variable is available within the step
@@ -216,7 +245,7 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                     var,
                     step.id,
                     "Variable",
-                    recipe.context,
+                    context_values,
                     reserved,
                     available,
                     step_local_vars,
@@ -231,7 +260,7 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                     var,
                     step.id,
                     "Command variable",
-                    recipe.context,
+                    context_values,
                     reserved,
                     available,
                     step_local_vars,
@@ -246,7 +275,7 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                     var,
                     step.id,
                     "cwd variable",
-                    recipe.context,
+                    context_values,
                     reserved,
                     available,
                     step_local_vars,
@@ -263,7 +292,7 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                             var,
                             step.id,
                             f"env['{env_key}'] variable",
-                            recipe.context,
+                            context_values,
                             reserved,
                             available,
                             step_local_vars,
@@ -280,7 +309,7 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                             var,
                             step.id,
                             f"Context key '{key}' variable",
-                            recipe.context,
+                            context_values,
                             reserved,
                             available,
                             step_local_vars,
@@ -295,7 +324,7 @@ def check_variable_references(recipe: Recipe) -> list[str]:
                     var,
                     step.id,
                     "Recipe path variable",
-                    recipe.context,
+                    context_values,
                     reserved,
                     available,
                     step_local_vars,
