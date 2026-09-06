@@ -683,3 +683,262 @@ class TestAmplifierPythonNormalization:
 
         assert result == "C:/Users/dev/.venv/Scripts/python.exe"
         assert "\\" not in result, "no backslashes may survive into a bash command"
+
+
+class TestBashExecTimeFailureHonoursOnError:
+    """A command the OS refuses to START must still obey `on_error`.
+
+    The live defect: a bash step whose rendered command exceeded the OS's
+    per-argument limit failed with OSError [Errno 7] *before* exec, so there
+    was no exit code -- and the executor turned that unconditionally into a
+    ValueError, sailing straight past the step's `on_error: continue` and
+    failing the whole recipe run.
+    """
+
+    @pytest.fixture
+    def executor(self) -> RecipeExecutor:
+        return RecipeExecutor(MockCoordinator(), MockSessionManager())  # type: ignore[arg-type]
+
+    @staticmethod
+    def _oversized_command() -> str:
+        """A syntactically valid command guaranteed to blow MAX_ARG_STRLEN.
+
+        Linux caps one argv entry at 32 * PAGE_SIZE. Size from the live page
+        size rather than hardcoding 128 KB, then double it for headroom.
+        """
+        limit = 32 * os.sysconf("SC_PAGESIZE")
+        return "echo ok # " + ("x" * (limit * 2))
+
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"),
+        reason="MAX_ARG_STRLEN per-argument cap is Linux-specific",
+    )
+    @pytest.mark.asyncio
+    async def test_oversized_command_absorbed_by_on_error_continue(
+        self, executor: RecipeExecutor, tmp_path: Path
+    ):
+        """on_error=continue absorbs a real E2BIG and records it as the failure."""
+        step = Step(
+            id="oversized",
+            type="bash",
+            command=self._oversized_command(),
+            on_error="continue",
+        )
+
+        result = await executor._execute_bash_step(step, {}, tmp_path)
+
+        assert result.exit_code == executor_mod._EXEC_FAILURE_EXIT_CODE
+        assert result.stdout == ""
+        assert "failed to execute command" in result.stderr
+        assert "Argument list too long" in result.stderr
+        # The message must point at the fix, not just the symptom.
+        assert "write the payload to a file" in result.stderr
+
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"),
+        reason="MAX_ARG_STRLEN per-argument cap is Linux-specific",
+    )
+    @pytest.mark.asyncio
+    async def test_oversized_command_surfaced_by_on_error_fail(
+        self, executor: RecipeExecutor, tmp_path: Path
+    ):
+        """on_error=fail (the default) still fails the run, loudly."""
+        step = Step(
+            id="oversized",
+            type="bash",
+            command=self._oversized_command(),
+            on_error="fail",
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            await executor._execute_bash_step(step, {}, tmp_path)
+
+        message = str(exc_info.value)
+        assert "failed to execute command" in message
+        assert "Argument list too long" in message
+        assert "write the payload to a file" in message
+
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"),
+        reason="MAX_ARG_STRLEN per-argument cap is Linux-specific",
+    )
+    @pytest.mark.asyncio
+    async def test_oversized_command_skip_remaining(
+        self, executor: RecipeExecutor, tmp_path: Path
+    ):
+        """on_error=skip_remaining stops the rest, same as a non-zero exit."""
+        step = Step(
+            id="oversized",
+            type="bash",
+            command=self._oversized_command(),
+            on_error="skip_remaining",
+        )
+
+        with pytest.raises(executor_mod.SkipRemainingError):
+            await executor._execute_bash_step(step, {}, tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_non_e2big_exec_error_also_honours_continue(
+        self, executor: RecipeExecutor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Any exec-time OSError obeys on_error, not just E2BIG.
+
+        Platform-independent: the OSError is injected, so ENOENT/EACCES/EMFILE
+        behaviour is exercised everywhere the suite runs.
+        """
+
+        async def boom(*args, **kwargs):
+            raise OSError(2, "No such file or directory")
+
+        monkeypatch.setattr(executor_mod.asyncio, "create_subprocess_exec", boom)
+        step = Step(id="nobash", type="bash", command="echo hi", on_error="continue")
+
+        result = await executor._execute_bash_step(step, {}, tmp_path)
+
+        assert result.exit_code == executor_mod._EXEC_FAILURE_EXIT_CODE
+        assert "failed to execute command" in result.stderr
+        # A small command must NOT be blamed on size.
+        assert "write the payload to a file" not in result.stderr
+
+    @pytest.mark.asyncio
+    async def test_non_e2big_exec_error_still_raises_on_fail(
+        self, executor: RecipeExecutor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Default on_error=fail is unchanged for injected exec failures."""
+
+        async def boom(*args, **kwargs):
+            raise OSError(13, "Permission denied")
+
+        monkeypatch.setattr(executor_mod.asyncio, "create_subprocess_exec", boom)
+        step = Step(id="nobash", type="bash", command="echo hi", on_error="fail")
+
+        with pytest.raises(ValueError) as exc_info:
+            await executor._execute_bash_step(step, {}, tmp_path)
+
+        assert "Permission denied" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_large_but_runnable_command_warns_before_it_fails(
+        self,
+        executor: RecipeExecutor,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """A command past the advisory ceiling warns while it still works.
+
+        This is the early-warning half: the run succeeds, but the author is
+        told the command is approaching the OS cliff and how to fix it.
+        """
+        padding = "x" * (executor_mod._COMMAND_SIZE_WARN_BYTES + 1_000)
+        step = Step(id="chunky", type="bash", command=f"echo ok # {padding}")
+
+        with caplog.at_level("WARNING"):
+            result = await executor._execute_bash_step(step, {}, tmp_path)
+
+        assert result.exit_code == 0
+        assert result.stdout.strip() == "ok"
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("rendered command is" in w for w in warnings)
+        assert any("write the payload to a file" in w for w in warnings)
+
+    @pytest.mark.asyncio
+    async def test_normal_command_does_not_warn(
+        self,
+        executor: RecipeExecutor,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """No advisory noise for ordinary commands."""
+        step = Step(id="tiny", type="bash", command="echo ok")
+
+        with caplog.at_level("WARNING"):
+            await executor._execute_bash_step(step, {}, tmp_path)
+
+        assert not [
+            r for r in caplog.records if "rendered command is" in r.getMessage()
+        ]
+
+
+class TestBashScratchDir:
+    """A bash step gets a run-scoped directory to spill oversized payloads into.
+
+    This is the other half of the ARG_MAX story: a recipe that must move a big
+    payload between steps writes it to a file instead of interpolating it, and
+    the file needs somewhere run-scoped to live so two concurrent runs over the
+    same repo cannot read each other's payloads.
+    """
+
+    @pytest.fixture
+    def executor(self) -> RecipeExecutor:
+        return RecipeExecutor(MockCoordinator(), MockSessionManager())  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_scratch_dir_is_exported_and_writable(
+        self, executor: RecipeExecutor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """AMPLIFIER_RECIPE_SCRATCH_DIR points at a real, per-session directory."""
+        session_root = tmp_path / "sessions" / "sess-1"
+
+        def get_session_dir(session_id: str, project_path: Path) -> Path:
+            return tmp_path / "sessions" / session_id
+
+        monkeypatch.setattr(
+            executor.session_manager, "get_session_dir", get_session_dir, raising=False
+        )
+        step = Step(
+            id="spill",
+            type="bash",
+            command='printf payload > "$AMPLIFIER_RECIPE_SCRATCH_DIR/p.json"; echo "$AMPLIFIER_RECIPE_SCRATCH_DIR"',
+        )
+
+        result = await executor._execute_bash_step(
+            step, {}, tmp_path, session_id="sess-1"
+        )
+
+        assert result.exit_code == 0
+        assert result.stdout.strip() == str(session_root / "scratch")
+        assert (session_root / "scratch" / "p.json").read_text() == "payload"
+
+    @pytest.mark.asyncio
+    async def test_no_session_means_no_scratch_var(
+        self, executor: RecipeExecutor, tmp_path: Path
+    ):
+        """Without a session there is nothing to scope to -- the var is absent.
+
+        Recipes must therefore fall back (e.g. to the system temp dir) rather
+        than assume it exists; an older engine will not set it at all.
+        """
+        step = Step(
+            id="nospill",
+            type="bash",
+            command='echo "[${AMPLIFIER_RECIPE_SCRATCH_DIR:-unset}]"',
+        )
+
+        result = await executor._execute_bash_step(step, {}, tmp_path)
+
+        assert result.stdout.strip() == "[unset]"
+
+    @pytest.mark.asyncio
+    async def test_unusable_session_dir_is_not_fatal(
+        self, executor: RecipeExecutor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A session manager that cannot answer must not break the step."""
+
+        def boom(session_id: str, project_path: Path) -> Path:
+            raise RuntimeError("no session store")
+
+        monkeypatch.setattr(
+            executor.session_manager, "get_session_dir", boom, raising=False
+        )
+        step = Step(
+            id="nospill",
+            type="bash",
+            command='echo "[${AMPLIFIER_RECIPE_SCRATCH_DIR:-unset}]"',
+        )
+
+        result = await executor._execute_bash_step(
+            step, {}, tmp_path, session_id="sess-1"
+        )
+
+        assert result.exit_code == 0
+        assert result.stdout.strip() == "[unset]"
