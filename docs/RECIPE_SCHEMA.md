@@ -3021,6 +3021,50 @@ steps:
     prompt: "..."
 ```
 
+#### `agent: self` is refused under v2
+
+`self` is a **legacy** pseudo-agent meaning *"spawn the calling session's own
+agent"*. In a legacy (no `schema_version`) recipe it keeps working exactly as it
+always has. Under `schema_version: 2` it is **refused at preflight**, with
+`SelfAgentUnsupportedError`:
+
+```text
+Agent 'self' referenced by step 'validate_inputs' cannot be resolved in a
+`schema_version: 2` recipe: `self` is a legacy pseudo-agent meaning "spawn the
+calling session's own agent", and no `dependencies:` block can supply it — it
+names no bundle agent.
+
+Remedy: Name the agent this step actually runs as. This recipe's closure
+supplies: foundation:explorer, foundation:zen-architect. …
+```
+
+**Why it is refused rather than exempted.** `self` is not an undeclared name the
+closure happens to be missing — it is a name no `dependencies:` block *can*
+supply. And it is not undefined: the host's spawner defines it as an **empty
+overlay merged onto the parent session's config**, and in a v2 run that parent
+session is the **caller's**. Admitting `self` would therefore restore the
+caller's entire world — agent map included — for that one step, with no error,
+no warning and no provenance entry to show the closure had been bypassed. That
+is precisely what `manifest.v1` Core 3/5 exist to prevent, and it would be
+strictly worse than a loud refusal.
+
+**Two supported alternatives:**
+
+| You want | Do this |
+|----------|---------|
+| The step to run as a specific agent | Name that agent, and declare it under a dependency's `required_agents`. Its identity is then resolved, recorded in provenance and attributable like every other step's. |
+| The step to genuinely run as the *calling* session's agent | Keep the recipe legacy: omit `schema_version: 2`. `self` retains its caller-bound meaning, labeled rather than smuggled. |
+
+An alias does **not** get around this: `agents: {self: foundation:explorer}` is
+refused too. It would leave `agent: self` in the file reading as the legacy
+caller-bound meaning while doing something else, and a reader could not tell the
+two apart.
+
+The refusal is enforced twice — at plan time (the planner) and at resolve time
+(the agent catalog, the last hop before a spawn). The pair is deliberate: a
+preflight that is the *only* guard is one exemption away from silently reopening
+the closed world.
+
 ### Isolation and precedence
 
 **Isolation by default.** The runner builds the execution session *exclusively*
@@ -3061,10 +3105,11 @@ Preflight runs **before any side effects** (`manifest.v1` Core 6):
 3. **A missing declaration fails naming the undeclared reference and the
    remedy** (`manifest.v1` Core 6).
 
-Preflight failures — undeclared agent, collision, trust refusal, provenance
-mismatch — are **distinct, typed errors** raised before recipe steps run. A
-missing artifact or refused dependency is a real result, never a fabricated
-success (`runner-lib.v1` Core 8).
+Preflight failures — undeclared agent, `agent: self` (see
+[`agent: self` is refused under v2](#agent-self-is-refused-under-v2)), collision,
+trust refusal, provenance mismatch — are **distinct, typed errors** raised before
+recipe steps run. A missing artifact or refused dependency is a real result,
+never a fabricated success (`runner-lib.v1` Core 8).
 
 ### Lock modes
 

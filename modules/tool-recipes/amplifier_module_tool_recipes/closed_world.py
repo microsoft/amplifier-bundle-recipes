@@ -45,6 +45,32 @@ which is exactly how a spawned child has always obtained providers. That is
 what makes an in-session v2 agent step do real model work instead of reporting
 "No providers available" (recipes-30w).
 
+Why ``agent: self`` is refused here rather than exempted
+--------------------------------------------------------
+``self`` is the legacy pseudo-agent meaning "spawn the calling session's own
+agent". It looks like an oversight that this module refuses it -- ``validator``
+and ``collect_agent_references`` both exempt it, and exempting it here too is a
+two-line change that makes the error go away.
+
+It would also open a silent containment hole, which is exactly the hole this
+module exists to close. ``self`` is not undefined: the host's spawner defines
+it as an EMPTY overlay -- ``merge_configs(parent_session.config, {})`` -- and
+the ``parent_session`` the step engine hands over is the CALLER's
+(``executor.py``: ``parent_session = self.coordinator.session``).
+:class:`ClosedWorldCoordinator` substitutes the agent map and the spawn; it
+does not substitute the session, and could not without owning session
+construction. So an admitted ``self`` step would run as the caller's entire
+config, agent map included -- with no error, no warning, and no provenance
+entry to show the closure had been bypassed. Strictly worse than a refusal.
+
+Refusing costs a v2 author one thing: they must name the agent the step
+actually runs as. That name is then resolved, recorded in provenance, and
+attributable like every other -- which is the property the closed world is for.
+The refusal is :class:`~amplifier_recipe_runner.errors.SelfAgentUnsupportedError`
+and it names that alternative. A recipe that genuinely wants caller-bound
+``self`` keeps it by staying legacy (no ``schema_version: 2``), where the
+semantics are labeled rather than smuggled.
+
 One honest boundary
 -------------------
 The host's spawn capability composes the child session from the *parent*
@@ -273,12 +299,36 @@ class ClosedWorldAgentCatalog:
             UndeclaredAgentError: ``reference`` is outside the closure. The
                 caller's agent map is never consulted -- there is no code path
                 here that could consult one.
+            SelfAgentUnsupportedError: ``reference`` is the legacy pseudo-agent
+                ``self``. This is the containment boundary for the in-session
+                engine, and the reason it is enforced here and not only at the
+                planner: the step engine hands ``parent_session =
+                self.coordinator.session`` -- the CALLER's session -- to the
+                host's spawn, and the host defines ``self`` as an EMPTY overlay
+                merged onto exactly that. A ``self`` step admitted this far
+                would therefore run as the caller's whole world, agent map
+                included, with nothing in the run manifest to show it. Refusing
+                at the last hop before the spawn is what makes that
+                unreachable rather than merely undocumented.
         """
+        # Lazy for the same reason every other import of this module is:
+        # ``runner_adapter`` imports THIS module at import time, so a top-level
+        # import back would be a cycle. ``SELF_AGENT`` is read from there
+        # rather than re-spelled here so one rename cannot leave this guard
+        # matching a name nothing else uses.
+        from .runner_adapter import SELF_AGENT  # noqa: PLC0415 -- lazy import
+        from .runner_adapter import load_runner  # noqa: PLC0415 -- lazy import
+
+        if reference == SELF_AGENT:
+            runner = load_runner()
+            raise runner.SelfAgentUnsupportedError(
+                step_id=step_id,
+                declared_agents=self.names,
+            )
+
         provenance = self._provenance.get(reference)
         if provenance is not None:
             return provenance
-
-        from .runner_adapter import load_runner  # noqa: PLC0415 -- lazy import
 
         runner = load_runner()
         raise runner.UndeclaredAgentError(

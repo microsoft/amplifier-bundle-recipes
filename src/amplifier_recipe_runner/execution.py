@@ -70,8 +70,10 @@ from .api import ExecutionPlan
 from .api import RunRequest
 from .api import RunResult
 from .api import RunStatus
+from .errors import SELF_AGENT
 from .errors import PreflightError
 from .errors import RecipeRunnerError
+from .errors import SelfAgentUnsupportedError
 from .errors import UndeclaredAgentError
 from .manifest import ManifestError
 from .manifest import parse_manifest_file
@@ -272,7 +274,15 @@ class PlanCatalog:
             UndeclaredAgentError: ``reference`` is outside the plan. The
                 caller's agent map is never consulted as a fallback -- there
                 is no code path here that could consult one.
+            SelfAgentUnsupportedError: ``reference`` is the legacy pseudo-agent
+                ``self``. Refused HERE as well as at plan time on purpose: the
+                planner is a preflight, and a preflight that is the *only*
+                guard is one exemption away from silently reopening the closed
+                world. Resolution is the last hop before a spawn, so this is
+                where containment has to hold.
         """
+        if reference == SELF_AGENT:
+            raise SelfAgentUnsupportedError(step_id=step_id, declared_agents=self.names)
         provenance = self._by_name.get(reference)
         if provenance is None:
             raise UndeclaredAgentError(

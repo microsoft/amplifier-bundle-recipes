@@ -43,6 +43,7 @@ from amplifier_recipe_runner import RecipeRunnerError
 from amplifier_recipe_runner import RunRequest
 from amplifier_recipe_runner import RunResult
 from amplifier_recipe_runner import RunStatus
+from amplifier_recipe_runner import SelfAgentUnsupportedError
 from amplifier_recipe_runner import TrustRefusedError
 from amplifier_recipe_runner import UndeclaredAgentError
 from amplifier_recipe_runner import ValidationReport
@@ -90,10 +91,17 @@ ALLOWLIST = {
     "PreflightError",
     "ProvenanceMismatchError",
     "RecipeRunnerError",
+    "SelfAgentUnsupportedError",
     "TrustRefusedError",
     "UndeclaredAgentError",
 }
 
+# The six preflight classes the contract NAMES. Deliberately not every
+# PreflightError subclass: `SelfAgentUnsupportedError` specialises
+# `UndeclaredAgentError` (so a host already catching the general case keeps
+# catching it), which is exactly the subclass relationship
+# `test_preflight_errors_are_distinct_and_typed` asserts these six do NOT
+# have among themselves. It gets its own assertions below instead.
 PREFLIGHT_ERRORS = (
     UndeclaredAgentError,
     AgentCollisionError,
@@ -311,6 +319,41 @@ def test_undeclared_agent_error_names_reference_and_remedy() -> None:
     assert exc.step_id == "review"
     assert "foundation:zen-architect" in str(exc)
     assert "Remedy:" in str(exc)
+
+
+def test_self_agent_refusal_never_emits_the_impossible_remedy() -> None:
+    """recipes-80q: the ONE sentence this error must never say.
+
+    Before this class existed, planning a v2 recipe with `agent: self` raised
+    the generic UndeclaredAgentError, whose remedy is "declare a dependency
+    supplying 'self'". No `dependencies:` block can do that -- `self` names no
+    bundle agent -- so the author was handed an instruction with no followable
+    action in it.
+    """
+    exc = SelfAgentUnsupportedError(
+        step_id="validate_inputs", declared_agents=("foundation:explorer",)
+    )
+
+    assert isinstance(exc, PreflightError)
+    # A specialisation, so every host already catching the general case keeps
+    # catching this one.
+    assert isinstance(exc, UndeclaredAgentError)
+    assert exc.agent == "self"
+    assert exc.step_id == "validate_inputs"
+
+    text = str(exc)
+    # Says what is wrong, in the author's own vocabulary.
+    assert "`dependencies:` block can supply it" in text
+    assert "validate_inputs" in text
+    # ... and names the supported alternative, twice: a declared agent, or
+    # staying legacy.
+    assert "foundation:explorer" in text
+    assert "schema_version" in text
+    assert "Remedy:" in text
+
+    # The impossible instruction, in the shape the generic error emits it.
+    assert "Declare a dependency supplying 'self'" not in text
+    assert "declare a dependency supplying 'self'" not in text.lower()
 
 
 def test_agent_collision_error_lists_sources() -> None:

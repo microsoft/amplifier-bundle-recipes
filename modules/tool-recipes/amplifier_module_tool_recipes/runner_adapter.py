@@ -487,8 +487,16 @@ def warn_legacy_recipe(recipe_path: Path | str) -> str:
 # ---------------------------------------------------------------------------
 
 #: Pseudo-agent meaning "spawn the current agent". It is never looked up in an
-#: agent registry, so the preflight exempts it (same rule the availability
-#: warning already applies).
+#: agent registry, so the LEGACY preflight exempts it (same rule the
+#: availability warning already applies).
+#:
+#: The exemption is legacy-only, and deliberately so. Under ``schema_version:
+#: 2`` the same name is REFUSED -- see
+#: :class:`~amplifier_recipe_runner.errors.SelfAgentUnsupportedError` and the
+#: "Why ``agent: self`` is refused" section of :mod:`.closed_world`. In a
+#: caller-bound run "the calling session's own agent" is a coherent, labeled
+#: thing; in a closed world it is the caller's whole config smuggled back in.
+#: Same string, two schema versions, two answers.
 SELF_AGENT = "self"
 
 

@@ -1,50 +1,78 @@
-# --- Why this recipe is still schema_version-less (recipes-c6w) -------------
-# Every other recipe under examples/context-intelligence/ carries a v2
-# dependency manifest. This one cannot yet, and the reason is structural
-# rather than an oversight.
+# --- Dependency manifest (contract: recipe-dependency-manifest.v1) ----------
+# schema_version 2 makes this recipe portable: every `agent:` reference below
+# resolves ONLY from the declared closure here, never from the calling
+# session's agent map. A caller that lacks these agents can still run it --
+# and so does a v2 orchestrator that reaches this file as a `type: recipe`
+# step, because `schema_version` is read per recipe, not inherited.
+# Pinned to the released tag `v2.1.2`. Foundation fetches a ref with
+# `git clone --branch`, which accepts a branch or a tag but NOT a commit SHA,
+# so a tag is the most immutable pin a `source:` can currently express.
+schema_version: 2
+
+dependencies:
+  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+    kind: bundle
+    required_agents:
+      - "foundation:explorer"
+      - "foundation:zen-architect"
+      - "foundation:bug-hunter"
+      - "python-dev:code-intel"
+# ---------------------------------------------------------------------------
+
+# --- What the six `agent: "self"` steps became, and why (recipes-80q) -------
+# This file used to carry `agent: "self"` on six steps, and was the last
+# examples/ recipe still on legacy because of it (recipes-c6w).
 #
-# The recipe uses `agent: "self"` on six steps, and `self` cannot currently be
-# made safe under a v2 closed world. Read the whole reason before "fixing" it:
-# the obvious fix is the dangerous one.
+# `self` is the LEGACY pseudo-agent meaning "spawn the calling session's own
+# agent". Under schema_version 2 it is now REFUSED at preflight
+# (`SelfAgentUnsupportedError`), for a reason worth restating here rather than
+# only in the library: `self` is not undefined. The host's spawner defines it
+# as an EMPTY overlay merged onto the PARENT session's config, and in a v2 run
+# that parent session is the CALLER's. Honouring it would have restored the
+# caller's whole world -- agent map included -- for that one step, silently.
+# See docs/RECIPE_SCHEMA.md, "`agent: self` is refused under v2".
 #
-# What happens today. `self` is a documented pseudo-agent of the LEGACY engine
-# -- validator.py names it explicitly, `collect_agent_references` excludes it
-# -- but neither `planner._build_provenance` nor `execution.AgentCatalog.
-# resolve` special-cases it, so planning this file as v2 fails preflight with
+# So each of those steps now names the agent it actually runs as, drawn from
+# the closure declared above. Nothing was guessed; both are agents this recipe
+# already declares and uses elsewhere:
 #
-#   UndeclaredAgentError: Agent 'self' referenced by step 'validate_inputs'
-#   is not supplied by any declared dependency
+#   validate_inputs        -> foundation:explorer
+#       A pre-check that reads `codebase_paths` and judges whether the topic is
+#       investigable in them. That is a survey of the tree, which is the role
+#       this recipe itself assigns explorer ("code survey and data flow").
 #
-# and the remedy that error suggests cannot be followed: no `dependencies:`
-# block can supply `self`, because `self` does not name a bundle agent.
+#   check_proceed          -> foundation:zen-architect
+#   parallel_investigation -> foundation:zen-architect
+#   confidence_tagging     -> foundation:zen-architect
+#   verification_loop      -> foundation:zen-architect
+#   generate_summary       -> foundation:zen-architect
+#       The recipe's orchestration-and-synthesis role: dispatch the sub-agents,
+#       consolidate what they returned, write the result. It is already the
+#       agent this recipe uses to author the document itself
+#       (`create_v1_document`), so these steps now run as the same identity
+#       that produces their output.
 #
-# Why the obvious exemption is WRONG. It is tempting to read the above as "the
-# planner just forgot to exempt `self`, like validator.py already does" and add
-# two lines. That would open a silent containment hole. `self` is NOT
-# undefined -- the host's spawner defines it precisely
-# (amplifier_app_cli/session_spawner.py, `if agent_name == "self"`): an EMPTY
-# overlay, i.e. `merge_configs(parent_session.config, {})` -- inherit the
-# parent session's config as-is. And in the closed-world path the parent
-# session is the CALLER's: executor.py passes
-# `parent_session = self.coordinator.session`, and ClosedWorldCoordinator
-# substitutes only the agent map and the spawn, never the session. So an
-# exempted `self` step would inherit the caller's entire config -- agent map
-# included -- silently restoring exactly the world that
-# recipe-dependency-manifest.v1 Core 3/5 exists to keep out. No error, no
-# warning: just the closed world quietly reopened for that step.
+# What CHANGED behaviourally: these steps used to inherit the caller's session
+# wholesale; they now run as a declared agent with its own definition, and each
+# is recorded in the run's provenance like any other step. What did NOT change:
+# the agents they DISPATCH to. In a v2 run the child's roster is the plan's
+# closure, which is the foundation closure declared above -- so explorer,
+# code-intel and bug-hunter, named in `investigation_agents` /
+# `verification_agents` below, are exactly as reachable as before.
 #
-# What it would actually take: substituting a recipe-owned parent session at
-# the closed-world boundary, or redefining `self` against the plan rather than
-# against the parent session. Either is a design change with a safety property
-# attached, not something a migration may invent. Tracked as recipes-80q; this
-# file stays honestly labelled legacy until it is settled.
+# One further correction was forced by actually RUNNING this file for the first
+# time: its `context:` block was written in a declarative schema form the
+# engine has never supported, so every `{{variable}}` substituted a schema DICT
+# instead of a value and the first condition to read one died on it. See the
+# NOTE ON SHAPE on the `context:` block below; the missing diagnosis is filed
+# as recipes-u2f.
 #
-# What DID change here: the `lsp-python:python-code-intel` references were
-# corrected to `python-dev:code-intel`. `amplifier-bundle-lsp-python` is a
-# DEPRECATED forwarding shell (bundle v2.0.0) that ships no `agents/`
-# directory at all and merely includes `amplifier-bundle-python-dev`, where
-# the agent actually lives -- renamed away from `python-code-intel`. The old
-# reference could never have resolved from any bundle.
+# A previous pass also corrected the `lsp-python:python-code-intel` references
+# to `python-dev:code-intel` (recipes-c6w). `amplifier-bundle-lsp-python` is a
+# DEPRECATED forwarding shell (bundle v2.0.0) that ships no `agents/` directory
+# at all and merely includes `amplifier-bundle-python-dev`, where the agent
+# actually lives -- renamed away from `python-code-intel`. The old reference
+# could never have resolved from any bundle.
 # ---------------------------------------------------------------------------
 
 # Adversarial Deep Dive Investigation Recipe v2.2
@@ -154,190 +182,116 @@ description: |
 # CONTEXT VARIABLES (Inputs)
 # =============================================================================
 context:
-  # Required inputs
-  topic:
-    type: string
-    required: true
-    description: |
-      The question or topic to investigate. Be specific.
-      Example: "How does the system prompt get composed for a bundle session?"
-  
-  output_dir:
-    type: string
-    required: true
-    description: |
-      Directory to save investigation documents.
-      Will contain: v1.md, v2.md, ..., FINAL.md, verification-log.md, metrics.json
-  
-  # ==========================================================================
-  # CONTINUATION MODE (Skip investigation, resume verification)
-  # ==========================================================================
-  continue_from:
-    type: string
-    default: ""
-    description: |
-      Path to a previously verified document to continue verification from.
-      When provided, skips pre_check, initial_investigation, and synthesis stages.
-      
-      Example: "./docs/investigations/INVESTIGATION_v3.md"
-      
-      Use this when:
-      - You want to run more verification rounds on an existing document
-      - Previous verification was interrupted
-      - You've manually edited a document and want to re-verify
-  
-  starting_version:
-    type: integer
-    default: 1
-    description: |
-      Version number to assign to the continue_from document.
-      Used when continuing from a previous run.
-      
-      Example: If continue_from is INVESTIGATION_v3.md, set starting_version to 3.
-      
-      This ensures version numbering continues correctly (v3 → v4 → v5 → FINAL).
-  
-  # Optional inputs with defaults
-  codebase_paths:
-    type: array
-    default: ["."]
-    description: |
-      List of paths to investigate. Defaults to current directory.
-      Example: ["./amplifier-core", "./amplifier-foundation"]
-  
-  max_rounds:
-    type: integer
-    default: 5
-    description: |
-      Maximum adversarial verification rounds before forcing human review.
-      Typical: 3-4 rounds for clean verification.
-  
-  focus_areas:
-    type: array
-    default: []
-    description: |
-      Optional list of specific files, modules, or concepts to focus on.
-      Example: ["registry.py", "bundle composition", "context resolution"]
-  
-  additional_agents:
-    type: array
-    default: []
-    description: |
-      Additional agents beyond the core set for investigation phase.
-      These are ADDED to the default investigation agents.
-      Example: ["amplifier:amplifier-expert", "foundation:security-guardian"]
-  
-  additional_verifiers:
-    type: array
-    default: []
-    description: |
-      Additional verification agents beyond the core set.
-      Example: ["foundation:security-guardian"]
-  
-  investigation_type:
-    type: string
-    default: "codebase"
-    description: |
-      Type of investigation. Affects agent prioritization.
-      Options: "codebase" | "architecture" | "integration" | "security"
-  
-  critical_issue_threshold:
-    type: integer
-    default: 5
-    description: |
-      If a single round finds this many issues, pause for human checkpoint.
-      Set to 0 to disable (never pause mid-verification).
-  
-  early_exit_clean_rounds:
-    type: integer
-    default: 2
-    description: |
-      If an agent is clean for this many consecutive rounds, skip it.
-      Optimization to reduce redundant verification work.
-  
-  # ==========================================================================
-  # v2.2: CONVERGENCE DETECTION & SMART EXIT
-  # ==========================================================================
-  
-  convergence_threshold:
-    type: integer
-    default: 2
-    description: |
-      Number of consecutive rounds with similar issue counts to detect plateau.
-      
-      When issues remain roughly constant for this many rounds, the recipe
-      will trigger early exit instead of continuing to max_rounds.
-      
-      Example: If set to 2 and rounds 4, 5, 6 all have ~5 issues, exit after round 6.
-      
-      Set to 0 to disable convergence detection (always run to max_rounds or clean).
-      
-      Rationale: Session analysis showed issue counts plateauing when verifiers
-      disagree on scope vs factual issues. Detecting this saves time.
-  
-  convergence_variance:
-    type: integer
-    default: 2
-    description: |
-      Allowed variance in issue counts when detecting convergence.
-      
-      Issues are considered "similar" if within ± this value.
-      Example: With variance=2, issue counts of 5, 6, 4 would be considered a plateau.
-      
-      Lower values = stricter plateau detection (must be nearly identical).
-      Higher values = looser detection (treats similar counts as plateau).
-  
-  exit_on_scope_only_issues:
-    type: boolean
-    default: true
-    description: |
-      Exit early if the only remaining issues are scope/completeness type.
-      
-      When true:
-      - If lsp_verifier and logic_verifier are CLEAN
-      - But completeness_verifier still has issues
-      - Consider the document "factually verified" and exit
-      
-      Rationale: Session analysis showed completeness_verifier finds "omissions"
-      that are actually scope expansions, not factual errors. These create
-      infinite loops as the scope keeps growing.
-      
-      The factual verifiers (LSP, logic) converge quickly because code facts
-      are binary (correct or incorrect). Scope is subjective.
-  
-  # ==========================================================================
-  # v2.2: SMART AUTO-APPROVE
-  # ==========================================================================
-  
-  auto_approve_threshold:
-    type: integer
-    default: 3
-    description: |
-      Maximum total issues in final round for auto-approval.
-      
-      If all these conditions are met, skip human review:
-      1. Total issues in final round ≤ this threshold
-      2. lsp_verifier had 0 issues in final round
-      3. logic_verifier had 0 issues in final round
-      4. No CRITICAL severity issues
-      
-      Set to 0 to disable auto-approval (always require human review).
-      
-      Rationale: When factual verifiers are clean and only minor scope
-      suggestions remain, human review adds little value.
-  
-  auto_approve_clean_factual_rounds:
-    type: integer
-    default: 1
-    description: |
-      Number of clean rounds required from factual verifiers for auto-approval.
-      
-      Factual verifiers: lsp_verifier, logic_verifier
-      These verify objective facts (code exists, logic is consistent).
-      
-      If these verifiers have been clean for N consecutive rounds,
-      the document is factually sound and can be auto-approved
-      (assuming other auto_approve conditions are met).
+  # NOTE ON SHAPE (recipes-80q). These entries used to be written in a
+  # declarative schema form -- `topic: {type: string, required: true,
+  # description: ...}` -- which the recipe engine has never supported. A
+  # recipe's `context:` is a plain variable -> DEFAULT VALUE mapping
+  # (docs/RECIPE_SCHEMA.md, `context` (optional)), and the engine merges it as
+  # `{**recipe.context, **context_vars}`. So every one of those entries bound
+  # its variable to the SCHEMA DICT rather than to a value, and the first step
+  # to look at one died on it:
+  #
+  #   Step 'setup_continuation': condition error: Invalid expression:
+  #   Unexpected character '{' at position 0
+  #
+  # -- because `{{continue_from}}` had substituted `{'type': 'string',
+  # 'default': '', ...}` into the condition. Observed live; this file was never
+  # runnable as written, which nothing caught while it was blocked on
+  # `agent: "self"` and therefore never run. The schema form is not diagnosed
+  # anywhere, so it is filed separately; here it is simply corrected to the
+  # supported shape, with each entry's documentation kept as a comment.
+
+  # -- Required inputs. No usable default; supply both via --context. ---------
+
+  # The question or topic to investigate. Be specific.
+  # Example: "How does the system prompt get composed for a bundle session?"
+  topic: ""
+
+  # Directory to save investigation documents. Will contain:
+  # v1.md, v2.md, ..., FINAL.md, verification-log.md, metrics.json
+  output_dir: ""
+
+  # -- Continuation mode (skip investigation, resume verification) ------------
+
+  # Path to a previously verified document to continue verification from.
+  # When provided, skips pre_check, initial_investigation and synthesis.
+  # Example: "./docs/investigations/INVESTIGATION_v3.md"
+  # Use this when you want more verification rounds on an existing document,
+  # a previous verification was interrupted, or you edited a document by hand
+  # and want it re-verified.
+  continue_from: ""
+
+  # Version number to assign to the continue_from document, so numbering
+  # continues correctly (v3 -> v4 -> v5 -> FINAL). If continue_from is
+  # INVESTIGATION_v3.md, set this to 3.
+  starting_version: 1
+
+  # -- Optional inputs --------------------------------------------------------
+
+  # Paths to investigate. Example: ["./amplifier-core", "./amplifier-foundation"]
+  codebase_paths: ["."]
+
+  # Maximum adversarial verification rounds before forcing human review.
+  # Typical: 3-4 rounds for clean verification.
+  max_rounds: 5
+
+  # Optional specific files, modules or concepts to focus on.
+  # Example: ["registry.py", "bundle composition", "context resolution"]
+  focus_areas: []
+
+  # Additional agents ADDED to the default investigation agents.
+  # Example: ["amplifier:amplifier-expert", "foundation:security-guardian"]
+  # NOTE: under schema_version 2 anything named here must also be supplied by
+  # the declared dependency closure at the top of this file.
+  additional_agents: []
+
+  # Additional verification agents beyond the core set.
+  # Example: ["foundation:security-guardian"]. Same closure rule as above.
+  additional_verifiers: []
+
+  # Type of investigation; affects agent prioritization.
+  # Options: "codebase" | "architecture" | "integration" | "security"
+  investigation_type: "codebase"
+
+  # If a single round finds this many issues, pause for a human checkpoint.
+  # Set to 0 to disable (never pause mid-verification).
+  critical_issue_threshold: 5
+
+  # If an agent is clean for this many consecutive rounds, skip it.
+  # An optimization to reduce redundant verification work.
+  early_exit_clean_rounds: 2
+
+  # -- v2.2: convergence detection and smart exit -----------------------------
+
+  # Consecutive rounds with similar issue counts that count as a plateau. When
+  # issues stay roughly constant for this many rounds the recipe exits early
+  # instead of running to max_rounds. Example: with 2, if rounds 4/5/6 all have
+  # ~5 issues, exit after round 6. Set to 0 to disable convergence detection.
+  # Rationale: session analysis showed issue counts plateauing when verifiers
+  # disagree on scope vs factual issues; detecting that saves time.
+  convergence_threshold: 2
+
+  # Allowed variance in issue counts when detecting convergence: counts within
+  # +/- this value are "similar". Lower = stricter plateau detection.
+  convergence_variance: 2
+
+  # Exit early if the only remaining issues are scope/completeness type -- i.e.
+  # lsp_verifier and logic_verifier are CLEAN but completeness_verifier is not.
+  # Rationale: completeness_verifier finds "omissions" that are really scope
+  # expansions, which grow the scope indefinitely. Factual verifiers converge
+  # quickly because code facts are binary; scope is subjective.
+  exit_on_scope_only_issues: true
+
+  # -- v2.2: smart auto-approve -----------------------------------------------
+
+  # Maximum total issues in the final round for auto-approval. All must hold:
+  # total issues <= this, lsp_verifier 0 issues, logic_verifier 0 issues, no
+  # CRITICAL severity issues. Set to 0 to always require human review.
+  auto_approve_threshold: 3
+
+  # Clean rounds required from the factual verifiers (lsp_verifier,
+  # logic_verifier) before auto-approval is considered.
+  auto_approve_clean_factual_rounds: 1
 
   # ==========================================================================
   # INTERNAL: Agent Configurations
@@ -477,7 +431,7 @@ stages:
     
     steps:
       - id: validate_inputs
-        agent: self
+        agent: "foundation:explorer"
         timeout: 120  # 2 minutes max
         prompt: |
           # Quick Pre-Check (Max 2 minutes)
@@ -538,7 +492,7 @@ stages:
         output: "precheck_result"
       
       - id: check_proceed
-        agent: self
+        agent: "foundation:zen-architect"
         prompt: |
           # Evaluate Pre-Check Result
           
@@ -582,7 +536,7 @@ stages:
     
     steps:
       - id: parallel_investigation
-        agent: self
+        agent: "foundation:zen-architect"
         prompt: |
           # Parallel Investigation Orchestrator
           
@@ -667,7 +621,7 @@ stages:
         timeout: 900  # 15 minutes
 
       - id: confidence_tagging
-        agent: self
+        agent: "foundation:zen-architect"
         prompt: |
           # Confidence Consolidation Pass
           
@@ -1019,7 +973,7 @@ stages:
         output: "continuation_setup_result"
 
       - id: verification_loop
-        agent: self
+        agent: "foundation:zen-architect"
         prompt: |
           # Adversarial Verification Orchestrator v2.2
           
@@ -1650,7 +1604,7 @@ stages:
           cat "{{output_dir}}/metrics.json"
       
       - id: generate_summary
-        agent: self
+        agent: "foundation:zen-architect"
         prompt: |
           # Generate Final Summary (v2.2)
           

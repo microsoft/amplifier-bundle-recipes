@@ -51,6 +51,7 @@ from .errors import ManifestValidationError
 from .errors import PreflightError
 from .errors import ProvenanceMismatchError
 from .errors import RecipeRunnerError
+from .errors import SelfAgentUnsupportedError
 from .errors import TrustRefusedError
 from .errors import UndeclaredAgentError
 from .execution import plan
@@ -110,6 +111,7 @@ __all__ = [
     "PreflightError",
     "ProvenanceMismatchError",
     "RecipeRunnerError",
+    "SelfAgentUnsupportedError",
     "TrustRefusedError",
     "UndeclaredAgentError",
 ]
