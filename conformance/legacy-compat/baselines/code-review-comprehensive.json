@@ -7,7 +7,7 @@
     "multiple agent steps (6)",
     "conditional routing on a step output",
     "legacy step-level provider + model fields",
-    "model glob provenance (claude-sonnet-* / claude-haiku-* / claude-opus-*)"
+    "model glob provenance (claude-sonnet-* / claude-opus-*) resolved against a frozen catalog, plus an exact model (claude-haiku) that bypasses pattern resolution entirely"
   ],
   "events": [
     {
@@ -438,7 +438,7 @@
         "orchestrator_config": null,
         "provider_preferences": [
           {
-            "model": "claude-sonnet-*",
+            "model": "claude-sonnet-4-5",
             "provider": "anthropic"
           }
         ],
@@ -465,7 +465,7 @@
         "orchestrator_config": null,
         "provider_preferences": [
           {
-            "model": "claude-sonnet-*",
+            "model": "claude-sonnet-4-5",
             "provider": "anthropic"
           }
         ],
@@ -519,7 +519,7 @@
         "orchestrator_config": null,
         "provider_preferences": [
           {
-            "model": "claude-opus-*",
+            "model": "claude-opus-4-1",
             "provider": "anthropic"
           }
         ],
@@ -546,7 +546,7 @@
         "orchestrator_config": null,
         "provider_preferences": [
           {
-            "model": "claude-opus-*",
+            "model": "claude-opus-4-1",
             "provider": "anthropic"
           }
         ],
@@ -570,6 +570,13 @@
       "suggest-improvements": "foundation:zen-architect",
       "validate-suggestions": "foundation:zen-architect"
     }
+  },
+  "provider_catalog": {
+    "anthropic": [
+      "claude-haiku-4-5",
+      "claude-opus-4-1",
+      "claude-sonnet-4-5"
+    ]
   },
   "recipe": "conformance/legacy-compat/fixtures/legacy-recipes/code-review-recipe.yaml",
   "recipe_sha256": "45f7bd021d58915c961dcee15fb0b1afcc71aa9691935a0684bb0eb28c821891",

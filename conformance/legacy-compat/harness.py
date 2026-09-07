@@ -93,6 +93,28 @@ class DisplayRecorder:
         self.messages.append({"level": level, "source": source, "message": message})
 
 
+class FrozenProviderCatalog:
+    """A fixed, case-declared model list standing in for a live provider.
+
+    Same shape `resolve_model_pattern` expects of a real mounted provider --
+    an object with an async ``list_models()`` -- and the same fixture
+    philosophy as `caller_agents`, the scripted `agent_responses` and the
+    hermetic `gh` shim: the live thing is replaced by fixed, declared bytes so
+    the baseline is a statement about *engine behaviour*, never about a
+    particular machine.
+
+    Frozen, not live, is the whole point. A live catalog would make the
+    baseline rot whenever a vendor ships a model; a list written in
+    `cases.yaml` cannot.
+    """
+
+    def __init__(self, models: list[str]):
+        self._models = list(models)
+
+    async def list_models(self) -> list[str]:
+        return list(self._models)
+
+
 class CallerFixture:
     """A caller configuration that HAS the agents the legacy recipe references.
 
@@ -102,14 +124,38 @@ class CallerFixture:
     the recorded provenance is a statement about resolution, not about a
     particular developer's installed bundles.
 
-    Deliberately provider-free: `get("providers")` returns None, so
-    `resolve_model_pattern` leaves model globs (e.g. `claude-sonnet-*`)
-    unresolved. A live provider catalog is not reproducible and could never be
-    a byte-identical baseline; the glob itself is the provenance we assert on.
+    Providers follow the same rule. A case that exercises model globs declares
+    a frozen `provider_catalog:` in cases.yaml and `get("providers")` serves it;
+    every other case declares none and `get("providers")` returns None, exactly
+    as before.
+
+    This used to be unconditional -- no providers at all, so
+    `resolve_model_pattern` left a glob like `claude-sonnet-*` untouched and the
+    glob ITSELF was the recorded provenance. That stopped being true at
+    d5b72b7: an unmatched pattern now resolves to the provider's real default,
+    and a preference whose model cannot be filled is DROPPED before the spawn
+    rather than emitted with an empty model (which would blank the provider's
+    configured model and kill a live run with a 400). Correct for a live run --
+    but with no catalog at all it silently reduced this harness's model-glob
+    provenance to `null`, so the one case that exists to pin glob provenance
+    pinned nothing. A frozen catalog restores the coverage without touching
+    engine behaviour, and without reintroducing the rot the no-catalog rule was
+    protecting against.
     """
 
-    def __init__(self, agents: dict[str, Any], workspace: Path, spawn_fn: Any):
+    def __init__(
+        self,
+        agents: dict[str, Any],
+        workspace: Path,
+        spawn_fn: Any,
+        provider_catalog: dict[str, list[str]] | None = None,
+    ):
         self._agents = dict(agents)
+        self._providers: dict[str, Any] | None = (
+            {name: FrozenProviderCatalog(models) for name, models in provider_catalog.items()}
+            if provider_catalog
+            else None
+        )
         self.config: dict[str, Any] = {"agents": self._agents}
         self.session = _CallerSession()
         self.mount_points: dict[str, dict[str, Any]] = {"tools": {}}
@@ -134,7 +180,10 @@ class CallerFixture:
         self._capabilities[name] = value
 
     def get(self, key: str) -> Any:
-        # No providers, no display registry, nothing else. See docstring.
+        # Only the frozen, case-declared provider catalog (None unless the case
+        # declares one). No display registry, nothing else. See docstring.
+        if key == "providers":
+            return self._providers
         return None
 
 
@@ -303,6 +352,7 @@ class Case:
         self.covers: list[str] = list(raw.get("covers", []))
         self.context: dict[str, Any] = raw.get("context", {}) or {}
         self.caller_agents: dict[str, Any] = raw.get("caller_agents", {}) or {}
+        self.provider_catalog: dict[str, list[str]] = raw.get("provider_catalog", {}) or {}
         self.agent_responses: dict[str, Any] = raw.get("agent_responses", {}) or {}
         self.volatile_outputs: list[str] = list(raw.get("volatile_outputs", []))
         self.approvals: str = raw.get("approvals", "none")
@@ -351,7 +401,9 @@ async def run_case(case: Case) -> dict[str, Any]:
             os.environ["PATH"] = f"{shim_dir}{os.pathsep}{saved_path}"
 
         spawn = SpawnRecorder(case.agent_responses, case.caller_agents)
-        coordinator = CallerFixture(case.caller_agents, workspace, spawn)
+        coordinator = CallerFixture(
+            case.caller_agents, workspace, spawn, case.provider_catalog
+        )
         session_manager = SessionManager(
             base_dir=workspace / ".recipe-sessions", auto_cleanup_days=7
         )
@@ -439,6 +491,16 @@ async def run_case(case: Case) -> dict[str, Any]:
             ),
             "progress": norm.walk(coordinator.display_system.messages),
         }
+
+        # Recorded only when the case declares one, so the four cases that
+        # declare no catalog keep byte-identical baselines across this
+        # harness change. A declared input that steers resolution must be
+        # visible in the record it produced.
+        if case.provider_catalog:
+            record["provider_catalog"] = {
+                name: sorted(models)
+                for name, models in sorted(case.provider_catalog.items())
+            }
         return record
     finally:
         os.environ["PATH"] = saved_path
