@@ -308,7 +308,17 @@ class Normalizer:
         if self._host:
             value = value.replace(self._host, "<HOSTNAME>")
         if self._user:
-            value = re.sub(rf"\b{re.escape(self._user)}\b", "<USER>", value)
+            # Hyphens must NOT count as a boundary here. `\b` treats them as
+            # one, so on a machine whose username is `runner` -- every GitHub
+            # Actions runner -- this rewrote the LITERAL fixture text
+            # `recipe-runner` (bash-step-example's `User:` env value) to
+            # `recipe-<USER>` and reported drift. The rule meant to REMOVE
+            # machine variance was introducing it, and only on a machine whose
+            # username happened to be a substring of recorded content, so it
+            # was invisible on every developer's laptop.
+            value = re.sub(
+                rf"(?<![\w-]){re.escape(self._user)}(?![\w-])", "<USER>", value
+            )
         return value
 
     def walk(self, obj: Any) -> Any:
