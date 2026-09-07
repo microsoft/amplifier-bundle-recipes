@@ -131,6 +131,20 @@ CONTRACTS: Final[tuple[str, ...]] = (
     "recipe-runner-lib.v1",
 )
 
+#: The shared empty read-only mapping used as a dataclass field default.
+#:
+#: A ``MappingProxyType`` cannot be written as a bare class-level default on
+#: Python 3.11: ``dataclasses`` rejects any default whose class is unhashable,
+#: and ``mappingproxy.__hash__`` is ``None`` there (it only became hashable in
+#: 3.12, gh-87995). Handing the SAME singleton back from a ``default_factory``
+#: keeps the object identity every 3.12+ instance already had while making the
+#: module importable on the 3.11 this package's ``requires-python`` claims.
+_EMPTY_MAPPING: Final[Mapping[str, Any]] = MappingProxyType({})
+
+
+def _empty_mapping() -> Mapping[str, Any]:
+    return _EMPTY_MAPPING
+
 #: The capability name Amplifier hosts register agent spawning under. The
 #: runner registers its *own* adapter here so that in-session delegation
 #: resolves from the plan catalog too -- not just direct
@@ -354,7 +368,9 @@ class ProviderResolution:
     specs: tuple[ProviderSpec, ...] = ()
     """What a step with no ``model_role:`` mounts."""
 
-    by_role: Mapping[str, tuple[ProviderSpec, ...]] = MappingProxyType({})
+    by_role: Mapping[str, tuple[ProviderSpec, ...]] = dataclasses.field(
+        default_factory=_empty_mapping
+    )
     """Role -> providers. Populated for :data:`PROVIDER_SOURCE_HOST` only."""
 
     default_role: str | None = None
@@ -554,7 +570,7 @@ class SpawnRequest:
     definition: Mapping[str, Any]
     """Plan-derived facts about the agent. Frozen."""
 
-    context: Mapping[str, Any] = MappingProxyType({})
+    context: Mapping[str, Any] = dataclasses.field(default_factory=_empty_mapping)
     step_id: str | None = None
 
     model_role: str | None = None

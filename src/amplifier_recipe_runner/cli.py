@@ -541,9 +541,14 @@ def _services(
                 "Pass --host-settings PATH, or set AMPLIFIER_HOME."
             )
         access: Any = _HostSettingsProviderAccess.load(path, only=tuple(provider_ids))
+        # Built as a local rather than nested inside the f-string below: a
+        # same-quote f-string inside an f-string is PEP 701 syntax, valid only
+        # on Python 3.12+, and this package supports 3.11.
+        resolved_specs = ", ".join(
+            f"{spec.instance}({spec.model or 'unset model'})" for spec in access.specs
+        )
         _note(
-            f"host_providers: {path} -> "
-            f"{', '.join(f'{spec.instance}({spec.model or 'unset model'})' for spec in access.specs)}",
+            f"host_providers: {path} -> {resolved_specs}",
             as_json=as_json,
         )
         if access.unresolved:
