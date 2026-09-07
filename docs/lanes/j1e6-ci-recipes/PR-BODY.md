@@ -88,7 +88,10 @@ diagram on its own, unprompted — that gate works. And lint and the runner
 library went **green** here, which proves run 1's red came from the planted
 defects and not from a broken workflow.
 
-**GREEN run — <https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34160188969>**
+**GREEN runs — <https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34160188969>**
+(commit `3189598`, the workflow-only head) and
+**<https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34160837775>**
+(commit `a3c6d4f`, with this lane's evidence artifacts). Both 8/8:
 
 ```
 Lint (ruff)                     All checks passed!
