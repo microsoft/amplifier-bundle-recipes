@@ -235,8 +235,17 @@ def _recipe_with_class_entry() -> Recipe:
                 output="result",
                 provider_preferences=[
                     ProviderPreferenceConfig(model_class="reasoning"),
+                    # A CONCRETE model, deliberately not a glob. These two tests
+                    # are about the `class:` entry being resolved and prepended
+                    # while the explicit fallback survives -- not about pattern
+                    # resolution, which test_model_pattern_fallback.py owns in
+                    # 26 tests of its own. A glob here makes the fallback
+                    # entry's survival depend on the mock coordinator carrying a
+                    # model catalogue: an unmatched pattern resolves to the
+                    # provider's default, and a default that cannot be found is
+                    # dropped rather than emitted as an empty model (d5b72b7).
                     ProviderPreferenceConfig(
-                        provider="anthropic", model="claude-sonnet-*"
+                        provider="anthropic", model="claude-sonnet-4-5"
                     ),
                 ],
             )
