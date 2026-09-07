@@ -1,0 +1,30 @@
+            f"{DATA / 'recipes_description.v1.txt'}. If the change is intended, "
+            "update that file, restate the char budget arithmetic, and re-check "
+            "rule survival -- do not delete this test."
+        )
+E       AssertionError: The `recipes` tool description no longer matches its pinned copy at /home/bkrabach/dev/hw-model-performance/lanes/3ahq-tooldesc-recipes/amplifier-bundle-recipes/modules/tool-recipes/tests/data/recipes_description.v1.txt. If the change is intended, update that file, restate the char budget arithmetic, and re-check rule survival -- do not delete this test.
+E       assert 'Execute mult...ngine_info"}}' == 'Execute mult...review.yaml).'
+E         
+E         Skipping 38 identical leading characters in diff, use -v to show
+E         - orkflows). Recipes are declarative YAML specifications with sequential execution and state persistence, agent delegation with context accumulation, automatic checkpointing for resumability, error handling and retry logic, and approval gates for human-in-loop (staged) recipes.
+E         + orkflows).
+E         + 
+E         + Recipes are declarative YAML specifications that define multi-step agent workflows with:
+E         + - Sequential execution with state persistence...
+E         
+E         ...Full output truncated (41 lines hidden), use '-vv' to show
+
+modules/tool-recipes/tests/test_tool_description_pin.py:87: AssertionError
+_____________________ test_description_within_char_budget ______________________
+
+    def test_description_within_char_budget() -> None:
+        actual = len(_description())
+>       assert actual <= CHAR_BUDGET, f"{actual} chars exceeds budget {CHAR_BUDGET}"
+E       AssertionError: 1788 chars exceeds budget 1181
+E       assert 1788 <= 1181
+
+modules/tool-recipes/tests/test_tool_description_pin.py:97: AssertionError
+=========================== short test summary info ============================
+FAILED modules/tool-recipes/tests/test_tool_description_pin.py::test_description_is_byte_identical_to_pin
+FAILED modules/tool-recipes/tests/test_tool_description_pin.py::test_description_within_char_budget
+2 failed, 13 passed in 0.03s

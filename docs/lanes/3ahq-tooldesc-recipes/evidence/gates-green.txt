@@ -1,0 +1,15 @@
+### GATE1: pytest modules/tool-recipes ###
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1224 passed, 1 skipped, 6 warnings in 18.48s
+
+### GATE2: runner library tests ###
+..                                                                       [100%]
+574 passed, 4 skipped in 5.01s
+
+### GATE3: conformance kit ###
+
+20/20 fixtures passed
+
+### GATE4: legacy-compat ###
+
+LEGACY-COMPAT OK: 5 case(s) byte-identical to baseline.
