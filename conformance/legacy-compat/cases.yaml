@@ -168,6 +168,7 @@ cases:
         - claude-haiku-4-5
         - claude-opus-4-1
         - claude-sonnet-4-5
+        - claude-sonnet-9-9
     context:
       file_path: "src/example.py"
     caller_agents:
