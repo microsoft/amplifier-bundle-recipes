@@ -1,6 +1,5 @@
 """Tests for model_role support in recipe Step model and executor."""
 
-import pytest
 from amplifier_module_tool_recipes.models import Step
 
 

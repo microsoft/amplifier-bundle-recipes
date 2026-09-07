@@ -4,8 +4,7 @@ import pytest
 from amplifier_module_tool_recipes.executor import RecipeExecutor
 from amplifier_module_tool_recipes.models import Recipe, Step
 from amplifier_module_tool_recipes.session import SessionManager
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 
 class MockCoordinator:

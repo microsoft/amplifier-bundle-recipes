@@ -18,8 +18,6 @@ from dataclasses import field
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from .context_schema import merge_recipe_context
 from .expression_evaluator import ExpressionError
 from .expression_evaluator import evaluate_condition
@@ -48,6 +46,8 @@ from .steps_log import STEPS_LOG_FILENAME
 from .steps_log import StepAttempt
 from .steps_log import StepLog
 from .steps_log import set_capped_field
+
+logger = logging.getLogger(__name__)
 
 # Enclosing (parent step id, iteration index) for the step currently executing.
 #
