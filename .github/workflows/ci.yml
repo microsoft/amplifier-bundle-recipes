@@ -1,0 +1,197 @@
+name: CI
+
+# This repo is a HYBRID (see pyproject.toml): an Amplifier bundle carrying
+# modules/tool-recipes AND a uv-installable package shipping the runner library
+# in src/amplifier_recipe_runner. Both halves are gated here.
+#
+# The jobs below are AGENTS.md's own "Gates" section, run the same way CI and a
+# developer run them, so a green run here means the same thing as a clean local
+# run. Three of AGENTS.md's four gates are wired:
+#
+#   gate 1  pytest modules/tool-recipes            -> "Tests (tool-recipes ...)"
+#   gate 2  pytest src/amplifier_recipe_runner     -> "Tests (runner library)"
+#   gate 3  conformance/kit/kit.py --run           -> "Tests (tool-recipes ...)"
+#
+# GATE 4 -- conformance/legacy-compat/harness.py --assert -- IS DELIBERATELY NOT
+# WIRED, AND THAT IS A KNOWN GAP, NOT AN OVERSIGHT. It is RED on clean main
+# today: the `code-review-comprehensive` case drifts from its recorded baseline
+# because commit d5b72b7 changed what an unmatched model pattern resolves to,
+# and that case's fixture pins claude-sonnet-* / claude-opus- globs, whose
+# recorded `provider_preferences` are now dropped rather than emitted with an
+# empty model. Reproduce it in one command:
+#
+#   PYTHONPATH=src:modules/tool-recipes python3 \
+#       conformance/legacy-compat/harness.py --assert
+#
+# The fix is to re-record that baseline WITH THE DIFF REVIEWED, which is a call
+# about legacy engine behaviour and belongs to whoever owns d5b72b7 -- not to
+# the change that installed CI. AGENTS.md is explicit: "Never re-record the
+# legacy-compat baselines to make a change pass." So this workflow does not
+# re-record it, does not run it and pass it vacuously, and does not hide it
+# behind an error-tolerant step key. Wire this gate in as its own job the
+# moment that baseline is settled.
+#
+# Deliberately absent everywhere below: path filters, error-tolerant step keys,
+# and shell failure suppression. Each is a way to report green without having
+# checked anything. A grep of this file for any of those tokens returns nothing.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        # No cache input on purpose. setup-uv's `enable-cache: true` keys the
+        # cache on **/uv.lock; this repo's root ships no lockfile, so enabling
+        # it fails setup before any check runs. The variant spelling
+        # `enable-caching:` is not a real input at all and only logs an
+        # "Unexpected input(s)" warning. Omit it rather than respell it.
+        uses: astral-sh/setup-uv@v4
+
+      - name: ruff (pinned 0.16.6, --isolated)
+        # Tool version AND rule set are pinned so this check means the same
+        # thing next month as it does today. --isolated so no pyproject or
+        # ruff.toml discovered up the tree can quietly change the answer.
+        run: uvx ruff@0.16.6 check --isolated --select E4,E7,E9,F .
+
+  runner-tests:
+    name: Tests (runner library)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject declares requires-python = ">=3.11"; every version it
+        # claims is tested. 3.11 was broken until this branch fixed it.
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: pytest src/amplifier_recipe_runner (AGENTS.md gate 2)
+        env:
+          PYTHONPATH: src
+        run: |
+          uv run --python ${{ matrix.python }} --no-project \
+            --with pyyaml --with click --with "pytest>=8" \
+            python -m pytest src/amplifier_recipe_runner/tests -q
+
+  module-tests:
+    name: Tests (tool-recipes + conformance kit)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: pytest modules/tool-recipes (AGENTS.md gate 1)
+        # Not `uv sync`: modules/tool-recipes/pyproject.toml resolves
+        # amplifier-core through [tool.uv.sources] to ../../../amplifier-core,
+        # a sibling checkout that exists on a developer's machine and never on
+        # a runner. amplifier-core and amplifier-foundation are installed from
+        # git here for the same reason -- neither is published to PyPI.
+        # Tracking @main is this repo's own declared intent (see the root
+        # pyproject's amplifier-foundation dependency); the cost is that a
+        # change in either repo can turn this job red on an unrelated PR.
+        run: |
+          uv run --python ${{ matrix.python }} --no-project \
+            --with "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
+            --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
+            --with "pytest>=8" --with "pytest-asyncio>=0.23" \
+            --with pyyaml --with click \
+            python -m pytest modules/tool-recipes -q
+
+      - name: conformance kit (AGENTS.md gate 3)
+        env:
+          PYTHONPATH: src:modules/tool-recipes
+        run: |
+          uv run --python ${{ matrix.python }} --no-project \
+            --with "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
+            --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
+            --with pyyaml --with click \
+            python conformance/kit/kit.py --run
+
+  bundle-structure:
+    name: Bundle structure (YAML)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Parse bundle.md frontmatter and behaviors/*.yaml
+        run: |
+          uv run --python 3.13 --no-project --with "pyyaml>=6" python - <<'PY'
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+          failures: list[str] = []
+
+          # bundle.md: YAML frontmatter between the first two --- fences.
+          bundle_md = Path("bundle.md")
+          if not bundle_md.is_file():
+              failures.append("bundle.md is missing")
+          else:
+              text = bundle_md.read_text(encoding="utf-8")
+              if not text.startswith("---"):
+                  failures.append("bundle.md does not open with a --- frontmatter fence")
+              else:
+                  _, _, rest = text.partition("---")
+                  front, fence, _ = rest.partition("\n---")
+                  if not fence:
+                      failures.append("bundle.md frontmatter is never closed by a --- fence")
+                  else:
+                      try:
+                          data = yaml.safe_load(front)
+                      except yaml.YAMLError as exc:
+                          failures.append(f"bundle.md frontmatter is not valid YAML: {exc}")
+                      else:
+                          if not isinstance(data, dict) or "bundle" not in data:
+                              failures.append("bundle.md frontmatter declares no `bundle:` block")
+                          else:
+                              name = (data["bundle"] or {}).get("name")
+                              if not name:
+                                  failures.append("bundle.md's `bundle:` block declares no name")
+                              else:
+                                  print(f"bundle.md OK -- bundle name {name!r}")
+
+          # behaviors/*.yaml: every one must parse. Zero matches is a failure,
+          # not a pass: a glob that matches nothing is how this check would
+          # silently stop checking anything.
+          behaviors = sorted(Path("behaviors").glob("*.yaml")) if Path("behaviors").is_dir() else []
+          if not behaviors:
+              failures.append("behaviors/*.yaml matched ZERO files -- nothing was checked")
+          for path in behaviors:
+              try:
+                  yaml.safe_load(path.read_text(encoding="utf-8"))
+              except yaml.YAMLError as exc:
+                  failures.append(f"{path} is not valid YAML: {exc}")
+              else:
+                  print(f"{path} OK")
+
+          if failures:
+              print("\nBUNDLE STRUCTURE FAILURES:")
+              for failure in failures:
+                  print(f"  - {failure}")
+              sys.exit(1)
+          print(f"\nbundle structure OK -- 1 bundle.md + {len(behaviors)} behaviour file(s)")
+          PY
