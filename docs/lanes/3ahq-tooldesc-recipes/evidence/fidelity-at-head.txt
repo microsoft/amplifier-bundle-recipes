@@ -1,0 +1,21 @@
+=== git apply --check of the upstream patch, at today's head ===
+error: corrupt patch at line 40
+(exit 128)
+
+=== CHAR COUNTS (this repo, today's head) ===
+  stock @ head                :  1788
+  zc6t v1 artifact            :  1020   (zc6t measured its own stock at 1581 -> 1020, saved 561)
+  SHIPPED (v1 + restoration)  :  1181   restoration +161
+  SAVED at today's head       :   607  (33.9%)
+
+=== FIDELITY, RE-VERIFIED AT TODAY'S HEAD (not inherited from zc6t) ===
+-- zc6t's own extractor (fidelity_diff.missing_rules) --
+  stock@head vs zc6t v1 : ['@recipes:examples/my-recipe.yaml', 'git sha, bundle-cache/editable-install shadowing) without executing anything']
+  stock@head vs SHIPPED : ['@recipes:examples/my-recipe.yaml']
+-- operation names (NOT covered by zc6t's extractor; this is the check that found the loss) --
+  missing in zc6t v1 : ['engine_info']
+  missing in SHIPPED : []
+-- pointers --
+  stock@head  code-review.yaml=True  my-recipe.yaml=True
+  zc6t v1     code-review.yaml=True  my-recipe.yaml=False
+  SHIPPED     code-review.yaml=True  my-recipe.yaml=False

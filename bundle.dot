@@ -8,7 +8,7 @@ digraph recipes {
     nodesep=0.6
     ranksep=0.7
     bgcolor="white"
-    source_hash="a982bff6d18bb715d3db4c2dbc2e127001e3ab04b6def120d05a5951f872fcbc"
+    source_hash="c92d9c6325b6d767bc7e1636bcd6aeceb1ff1024ad2e148101ed19baf2e232b9"
 
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
@@ -40,7 +40,7 @@ digraph recipes {
         fillcolor="#f9f9f9"
         color="#999999"
 
-        mod_tool_recipes [label="tool-recipes\n1 tool · ~765 tok", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+        mod_tool_recipes [label="tool-recipes\n1 tool · ~613 tok", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
     }
 
     subgraph cluster_context {
