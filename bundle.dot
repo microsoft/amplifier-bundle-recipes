@@ -8,7 +8,7 @@ digraph recipes {
     nodesep=0.6
     ranksep=0.7
     bgcolor="white"
-    source_hash="c92d9c6325b6d767bc7e1636bcd6aeceb1ff1024ad2e148101ed19baf2e232b9"
+    source_hash="b21cdb63b64fb6826316a1a36af16e9a4115648dc7b45a86500753809cdb447b"
 
     node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
     edge [fontname="Helvetica", fontsize=9]
@@ -21,7 +21,7 @@ digraph recipes {
         fillcolor="#f9f9f9"
         color="#999999"
 
-        beh_recipes_behavior [label="recipes-behavior\n1 tools · 1 ctx\n~873 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
+        beh_recipes_behavior [label="recipes-behavior\n1 tools · 1 ctx\n~884 tok", shape=box, fillcolor="#e0f2f1", style="filled,rounded"]
     }
 
     subgraph cluster_agents {
@@ -30,8 +30,8 @@ digraph recipes {
         fillcolor="#f9f9f9"
         color="#999999"
 
-        agt_recipe_author [label="recipe-author\n~140 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
-        agt_result_validator [label="result-validator\n~144 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_recipe_author [label="recipe-author\n~148 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
+        agt_result_validator [label="result-validator\n~147 tok desc", shape=box, fillcolor="#c8e6c9", style="filled,rounded"]
     }
 
     subgraph cluster_modules {

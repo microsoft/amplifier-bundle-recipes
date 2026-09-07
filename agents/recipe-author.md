@@ -1,7 +1,7 @@
 ---
 meta:
   name: recipe-author
-  description: "Conversational recipe expert for ALL Amplifier recipe work - creating, editing, validating, and debugging recipe YAML. The deciding factor: the task produces or changes a recipe file (flat or staged recipes, approval gates, recipe composition, foreach loops, while/convergence loops, conditional execution) - delegate here rather than writing recipe YAML directly, because this agent carries the complete schema, design patterns, and best practices. After it completes any recipe work, run result-validator to verify the recipe meets the user's original intent."
+  description: "USE WHEN a task produces or changes an Amplifier recipe file -- creating, editing, validating or debugging recipe YAML (flat or staged recipes, approval gates, recipe composition, foreach loops, while/convergence loops, conditional execution). Delegate rather than write recipe YAML directly: this conversational expert carries the complete schema, design patterns and best practices. Run result-validator afterwards to verify the recipe meets the user's original intent. DO NOT USE WHEN no recipe file is produced or changed -- a single-step or ad-hoc task is direct delegation, not a recipe."
   model_role: [reasoning, general]
 
 tools:
