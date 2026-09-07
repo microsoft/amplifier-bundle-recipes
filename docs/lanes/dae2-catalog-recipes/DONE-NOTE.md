@@ -164,8 +164,10 @@ Gate 3's single skip (`good-activation-install-resolves-the-in-bundle-runner [RC
 **environmental and pre-existing** — re-running gate 3 in the untouched `origin/main` worktree
 gives the same `19/20 fixtures passed` + 1 skip.
 
-**CI exists** (added by #116, `fa1292b`, one commit before this branch's base) and will run all
-five jobs on the PR. Local equivalents are green above.
+**CI exists** (added by #116, `fa1292b`, one commit before this branch's base) and ran on the
+PR: **12 of 12 checks SUCCESS, 0 failures** — Lint (ruff) · Tests (runner library) 3.11/3.12/3.13
+· Tests (tool-recipes + conformance kit) 3.11/3.12/3.13 · Conformance (legacy-compat)
+3.11/3.12/3.13 · Bundle structure (YAML) · license/cla.
 
 `bundle.dot` freshness, red-then-green on the final descriptions:
 
@@ -212,7 +214,7 @@ and assert the agent set, not just the totals.**
 | `validate-agents` run on the branch, verdict + agent count quoted | **PARTIAL, disclosed** — deterministic phases only ($0 authority): 6 discovered, 6/6 structural pass, 0 errors, unchanged. LLM phases not run; no full-recipe verdict claimed |
 | CI green where the repo has CI | **DONE** — repo has CI (#116); all four gates + the lint job green locally; CI runs on the PR |
 | Anything already compliant left unedited and named | **DONE** — both descriptions were already ≤600 and example-free; neither was trigger-first and neither had a `DO NOT USE WHEN`, which is why both were edited. No other agent exists in this repo |
-| Draft PR | **DONE** — see §9 |
+| Draft PR | **DONE** — [#118](https://github.com/microsoft/amplifier-bundle-recipes/pull/118), draft, CI 12/12 green |
 
 ---
 
@@ -229,9 +231,9 @@ Clean.
 
 ## 9. Landing stage
 
-Ships as a **draft PR** on `microsoft/amplifier-bundle-recipes` from
-`lane/dae2-catalog-recipes`. **This lane does not merge.** The merge is the manager's next
-stage.
+Ships as **draft PR [#118](https://github.com/microsoft/amplifier-bundle-recipes/pull/118)** on
+`microsoft/amplifier-bundle-recipes`, from `lane/dae2-catalog-recipes`, CI **12/12 green**.
+**This lane does not merge.** The merge is the manager's next stage.
 
 ---
 
