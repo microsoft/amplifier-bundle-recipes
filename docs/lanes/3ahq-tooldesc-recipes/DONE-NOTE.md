@@ -36,7 +36,7 @@ Two commits, RED then GREEN, on `lane/3ahq-tooldesc-recipes`:
 | 3 | Stock → lean char counts | **DONE** — 1,788 → 1,181 (−607) |
 | 4 | Byte-for-byte pin test against the v1 text | **DONE** — `modules/tool-recipes/tests/test_tool_description_pin.py`, 15 tests |
 | 5 | CI red/green run URLs | **NOT POSSIBLE** — see below |
-| 6 | Draft PR, ready when local suite green, not merged | **DONE** |
+| 6 | Draft PR, ready when local suite green, not merged | **DONE** — [#114](https://github.com/microsoft/amplifier-bundle-recipes/pull/114), **left as draft** (see F4) |
 | 7 | DONE-NOTE at the lane artifact root | **DONE** — this file |
 
 ### 5 — CI run URLs: NOT POSSIBLE, and why
@@ -217,6 +217,24 @@ that **every operation name including `engine_info`** survive. At today's head t
 hold, because v1 predates `engine_info`. Resolved in favour of fidelity, per the goal's explicit
 instruction — *"Restore anything dropped and note the byte delta"* — with the v1 artifact
 vendored unmodified beside the pin so the divergence is one `diff` away for any reviewer.
+
+### F4 — the PR is left as a DRAFT. Decision recorded, no human waited on.
+
+Two instructions conflict:
+
+* `GOAL.md` deliverable — *"DRAFT PR, **marked ready when the local suite is green**."*
+* the work item's acceptance — *"Given the PR, then it is a draft, **marked ready only on green
+  CI**, and NOT merged."*
+
+The local suite is green; there is no CI, so the item's condition can never be met.
+**Chose the item**, per the goal's own Procedure step 1 (*"the returned description +
+acceptance criteria are the authoritative spec; this file summarizes them"*), and because
+marking a PR ready-for-review in a repo with no CI implies a green run — precisely what the
+goal instructs this lane to avoid claiming. A draft also cannot be merged by accident, and the
+merge is the manager's stage either way.
+
+**If the manager prefers ready-for-review, one command flips it:**
+`gh pr ready 114 --repo microsoft/amplifier-bundle-recipes`.
 
 ## What remains open
 
