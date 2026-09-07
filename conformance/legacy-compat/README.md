@@ -101,7 +101,7 @@ The one substitution is at the **caller seam**:
 | Seam | Real | Here |
 |---|---|---|
 | `session.spawn` capability | spawns an LLM sub-session | records the spawn, returns a scripted response from `cases.yaml` |
-| `coordinator.get("providers")` | live provider catalog | `None` — model globs stay unresolved |
+| `coordinator.get("providers")` | live provider catalog | a **frozen**, case-declared model list (or `None` where a case declares none) |
 
 ### Why the spawn seam is stubbed
 
@@ -121,14 +121,47 @@ and `--assert` reports drift in `_skipped_steps`, `agent_spawn_count`,
 **This is a fixture, not fabrication.** Every scripted input is declared in
 `cases.yaml` and recorded in the baseline. No baseline field is hand-written.
 
-### Why there is no provider catalog
+### Why the provider catalog is frozen, not live
 
 `resolve_model_pattern` queries `coordinator.get("providers")` to expand a glob
-like `claude-sonnet-*`. A live catalog changes when a vendor ships a model, so
-resolving against it would make the baseline rot on someone else's release
-schedule. With no providers registered, the engine leaves the glob as-is and the
-**glob itself** is what the baseline pins. That is the provenance that must not
-silently change.
+like `claude-sonnet-*`. A **live** catalog changes when a vendor ships a model,
+so resolving against it would make the baseline rot on someone else's release
+schedule. That is why there is no live catalog here, and never will be.
+
+This used to be implemented as *no catalog at all*. With none registered the
+engine left the glob as-is, and the **glob itself** was what the baseline
+pinned. That stopped working at `d5b72b7`: an unmatched pattern now resolves to
+the provider's real default, and a preference whose model cannot be filled is
+**dropped** before the spawn rather than emitted with an empty model (an empty
+model blanks the provider's configured model and kills a live run with a 400).
+Correct for a live run — but with no catalog at all it silently reduced this
+harness's recorded `provider_preferences` to `null`, so the one case that exists
+to pin model-glob provenance pinned nothing at all.
+
+So a case that exercises globs now declares a **frozen** catalog in
+`cases.yaml`:
+
+```yaml
+    provider_catalog:
+      anthropic:
+        - claude-haiku-4-5
+        - claude-opus-4-1
+        - claude-sonnet-4-5
+```
+
+This is the same fixture philosophy as `caller_agents`, the scripted
+`agent_responses` and the hermetic `gh` shim: the live thing is replaced by
+fixed, declared bytes, so the record is a statement about *engine behaviour* and
+never about a particular machine. It cannot rot — the list changes only when
+someone edits this file, and doing so is drift that `--assert` reports (verified:
+adding a newer `claude-sonnet-*` to the catalog moves the pinned provenance and
+fails the assert).
+
+What the baseline pins is now the **resolved** model (`claude-sonnet-4-5`)
+rather than the raw glob — strictly more provenance, since it captures the
+resolution itself and not just its input. A case's declared catalog is recorded
+in its baseline beside `caller_agents`; a case that declares none omits the key
+entirely and its baseline is byte-identical to the pre-`provider_catalog` form.
 
 ---
 
@@ -209,7 +242,7 @@ on case ordering.
 | `bash-step-example` | `examples/bash-step-example.yaml` | bash steps, `output_exit_code`, condition on an exit code, `on_error: continue`, `cwd`, `env` — zero agent spawns |
 | `test-parse-json` | `examples/test-parse-json.yaml` | `parse_json: true` (extraction out of prose) vs the default (prose preserved), 3 agent steps |
 | `repo-activity-analysis` | `examples/repo-activity-analysis.yaml` | **bash steps + `parse_json` in one recipe** — 7 bash steps and 4 agent steps with `parse_json`, dotted-path substitution into bash, conditional branch on a parsed bash output, `on_error: continue`, two caller agents |
-| `code-review-comprehensive` | `examples/code-review-recipe.yaml` | 6 agent steps, conditional routing, legacy step-level `provider` + `model`, model-glob provenance |
+| `code-review-comprehensive` | `examples/code-review-recipe.yaml` | 6 agent steps, conditional routing, legacy step-level `provider` + `model`, model-glob provenance resolved against a frozen `provider_catalog`, plus an exact model that bypasses pattern resolution |
 | `dependency-upgrade-staged` | `examples/dependency-upgrade-staged-recipe.yaml` | staged recipe, **4 approval gates driven through** via the tool's `approve` + `resume`, 6 agent steps across 5 stages, two caller agents |
 
 The staged case is baselined **through** every gate, not up-to-gate: each

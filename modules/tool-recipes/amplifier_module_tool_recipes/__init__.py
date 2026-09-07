@@ -63,7 +63,7 @@ from .engine_provenance import engine_provenance
 from .engine_provenance import label_engine_provenance
 from .engine_provenance import warn_if_shadowed
 from .runner_adapter import provider_roles_label
-from .runner_adapter import run_v2_recipe
+from .runner_adapter import run_v2_recipe as run_v2_recipe
 from .runner_adapter import runner_provenance
 from .runner_adapter import run_v2_recipe_in_session
 from .runner_adapter import V2_LEGACY_ENGINE_EXECUTION_MODE

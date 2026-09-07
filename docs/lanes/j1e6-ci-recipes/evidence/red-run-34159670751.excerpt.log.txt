@@ -1,0 +1,24 @@
+# RED run 2 -- one malformed behaviors/*.yaml (scratch PR #115, branch deleted)
+# https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34159670751
+#
+# Verbatim verdict lines, ANSI and timestamps stripped, in log order.
+# The full log (a few hundred KB) is not committed -- retrieve it with:
+#     gh run view 34159670751 --log
+
+Lint (ruff) | ruff (pinned 0.16.6, --isolated) | All checks passed!
+Tests (tool-recipes + conformance kit) (3.13) | pytest modules/tool-recipes (AGENTS.md gate 1) | FAILED modules/tool-recipes/tests/test_bundle_dot_freshness.py::test_bundle_dot_source_hash_matches_regenerated - Failed: bundle.dot is stale -- it no longer describes this repo.
+Tests (tool-recipes + conformance kit) (3.13) | pytest modules/tool-recipes (AGENTS.md gate 1) | FAILED modules/tool-recipes/tests/test_bundle_dot_freshness.py::test_bundle_dot_is_byte_identical_to_regenerated - Failed: bundle.dot differs from a fresh regeneration.
+Tests (tool-recipes + conformance kit) (3.13) | pytest modules/tool-recipes (AGENTS.md gate 1) | 2 failed, 1222 passed, 1 skipped, 6 warnings in 27.16s
+Tests (runner library) (3.12) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 5.54s
+Tests (tool-recipes + conformance kit) (3.11) | pytest modules/tool-recipes (AGENTS.md gate 1) | FAILED modules/tool-recipes/tests/test_bundle_dot_freshness.py::test_bundle_dot_source_hash_matches_regenerated - Failed: bundle.dot is stale -- it no longer describes this repo.
+Tests (tool-recipes + conformance kit) (3.11) | pytest modules/tool-recipes (AGENTS.md gate 1) | FAILED modules/tool-recipes/tests/test_bundle_dot_freshness.py::test_bundle_dot_is_byte_identical_to_regenerated - Failed: bundle.dot differs from a fresh regeneration.
+Tests (tool-recipes + conformance kit) (3.11) | pytest modules/tool-recipes (AGENTS.md gate 1) | 2 failed, 1222 passed, 1 skipped, 6 warnings in 31.15s
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | bundle.md OK -- bundle name 'recipes'
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | behaviors/recipes.yaml OK
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | BUNDLE STRUCTURE FAILURES:
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml |   - behaviors/red-proof.yaml is not valid YAML: while parsing a flow sequence
+Tests (runner library) (3.13) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 6.56s
+Tests (runner library) (3.11) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 5.63s
+Tests (tool-recipes + conformance kit) (3.12) | pytest modules/tool-recipes (AGENTS.md gate 1) | FAILED modules/tool-recipes/tests/test_bundle_dot_freshness.py::test_bundle_dot_source_hash_matches_regenerated - Failed: bundle.dot is stale -- it no longer describes this repo.
+Tests (tool-recipes + conformance kit) (3.12) | pytest modules/tool-recipes (AGENTS.md gate 1) | FAILED modules/tool-recipes/tests/test_bundle_dot_freshness.py::test_bundle_dot_is_byte_identical_to_regenerated - Failed: bundle.dot differs from a fresh regeneration.
+Tests (tool-recipes + conformance kit) (3.12) | pytest modules/tool-recipes (AGENTS.md gate 1) | 2 failed, 1222 passed, 1 skipped, 6 warnings in 26.61s

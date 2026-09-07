@@ -1,0 +1,35 @@
+# GREEN run -- lane/j1e6-ci-recipes
+# https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34160188969
+#
+# Verbatim verdict lines, ANSI and timestamps stripped, in log order.
+# The full log (a few hundred KB) is not committed -- retrieve it with:
+#     gh run view 34160188969 --log
+
+Tests (runner library) (3.11) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 6.76s
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | bundle.md OK -- bundle name 'recipes'
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | behaviors/recipes.yaml OK
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | bundle structure OK -- 1 bundle.md + 1 behaviour file(s)
+Tests (runner library) (3.12) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 6.76s
+Tests (tool-recipes + conformance kit) (3.12) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1224 passed, 1 skipped, 6 warnings in 31.42s
+Tests (tool-recipes + conformance kit) (3.12) | conformance kit (AGENTS.md gate 3) | [SKIP] GOOD good-activation-install-resolves-the-in-bundle-runner  (0.00s)
+Tests (tool-recipes + conformance kit) (3.12) | conformance kit (AGENTS.md gate 3) |        UndeclaredAgentError('lean-caller:packager') from plan(); run() FAILED with the same type, 0 steps completed, 0 spawns, no session built
+Tests (tool-recipes + conformance kit) (3.12) | conformance kit (AGENTS.md gate 3) |        2 recipe-visible variables identical across host-port, recipe-closure and the legacy in-session engine; provider_source recorded as host-port / recipe-closure respectively (instance 'host-instance', model 'stub-model-1'); the pinned run never consulted the port; with neither layer the run FAILED with NoProviderError naming both remedies and wrote no step output
+Tests (tool-recipes + conformance kit) (3.12) | conformance kit (AGENTS.md gate 3) | 19/20 fixtures passed
+Tests (tool-recipes + conformance kit) (3.12) | conformance kit (AGENTS.md gate 3) | SKIPPED (1 -- checked NOTHING, not a pass):
+Tests (tool-recipes + conformance kit) (3.12) | conformance kit (AGENTS.md gate 3) |   - good-activation-install-resolves-the-in-bundle-runner [RCP-101]
+Lint (ruff) | ruff (pinned 0.16.6, --isolated) | All checks passed!
+Tests (runner library) (3.13) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 4.97s
+Tests (tool-recipes + conformance kit) (3.13) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1224 passed, 1 skipped, 6 warnings in 27.96s
+Tests (tool-recipes + conformance kit) (3.13) | conformance kit (AGENTS.md gate 3) | [SKIP] GOOD good-activation-install-resolves-the-in-bundle-runner  (0.00s)
+Tests (tool-recipes + conformance kit) (3.13) | conformance kit (AGENTS.md gate 3) |        UndeclaredAgentError('lean-caller:packager') from plan(); run() FAILED with the same type, 0 steps completed, 0 spawns, no session built
+Tests (tool-recipes + conformance kit) (3.13) | conformance kit (AGENTS.md gate 3) |        2 recipe-visible variables identical across host-port, recipe-closure and the legacy in-session engine; provider_source recorded as host-port / recipe-closure respectively (instance 'host-instance', model 'stub-model-1'); the pinned run never consulted the port; with neither layer the run FAILED with NoProviderError naming both remedies and wrote no step output
+Tests (tool-recipes + conformance kit) (3.13) | conformance kit (AGENTS.md gate 3) | 19/20 fixtures passed
+Tests (tool-recipes + conformance kit) (3.13) | conformance kit (AGENTS.md gate 3) | SKIPPED (1 -- checked NOTHING, not a pass):
+Tests (tool-recipes + conformance kit) (3.13) | conformance kit (AGENTS.md gate 3) |   - good-activation-install-resolves-the-in-bundle-runner [RCP-101]
+Tests (tool-recipes + conformance kit) (3.11) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1224 passed, 1 skipped, 6 warnings in 30.86s
+Tests (tool-recipes + conformance kit) (3.11) | conformance kit (AGENTS.md gate 3) | [SKIP] GOOD good-activation-install-resolves-the-in-bundle-runner  (0.00s)
+Tests (tool-recipes + conformance kit) (3.11) | conformance kit (AGENTS.md gate 3) |        UndeclaredAgentError('lean-caller:packager') from plan(); run() FAILED with the same type, 0 steps completed, 0 spawns, no session built
+Tests (tool-recipes + conformance kit) (3.11) | conformance kit (AGENTS.md gate 3) |        2 recipe-visible variables identical across host-port, recipe-closure and the legacy in-session engine; provider_source recorded as host-port / recipe-closure respectively (instance 'host-instance', model 'stub-model-1'); the pinned run never consulted the port; with neither layer the run FAILED with NoProviderError naming both remedies and wrote no step output
+Tests (tool-recipes + conformance kit) (3.11) | conformance kit (AGENTS.md gate 3) | 19/20 fixtures passed
+Tests (tool-recipes + conformance kit) (3.11) | conformance kit (AGENTS.md gate 3) | SKIPPED (1 -- checked NOTHING, not a pass):
+Tests (tool-recipes + conformance kit) (3.11) | conformance kit (AGENTS.md gate 3) |   - good-activation-install-resolves-the-in-bundle-runner [RCP-101]

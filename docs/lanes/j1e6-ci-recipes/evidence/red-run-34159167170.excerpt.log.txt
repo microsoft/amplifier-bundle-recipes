@@ -1,0 +1,24 @@
+# RED run 1 -- three deliberate defects, one per job (scratch PR #115, branch deleted)
+# https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34159167170
+#
+# Verbatim verdict lines, ANSI and timestamps stripped, in log order.
+# The full log (a few hundred KB) is not committed -- retrieve it with:
+#     gh run view 34159167170 --log
+
+Lint (ruff) | ruff (pinned 0.16.6, --isolated) | F401 [*] `os` imported but unused
+Lint (ruff) | ruff (pinned 0.16.6, --isolated) | Found 1 error.
+Tests (tool-recipes + conformance kit) (3.13) | pytest modules/tool-recipes (AGENTS.md gate 1) | FAILED modules/tool-recipes/tests/test_red_proof.py::test_red_proof_tool_recipes_job_actually_runs_tests - AssertionError: deliberate failure: proving CI's tool-recipes job goes red
+Tests (tool-recipes + conformance kit) (3.13) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1 failed, 1224 passed, 1 skipped, 6 warnings in 29.76s
+Tests (runner library) (3.12) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | FAILED src/amplifier_recipe_runner/tests/test_red_proof.py::test_red_proof_runner_library_job_actually_runs_tests - AssertionError: deliberate failure: proving CI's runner-library job goes red
+Tests (runner library) (3.12) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 1 failed, 574 passed, 4 skipped in 6.86s
+Tests (runner library) (3.11) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | FAILED src/amplifier_recipe_runner/tests/test_red_proof.py::test_red_proof_runner_library_job_actually_runs_tests - AssertionError: deliberate failure: proving CI's runner-library job goes red
+Tests (runner library) (3.11) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 1 failed, 574 passed, 4 skipped in 6.52s
+Tests (tool-recipes + conformance kit) (3.11) | pytest modules/tool-recipes (AGENTS.md gate 1) | FAILED modules/tool-recipes/tests/test_red_proof.py::test_red_proof_tool_recipes_job_actually_runs_tests - AssertionError: deliberate failure: proving CI's tool-recipes job goes red
+Tests (tool-recipes + conformance kit) (3.11) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1 failed, 1224 passed, 1 skipped, 6 warnings in 31.27s
+Tests (runner library) (3.13) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | FAILED src/amplifier_recipe_runner/tests/test_red_proof.py::test_red_proof_runner_library_job_actually_runs_tests - AssertionError: deliberate failure: proving CI's runner-library job goes red
+Tests (runner library) (3.13) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 1 failed, 574 passed, 4 skipped in 6.58s
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | bundle.md OK -- bundle name 'recipes'
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | behaviors/recipes.yaml OK
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | bundle structure OK -- 1 bundle.md + 1 behaviour file(s)
+Tests (tool-recipes + conformance kit) (3.12) | pytest modules/tool-recipes (AGENTS.md gate 1) | FAILED modules/tool-recipes/tests/test_red_proof.py::test_red_proof_tool_recipes_job_actually_runs_tests - AssertionError: deliberate failure: proving CI's tool-recipes job goes red
+Tests (tool-recipes + conformance kit) (3.12) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1 failed, 1224 passed, 1 skipped, 6 warnings in 30.69s

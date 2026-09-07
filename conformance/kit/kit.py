@@ -41,8 +41,8 @@ import tempfile
 import traceback
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Mapping
 from dataclasses import dataclass
-from dataclasses import field
 from pathlib import Path
 from typing import Any
 
@@ -572,7 +572,18 @@ def foreign_types(*targets: Any) -> list[str]:
                     if not isinstance(resolved, type):
                         continue
                     origin = getattr(resolved, "__module__", "")
-                    if _library_owned(resolved) or origin in NEUTRAL_MODULES:
+                    # Match the top-level package too, not just the exact
+                    # module name: CPython relocates types into private
+                    # submodules between releases without changing their
+                    # public home. `pathlib.Path.__module__` is "pathlib" up
+                    # to 3.12 and "pathlib._local" from 3.13, which made this
+                    # probe report the standard library's own `Path` as a
+                    # foreign type on 3.13 while passing on 3.12.
+                    if (
+                        _library_owned(resolved)
+                        or origin in NEUTRAL_MODULES
+                        or origin.partition(".")[0] in NEUTRAL_MODULES
+                    ):
                         continue
                     hits.append(f"{where}: {identifier!r} resolves to {origin}.{resolved.__name__}")
     return sorted(set(hits))

@@ -153,7 +153,21 @@ cases:
       - multiple agent steps (6)
       - conditional routing on a step output
       - legacy step-level provider + model fields
-      - model glob provenance (claude-sonnet-* / claude-haiku-* / claude-opus-*)
+      - model glob provenance (claude-sonnet-* / claude-opus-*) resolved against
+        a frozen catalog, plus an exact model (claude-haiku) that bypasses
+        pattern resolution entirely
+    # A FROZEN catalog, not a live one. resolve_model_pattern expands a glob by
+    # querying the caller for its providers; with no catalog at all, d5b72b7
+    # makes an unresolvable preference get DROPPED before the spawn, which
+    # silently reduced this case's recorded glob provenance to null -- the one
+    # case that exists to pin it pinned nothing. Declaring the models here
+    # restores the coverage without a live catalog's rot: this list only changes
+    # when someone edits this file, and doing so is drift --assert will report.
+    provider_catalog:
+      anthropic:
+        - claude-haiku-4-5
+        - claude-opus-4-1
+        - claude-sonnet-4-5
     context:
       file_path: "src/example.py"
     caller_agents:

@@ -1,0 +1,36 @@
+# GREEN run -- all four AGENTS.md gates wired, 11/11 checks
+# https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34163577830
+#
+# Verbatim verdict lines, ANSI and timestamps stripped, in log order.
+# Full log: gh run view 34163577830 --log
+
+Lint (ruff) | ruff (pinned 0.16.6, --isolated) | All checks passed!
+Tests (tool-recipes + conformance kit) (3.12) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1224 passed, 1 skipped, 6 warnings in 35.12s
+Tests (tool-recipes + conformance kit) (3.12) | conformance kit (AGENTS.md gate 3) | 19/20 fixtures passed
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] bash-step-example: PASS
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] test-parse-json: PASS
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] repo-activity-analysis: PASS
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] code-review-comprehensive: PASS
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] dependency-upgrade-staged: PASS
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | LEGACY-COMPAT OK: 5 case(s) byte-identical to baseline.
+Tests (tool-recipes + conformance kit) (3.11) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1224 passed, 1 skipped, 6 warnings in 27.77s
+Tests (tool-recipes + conformance kit) (3.11) | conformance kit (AGENTS.md gate 3) | 19/20 fixtures passed
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] bash-step-example: PASS
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] test-parse-json: PASS
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] repo-activity-analysis: PASS
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] code-review-comprehensive: PASS
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] dependency-upgrade-staged: PASS
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | LEGACY-COMPAT OK: 5 case(s) byte-identical to baseline.
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | print(f"\nbundle structure OK -- 1 bundle.md + {len(behaviors)} behaviour file(s)")
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | bundle structure OK -- 1 bundle.md + 1 behaviour file(s)
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] bash-step-example: PASS
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] test-parse-json: PASS
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] repo-activity-analysis: PASS
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] code-review-comprehensive: PASS
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] dependency-upgrade-staged: PASS
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | LEGACY-COMPAT OK: 5 case(s) byte-identical to baseline.
+Tests (runner library) (3.13) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 6.50s
+Tests (runner library) (3.12) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 6.88s
+Tests (runner library) (3.11) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 6.58s
+Tests (tool-recipes + conformance kit) (3.13) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1224 passed, 1 skipped, 6 warnings in 29.71s
+Tests (tool-recipes + conformance kit) (3.13) | conformance kit (AGENTS.md gate 3) | 19/20 fixtures passed
