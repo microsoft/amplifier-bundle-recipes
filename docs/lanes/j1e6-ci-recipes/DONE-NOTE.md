@@ -3,6 +3,7 @@
 Item: `model_performance-j1e6` (project `model_performance`)
 Repo: `microsoft/amplifier-bundle-recipes`
 Branch: `lane/j1e6-ci-recipes` · PR: #116 (draft → ready, **NOT merged** — the merge is the manager's stage)
+Per-repo child item: `model_performance-k75p` — **resolved**
 Date: 2026-09-07
 
 ## Outcome
@@ -129,6 +130,41 @@ finding against the authority.
    bundle-structure defect was pushed as a **second** scratch commit. Two red
    runs give each job a red attributable to its own cause; one mixed run does
    not.
+
+## Terminal record: a per-repo child item, resolved
+
+`work_claim(item_id="model_performance-j1e6")` returned *"already claimed by
+agent-spark-1-2996730"*, and that item already reads `resolved`. The item is
+deliberately **one item with nineteen lanes**, so at most one session can hold
+it and a refused claim is the designed steady state — yet the per-lane goal
+template's Procedure 1 reads a refusal as BLOCKED-and-stop and its Procedure 5
+ends in `work_resolve`, and **both fenced verbs refuse a session that never
+held the item**. Obeyed literally, the owner directive would have produced a
+BLOCKED.md over a slice that then delivered in full.
+
+This lane took the remedy this batch already converged on and demonstrated
+working (`model_performance-f3h5` for tool-web, `hgdi` for converge, `md4i` for
+stories) rather than inventing one:
+
+1. Read the authoritative spec with `work_list(item_id=…)` — description and
+   acceptance criteria, no claim, no mutation, no custody.
+2. Completed every deliverable.
+3. Recorded completion on the parent with **`work_erratum`** (append-only, no
+   claim needed) — never `work_resolve` (fails on differing text against a
+   resolved item) or `work_reopen` (clears `closed_at` and moves every
+   throughput roll-up; the manager's call, not a lane's).
+4. Filed a **per-repo child item, `model_performance-k75p`**, linked
+   `relates-to` the parent, claimed it, and **resolved it** with the
+   owner-readable summary. Additive, non-destructive, and this repo's result now
+   lives on a row a later reader can find by id.
+
+So Procedure 5's `work_resolve` **was** executed — against the child, which is
+the only item this session could hold. `BLOCKED.md` was correctly not written:
+a refused claim on a nineteen-lane item is not outcome branch C.
+
+Per the convention already established on the parent item, **no cross-lane
+ordinal is stated** — how many lanes have hit this is a whole-item question,
+answerable correctly once, by the reader of the finished list.
 
 ## Procedural: the claim was refused, and proceeding was correct
 
