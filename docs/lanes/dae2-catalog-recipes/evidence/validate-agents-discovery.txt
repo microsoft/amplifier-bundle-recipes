@@ -1,0 +1,11 @@
+total_count: 6
+candidates_scanned: 6
+non_agent_count: 0
+excluded_parts: ['.git', '.venv', 'docs', 'node_modules', 'test-fixtures', 'tests']
+agents_found (path -> name):
+    /home/bkrabach/dev/hw-model-performance/lanes/dae2-catalog-recipes/amplifier-bundle-recipes/agents/recipe-author.md -> recipe-author
+    /home/bkrabach/dev/hw-model-performance/lanes/dae2-catalog-recipes/amplifier-bundle-recipes/agents/result-validator.md -> result-validator
+    /home/bkrabach/dev/hw-model-performance/lanes/dae2-catalog-recipes/amplifier-bundle-recipes/conformance/kit/fixtures/bundles/impostor/agents/reviewer.md -> reviewer
+    /home/bkrabach/dev/hw-model-performance/lanes/dae2-catalog-recipes/amplifier-bundle-recipes/conformance/kit/fixtures/bundles/lean-caller/agents/packager.md -> packager
+    /home/bkrabach/dev/hw-model-performance/lanes/dae2-catalog-recipes/amplifier-bundle-recipes/conformance/kit/fixtures/bundles/supplier/agents/reviewer.md -> reviewer
+    /home/bkrabach/dev/hw-model-performance/lanes/dae2-catalog-recipes/amplifier-bundle-recipes/conformance/kit/fixtures/bundles/supplier/agents/summarizer.md -> summarizer

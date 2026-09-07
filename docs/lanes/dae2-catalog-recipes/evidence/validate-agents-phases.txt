@@ -1,0 +1,32 @@
+# Both arms are real checkouts: BEFORE is a detached git worktree at origin/main
+# (fa1292b); AFTER is this lane's branch. Deterministic phases only -- $0, no LLM.
+
+===== BEFORE (stock, origin/main fa1292b) =====
+validate-agents v1.8.0 -- DETERMINISTIC phases 0-3 only, $0 (no LLM)
+recipe: /home/bkrabach/.amplifier/cache/skills/amplifier-foundation-c909465861f9d6ce/recipes/validate-agents.yaml
+repo: /home/bkrabach/dev/hw-model-performance/lanes/dae2-catalog-recipes/stock-worktree
+agents discovered: 6
+structural summary: {'total': 6, 'passed': 6, 'errors': 0, 'warnings': 8}
+quality_level: needs_work
+quality summary: {'total': 6, 'good': 2, 'polish': 0, 'needs_work': 4, 'critical': 0}
+  recipe-author        chars=  561 examples=0 commentary=0 errors=[] warnings=[]
+  result-validator     chars=  578 examples=0 commentary=0 errors=[] warnings=[]
+  reviewer             chars=   63 examples=0 commentary=0 errors=[] warnings=['NO_TOOLS_SECTION', 'SHORT_DESCRIPTION']
+  packager             chars=   47 examples=0 commentary=0 errors=[] warnings=['NO_TOOLS_SECTION', 'SHORT_DESCRIPTION']
+  reviewer             chars=   60 examples=0 commentary=0 errors=[] warnings=['NO_TOOLS_SECTION', 'SHORT_DESCRIPTION']
+  summarizer           chars=   64 examples=0 commentary=0 errors=[] warnings=['NO_TOOLS_SECTION', 'SHORT_DESCRIPTION']
+
+===== AFTER (branch lane/dae2-catalog-recipes, d808a10) =====
+validate-agents v1.8.0 -- DETERMINISTIC phases 0-3 only, $0 (no LLM)
+recipe: /home/bkrabach/.amplifier/cache/skills/amplifier-foundation-c909465861f9d6ce/recipes/validate-agents.yaml
+repo: /home/bkrabach/dev/hw-model-performance/lanes/dae2-catalog-recipes/amplifier-bundle-recipes
+agents discovered: 6
+structural summary: {'total': 6, 'passed': 6, 'errors': 0, 'warnings': 8}
+quality_level: needs_work
+quality summary: {'total': 6, 'good': 2, 'polish': 0, 'needs_work': 4, 'critical': 0}
+  recipe-author        chars=  593 examples=0 commentary=0 errors=[] warnings=[]
+  result-validator     chars=  591 examples=0 commentary=0 errors=[] warnings=[]
+  reviewer             chars=   63 examples=0 commentary=0 errors=[] warnings=['NO_TOOLS_SECTION', 'SHORT_DESCRIPTION']
+  packager             chars=   47 examples=0 commentary=0 errors=[] warnings=['NO_TOOLS_SECTION', 'SHORT_DESCRIPTION']
+  reviewer             chars=   60 examples=0 commentary=0 errors=[] warnings=['NO_TOOLS_SECTION', 'SHORT_DESCRIPTION']
+  summarizer           chars=   64 examples=0 commentary=0 errors=[] warnings=['NO_TOOLS_SECTION', 'SHORT_DESCRIPTION']

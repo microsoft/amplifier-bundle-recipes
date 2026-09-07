@@ -1,0 +1,17 @@
+# FAIL-BEFORE / PASS-AFTER for the diagram regeneration, on the FINAL descriptions.
+# AGENTS.md: an agent description change makes bundle.dot/bundle.png stale and
+# modules/tool-recipes/tests/test_bundle_dot_freshness.py is the gate.
+
+=== RED: origin/main's bundle.dot/bundle.png + this branch's descriptions ===
+=========================== short test summary info ============================
+FAILED modules/tool-recipes/tests/test_bundle_dot_freshness.py::test_bundle_dot_source_hash_matches_regenerated
+FAILED modules/tool-recipes/tests/test_bundle_dot_freshness.py::test_bundle_dot_is_byte_identical_to_regenerated
+2 failed, 1222 passed, 1 skipped, 6 warnings in 26.33s
+
+=== GREEN: regenerated bundle.dot/bundle.png (as committed) ===
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1224 passed, 1 skipped, 6 warnings in 25.13s
+
+worktree clean check:
+?? docs/lanes/dae2-catalog-recipes/

@@ -1,0 +1,15 @@
+===== STOCK: /home/bkrabach/dev/hw-model-performance/lanes/dae2-catalog-recipes/stock-origin-main =====
+  recipe-author        chars= 561 examples=0 commentary=0 trigger_first=False use_when=False do_not=False body_md5=29968bfc324e64c987e369c91998ea70
+  result-validator     chars= 578 examples=0 commentary=0 trigger_first=False use_when=False do_not=False body_md5=5eb03563eb521e9473a8ac3a49ee573f
+  TOTAL description chars: 1139
+===== LEAN: . =====
+  recipe-author        chars= 593 examples=0 commentary=0 trigger_first=True use_when=True do_not=True body_md5=29968bfc324e64c987e369c91998ea70
+  result-validator     chars= 591 examples=0 commentary=0 trigger_first=True use_when=True do_not=True body_md5=5eb03563eb521e9473a8ac3a49ee573f
+  TOTAL description chars: 1184
+
+===== VERDICT =====
+  recipe-author         561 ->  593 chars (+32)  body md5 29968bfc324e64c987e369c91998ea70 == 29968bfc324e64c987e369c91998ea70 OK
+  result-validator      578 ->  591 chars (+13)  body md5 5eb03563eb521e9473a8ac3a49ee573f == 5eb03563eb521e9473a8ac3a49ee573f OK
+  REPO TOTAL           1139 -> 1184 chars (+45)
+
+PASS: bodies byte-identical, every description trigger-first, <=600, USE WHEN + DO NOT USE WHEN, zero example/commentary blocks.

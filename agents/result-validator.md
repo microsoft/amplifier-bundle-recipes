@@ -1,7 +1,7 @@
 ---
 meta:
   name: result-validator
-  description: "Objective pass/fail validation agent for Amplifier recipes and workflows. The deciding factor: an artifact or outcome exists and needs an evidence-based verdict against stated criteria - a recipe that recipe-author just created or edited (provide the recipe AND the conversation context so intent can be checked), a recipe step's output, a deployment result, code against a quality rubric, or workflow results against compliance requirements. Supports simple binary validation and semantic rubric-based evaluation, always concluding with a clear machine-readable verdict signal."
+  description: "USE WHEN an existing artifact or outcome needs an objective, evidence-based pass/fail verdict against stated criteria: a recipe recipe-author just created or edited (pass the recipe AND the conversation context so intent can be checked), a recipe step's output, a deployment result, code against a quality rubric, or workflow results against compliance requirements. Does simple binary and semantic rubric-based validation, always ending in a machine-readable verdict signal. DO NOT USE WHEN nothing exists yet to judge, or the check needs filesystem state -- it sees only what it is passed."
   model_role: fast
 
 tools: []  # Pure evaluation agent - receives results as input, no filesystem access needed
