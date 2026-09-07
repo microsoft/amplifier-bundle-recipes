@@ -1,13 +1,12 @@
 This repo had **no `.github/workflows` directory at all**. Its 1,798 tests, its
 20-fixture conformance kit, and the byte-for-byte tool-description pin that
-landed in `cd859d1` ran only when a human remembered to run them. **Four
-separate things were red on clean `main`, and nothing said so.** Each is fixed
-in its own named commit here; one more is reported and deliberately *not*
-fixed.
+landed in `cd859d1` ran only when a human remembered to run them. **Six
+separate things were red, and nothing said so.** Every one is fixed here, each
+in its own named commit.
 
 ## The workflow
 
-Eight checks from four job definitions, on `push: main` and every
+Eleven checks from five job definitions, on `push: main` and every
 `pull_request`, `permissions: contents: read`:
 
 | Check | What it runs | AGENTS.md gate |
@@ -15,10 +14,14 @@ Eight checks from four job definitions, on `push: main` and every
 | `Lint (ruff)` | `uvx ruff@0.16.6 check --isolated --select E4,E7,E9,F .` | — |
 | `Tests (runner library)` ×3 | `pytest src/amplifier_recipe_runner/tests` on 3.11 / 3.12 / 3.13 | gate 2 |
 | `Tests (tool-recipes + conformance kit)` ×3 | `pytest modules/tool-recipes`, then `conformance/kit/kit.py --run`, on 3.11 / 3.12 / 3.13 | gates 1 + 3 |
+| `Conformance (legacy-compat)` ×3 | `conformance/legacy-compat/harness.py --assert` on 3.11 / 3.12 / 3.13 | gate 4 |
 | `Bundle structure (YAML)` | parses `bundle.md` frontmatter and `behaviors/*.yaml` | — |
 
-The commands are AGENTS.md's own **Gates** section, so a green run here means
-the same thing as a clean local run. Ruff's **tool version and rule set are
+**All four of AGENTS.md's gates are wired.** None is skipped, narrowed, or run
+behind an error-tolerant step key.
+
+The commands are AGENTS.md's own **Gates** section — all four of them — so a
+green run here means the same thing as a clean local run. Ruff's **tool version and rule set are
 both pinned**, with `--isolated` so no config discovered up the tree can change
 the answer. The Python matrix is every version `requires-python = ">=3.11"`
 claims — which is how two of the four findings below were caught.
@@ -44,14 +47,19 @@ Not an import smoke. Real, and large:
   NOTHING, not a pass."* It needs the Amplifier CLI's own environment, which a
   runner does not have.
 
-Total: **1,798 tests + 19 executed fixtures per Python version.**
+- **5 legacy-compat golden baselines**, asserted byte-for-byte: the serialized
+  `ToolResult` of `execute` / `resume` / `approve` for legacy recipes, including
+  a staged recipe driven through all four of its approval gates.
+
+Total: **1,798 tests + 19 executed fixtures + 5 golden baselines per Python
+version.**
 
 ## Red-then-green, proven
 
-Scratch PR **#115** on branch `ci/red-proof-j1e6`, since **closed with its
-branch deleted** — verified by remote read (`git ls-remote --heads origin
-ci/red-proof-j1e6` → **0 refs**), not by trusting the close message. Two red
-runs, so each of the four job definitions was seen red **for its own reason**:
+Three red runs, so **each of the five job definitions has been seen red for its
+own reason**. Both scratch PRs (**#115**, **#117**) are **closed with their
+branches deleted** — verified by remote read (`git ls-remote --heads origin
+<branch>` → **0 refs** for each), not by trusting the close message.
 
 **RED run 1 — <https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34159167170>**
 
@@ -88,19 +96,40 @@ diagram on its own, unprompted — that gate works. And lint and the runner
 library went **green** here, which proves run 1's red came from the planted
 defects and not from a broken workflow.
 
-**GREEN runs — <https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34160188969>**
-(commit `3189598`, the workflow-only head) and
-**<https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34160837775>**
-(commit `a3c6d4f`, with this lane's evidence artifacts). Both 8/8:
+**RED run 3 — <https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34163006300>**
+
+For the newly wired gate-4 job, scratch PR **#117** (closed, branch
+`ci/red-proof-j1e6-gate4` deleted, **0 refs** on remote). One deliberate drift in
+the frozen provider catalogue took **all three** `Conformance (legacy-compat)`
+legs red while **the other 8 checks stayed green** — the new job fails for its
+own reason and nothing else:
+
+```
+Conformance (legacy-compat) (3.11/3.12/3.13)  LEGACY-COMPAT DRIFT: 2 case(s) differ
+  code-review-comprehensive   -"model": "claude-sonnet-4-5"  +"claude-sonnet-9-9"   <- planted
+  bash-step-example           -"recipe-runner"               +"recipe-<USER>"       <- NOT planted
+Lint / runner library ×3 / tool-recipes ×3 / bundle structure   success
+```
+
+That second failure was **not planted** — it is finding 6 below, a real bug this
+red proof caught and that no local run could have.
+
+**GREEN run — <https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34163577830>**
+(commit `dd9381e`), **11/11**, all four gates wired:
 
 ```
 Lint (ruff)                     All checks passed!
 Tests (runner library) ×3       574 passed, 4 skipped
 Tests (tool-recipes …) ×3       1224 passed, 1 skipped   +   19/20 fixtures passed
+Conformance (legacy-compat) ×3  LEGACY-COMPAT OK: 5 case(s) byte-identical to baseline
 Bundle structure (YAML)         bundle structure OK -- 1 bundle.md + 1 behaviour file(s)
 ```
 
-## Clean main was red. Four fixes, each its own commit
+Earlier green runs on the workflow-only head, before gate 4 was wired:
+[34160188969](https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34160188969)
+and [34160837775](https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34160837775).
+
+## Six things were red. Six fixes, each its own commit
 
 ### 1. `4ed60bb` — the library could not be imported on the Python 3.11 it claims to support
 
@@ -174,42 +203,83 @@ two are about a `class:` entry being resolved and prepended while the explicit
 fallback survives. **Neither assertion was weakened** — both still require the
 fallback entry present, in position, with provider `anthropic`.
 
-## Reported, NOT fixed: AGENTS.md gate 4 is not wired
+### 5. `4b02fbc` — AGENTS.md gate 4 was red, and the fixture had stopped checking anything
 
-`conformance/legacy-compat/harness.py --assert` is **red on clean main** and is
-**deliberately not a job in this workflow**. This is stated in the workflow's
-own header, not hidden.
+`conformance/legacy-compat --assert` was red on clean main:
+`code-review-comprehensive`'s four recorded `provider_preferences` blocks read
+`null` where the baseline has a model. Same `d5b72b7` cause as finding 4 — that
+one commit left **three** checks stale.
+
+The obvious move — re-record the baseline — would have been wrong, and the
+harness's own README says why. It states that with no providers registered *"the
+engine leaves the glob as-is and the **glob itself** is what the baseline pins.
+That is the provenance that must not silently change."* `d5b72b7` made that
+false: an unmatched pattern now resolves to the provider's real default, and a
+preference whose model cannot be filled is **dropped** before the spawn. This
+harness deliberately registers **no catalogue at all**, so nothing could ever be
+filled, every preference was dropped, and the one case whose declared coverage is
+*"model glob provenance"* silently pinned **nothing**. Recording `null` would
+have made a vacuous fixture permanent — the exact decoration this whole gate
+exists to prevent.
+
+**Fixed at the harness seam; the engine is untouched.** A case that exercises
+globs now declares a **frozen** catalogue in `cases.yaml`:
+
+```yaml
+    provider_catalog:
+      anthropic: [claude-haiku-4-5, claude-opus-4-1, claude-sonnet-4-5]
+```
+
+Frozen, never live — the same fixture philosophy as `caller_agents`, the scripted
+`agent_responses` and the hermetic `gh` shim. It cannot rot on a vendor's release
+schedule, which is the entire reason the no-live-catalogue rule existed. The
+baseline now pins the **resolved** model (`claude-sonnet-4-5`) instead of the raw
+glob: strictly more provenance, because it captures the resolution and not just
+its input.
+
+Re-recorded exactly as the README's *"When `--assert` fails"* section sanctions —
+read the diff first, then re-record as part of the change that caused it, so the
+diff is reviewable. Scope verified rather than asserted:
+
+- **One** baseline file changed. The other four are **byte-identical** and pass
+  unchanged — they declare no catalogue, and the recorded key is omitted entirely
+  when absent. That is the proof this change is inert where it does not apply.
+- The only diff in the changed file is glob → resolved model ×4, the recorded
+  `provider_catalog` input, and the `covers` text. `outcome`, `agents_by_step`,
+  `agent_spawn_count`, every instruction and `final_context` are unchanged —
+  items 1, 2, 4 and 5 of the README's own read-order.
+- The gate still discriminates: adding a newer `claude-sonnet-9-9` to the frozen
+  catalogue moves the pinned provenance and fails the assert.
+
+### 6. `dd9381e` — the username normalizer corrupted literal fixture text on CI
+
+**Found by the red-proof run for the new gate-4 job, and findable nowhere else.**
+
+Normalization rule 11 replaces the current username with `<USER>` so a baseline
+does not depend on whose laptop recorded it. It used `\b` boundaries — and `\b`
+treats a **hyphen** as a boundary. Every GitHub runner's username is `runner`.
+`bash-step-example`'s env step sets the literal value `User: recipe-runner`. So
+on CI, and only on CI, the normalizer rewrote that literal fixture text to
+`recipe-<USER>` and reported drift:
 
 ```
-[assert] bash-step-example:          PASS
-[assert] test-parse-json:            PASS
-[assert] repo-activity-analysis:     PASS
-[assert] code-review-comprehensive:  FAIL - drift against baseline
-[assert] dependency-upgrade-staged:  PASS
-LEGACY-COMPAT DRIFT: 1 case(s) differ from baseline.
+[assert] bash-step-example: FAIL - drift against baseline
+-    "env_result": "Project: LegacyCompat, User: recipe-runner\n",
++    "env_result": "Project: LegacyCompat, User: recipe-<USER>\n",
 ```
 
-Same root cause as finding 4: that case's fixture pins `claude-sonnet-*` /
-`claude-opus-*` globs, and four recorded `provider_preferences` blocks are now
-`null` because `d5b72b7` drops a preference it cannot fill. Reproduce in one
-command:
+The rule meant to *remove* machine variance was *introducing* it, on any machine
+whose username appears hyphen-joined inside recorded content. Invisible on every
+developer's laptop; guaranteed on every runner. Fixed by requiring the username
+be adjacent to neither a word character nor a hyphen. Verified both ways —
+`LEGACY-COMPAT OK: 5 case(s) byte-identical` as the real user *and* with
+`USER=LOGNAME=runner` — while `/home/runner/work` and a bare `runner` both still
+normalize. **No baseline was re-recorded: the baselines were right, the
+normalizer was wrong.**
 
-```bash
-PYTHONPATH=src:modules/tool-recipes python3 conformance/legacy-compat/harness.py --assert
-```
-
-**Why this branch does not fix it.** The fix is to re-record that baseline with
-the diff reviewed — a call about legacy engine behaviour that belongs to
-whoever owns `d5b72b7`, not to the change that installs CI. AGENTS.md is
-explicit: *"Never re-record the legacy-compat baselines to make a change
-pass."* So this branch does not re-record it, does not narrow it to the four
-passing cases, and does not run it behind an error-tolerant step key. **Wire it
-in as its own job the moment that baseline is settled** — the workflow header
-says exactly that.
-
-One deliberate commit, `d5b72b7`, therefore left **three** checks stale: two
-unit tests and this baseline. With no CI, nobody saw any of them for 67
-commits. That is the case for this PR in one sentence.
+The regression guard is now structural rather than a test — gate 4 runs on
+`ubuntu-latest`, whose username *is* `runner`, so any reintroduction fails this
+job on the next PR.
 
 ## Also disclosed, not silently excluded
 

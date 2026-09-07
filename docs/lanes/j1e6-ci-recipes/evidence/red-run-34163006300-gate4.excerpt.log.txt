@@ -1,0 +1,79 @@
+# RED run 3 -- one deliberate drift in the frozen provider catalogue (scratch PR #117, branch deleted)
+# https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34163006300
+#
+# It also surfaced a SECOND, unplanted failure: bash-step-example, from the
+# username normalizer corrupting literal fixture text on a runner. Fixed in
+# dd9381e -- the red proof earned its keep.
+#
+# Verbatim verdict lines, ANSI and timestamps stripped, in log order.
+# Full log: gh run view 34163006300 --log
+
+Tests (runner library) (3.11) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 6.71s
+Tests (tool-recipes + conformance kit) (3.11) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1224 passed, 1 skipped, 6 warnings in 30.50s
+Tests (tool-recipes + conformance kit) (3.11) | conformance kit (AGENTS.md gate 3) | 19/20 fixtures passed
+Lint (ruff) | ruff (pinned 0.16.6, --isolated) | All checks passed!
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] bash-step-example: FAIL - drift against baseline
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | -    "env_result": "Project: LegacyCompat, User: recipe-runner\n",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | -    "final_summary": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-runner\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | +    "env_result": "Project: LegacyCompat, User: recipe-<USER>\n",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | +    "final_summary": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-<USER>\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | -          "final_output": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-runner\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | +          "final_output": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-<USER>\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] test-parse-json: PASS
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] repo-activity-analysis: PASS
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] code-review-comprehensive: FAIL - drift against baseline
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | -            "model": "claude-sonnet-4-5",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | +            "model": "claude-sonnet-9-9",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | -            "model": "claude-sonnet-4-5",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | +            "model": "claude-sonnet-9-9",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | -      "claude-sonnet-4-5"
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | +      "claude-sonnet-4-5",
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | +      "claude-sonnet-9-9"
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | [assert] dependency-upgrade-staged: PASS
+Conformance (legacy-compat) (3.13) | legacy-compat --assert (AGENTS.md gate 4) | LEGACY-COMPAT DRIFT: 2 case(s) differ from baseline.
+Tests (tool-recipes + conformance kit) (3.12) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1224 passed, 1 skipped, 6 warnings in 29.13s
+Tests (tool-recipes + conformance kit) (3.12) | conformance kit (AGENTS.md gate 3) | 19/20 fixtures passed
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] bash-step-example: FAIL - drift against baseline
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | -    "env_result": "Project: LegacyCompat, User: recipe-runner\n",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | -    "final_summary": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-runner\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | +    "env_result": "Project: LegacyCompat, User: recipe-<USER>\n",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | +    "final_summary": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-<USER>\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | -          "final_output": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-runner\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | +          "final_output": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-<USER>\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] test-parse-json: PASS
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] repo-activity-analysis: PASS
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] code-review-comprehensive: FAIL - drift against baseline
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | -            "model": "claude-sonnet-4-5",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | +            "model": "claude-sonnet-9-9",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | -            "model": "claude-sonnet-4-5",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | +            "model": "claude-sonnet-9-9",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | -      "claude-sonnet-4-5"
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | +      "claude-sonnet-4-5",
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | +      "claude-sonnet-9-9"
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | [assert] dependency-upgrade-staged: PASS
+Conformance (legacy-compat) (3.11) | legacy-compat --assert (AGENTS.md gate 4) | LEGACY-COMPAT DRIFT: 2 case(s) differ from baseline.
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] bash-step-example: FAIL - drift against baseline
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | -    "env_result": "Project: LegacyCompat, User: recipe-runner\n",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | -    "final_summary": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-runner\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | +    "env_result": "Project: LegacyCompat, User: recipe-<USER>\n",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | +    "final_summary": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-<USER>\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | -          "final_output": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-runner\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | +          "final_output": "=== Bash Step Example Summary ===\nEcho result: Hello from bash step\n\nEnv result: Project: LegacyCompat, User: recipe-<USER>\n\nCheck code: 0\nSuccess: Directory check passed!\n\n",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] test-parse-json: PASS
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] repo-activity-analysis: PASS
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] code-review-comprehensive: FAIL - drift against baseline
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | -            "model": "claude-sonnet-4-5",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | +            "model": "claude-sonnet-9-9",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | -            "model": "claude-sonnet-4-5",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | +            "model": "claude-sonnet-9-9",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | -      "claude-sonnet-4-5"
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | +      "claude-sonnet-4-5",
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | +      "claude-sonnet-9-9"
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | [assert] dependency-upgrade-staged: PASS
+Conformance (legacy-compat) (3.12) | legacy-compat --assert (AGENTS.md gate 4) | LEGACY-COMPAT DRIFT: 2 case(s) differ from baseline.
+Tests (tool-recipes + conformance kit) (3.13) | pytest modules/tool-recipes (AGENTS.md gate 1) | 1224 passed, 1 skipped, 6 warnings in 28.13s
+Tests (tool-recipes + conformance kit) (3.13) | conformance kit (AGENTS.md gate 3) | 19/20 fixtures passed
+Tests (runner library) (3.12) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 7.16s
+Tests (runner library) (3.13) | pytest src/amplifier_recipe_runner (AGENTS.md gate 2) | 574 passed, 4 skipped in 6.34s
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | print(f"\nbundle structure OK -- 1 bundle.md + {len(behaviors)} behaviour file(s)")
+Bundle structure (YAML) | Parse bundle.md frontmatter and behaviors/*.yaml | bundle structure OK -- 1 bundle.md + 1 behaviour file(s)

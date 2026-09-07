@@ -19,11 +19,11 @@ review with all eight checks green and is deliberately unmerged.
 
 | Deliverable | State | Evidence |
 |---|---|---|
-| `.github/workflows/ci.yml` running the repo's real suite, ruff pinned, `push:main` + `pull_request`, no path filters / error-tolerant step keys / shell failure suppression | **DONE** | commit `3189598`; grep for `paths:`, `paths-ignore:`, `continue-on-error`, `\|\| true` → **0 matches**, prose included |
-| BOTH run URLs in the PR body, RED job log showing the real suite executing | **DONE** | RED [34159167170](https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34159167170) + RED [34159670751](https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34159670751) + GREEN [34160188969](https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34160188969) |
-| Scratch PR closed and branch deleted — **verified, not assumed** | **DONE** | PR #115 `state=CLOSED`; `git ls-remote --heads origin ci/red-proof-j1e6` → **0 refs** |
-| Statement of what the suite covers | **DONE** | 1,224 tool-recipes + 574 runner-library tests + 19/20 executed conformance fixtures = **1,798 tests per Python version**. NOT an import smoke |
-| Clean main red → stop, report, fix as separate named commits | **DONE (4 fixed) + 1 REPORTED, NOT FIXED** | `4ed60bb`, `495dc02`, `d3078b8`, `5695b47`; legacy-compat gate 4 reported and deliberately not wired |
+| `.github/workflows/ci.yml` running the repo's real suite, ruff pinned, `push:main` + `pull_request`, no path filters / error-tolerant step keys / shell failure suppression | **DONE** | commits `3189598` + `4ad6b9a`; **11 checks, all four AGENTS.md gates wired**; grep for `paths:`, `paths-ignore:`, `continue-on-error`, `\|\| true` → **0 matches**, prose included |
+| BOTH run URLs in the PR body, RED job log showing the real suite executing | **DONE** | RED [34159167170](https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34159167170), [34159670751](https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34159670751), [34163006300](https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34163006300) + GREEN [34163577830](https://github.com/microsoft/amplifier-bundle-recipes/actions/runs/34163577830) (11/11) |
+| Scratch PRs closed and branches deleted — **verified, not assumed** | **DONE** | PRs #115 and #117 `state=CLOSED`; `git ls-remote --heads origin <branch>` → **0 refs** for both |
+| Statement of what the suite covers | **DONE** | 1,224 tool-recipes + 574 runner-library tests + 19/20 executed conformance fixtures + 5 legacy-compat golden baselines = **1,798 tests per Python version**. NOT an import smoke |
+| Clean main red → stop, report, fix as separate named commits | **DONE — all 6 fixed** | `4ed60bb`, `495dc02`, `d3078b8`, `5695b47`, `4b02fbc`, `dd9381e`. **No finding is left unfixed and no gate is left unwired.** |
 | Draft PR, marked ready when green, not merged | **DONE** | PR #116 |
 
 ## The five things clean main was failing, and nothing said so
@@ -50,31 +50,42 @@ each in its own named commit. Finding 5 is reported and deliberately left alone.
    preference whose model cannot be resolved; the tests' mock coordinator has
    no model catalogue. Fixture now names a concrete model; neither assertion
    weakened.
-5. **REPORTED, NOT FIXED — AGENTS.md gate 4 (`conformance/legacy-compat
-   --assert`) is red on main and is not wired into CI.** Same `d5b72b7` cause:
-   `code-review-comprehensive` drifts because its fixture pins
-   `claude-sonnet-*` / `claude-opus-*` globs and four recorded
-   `provider_preferences` blocks are now `null`. The fix is to re-record the
-   baseline *with the diff reviewed* — a call about legacy engine behaviour,
-   owned by whoever owns `d5b72b7`. **AGENTS.md: "Never re-record the
-   legacy-compat baselines to make a change pass."** So this lane did not
-   re-record it, did not narrow it to the four passing cases, and did not run
-   it behind an error-tolerant step key. The gap is named in the workflow's own
-   header, in the PR body, and here.
+5. **`4b02fbc` — AGENTS.md gate 4 was red, and the fixture had stopped checking
+   anything.** Same `d5b72b7` cause. Re-recording the baseline would have been
+   wrong: the harness registers **no provider catalogue**, so after `d5b72b7`
+   every preference was dropped and the one case whose declared coverage is
+   *"model glob provenance"* pinned **nothing**. Fixed at the harness seam — a
+   **frozen**, case-declared catalogue in `cases.yaml` — so globs resolve
+   deterministically and the baseline pins the *resolved* model. Engine
+   untouched; one baseline changed, the other four byte-identical; re-recorded
+   exactly as the harness README's own "When `--assert` fails" section
+   sanctions.
+6. **`dd9381e` — the username normalizer corrupted literal fixture text on CI.**
+   Found by the gate-4 red proof and findable nowhere else. Rule 11 used `\b`
+   boundaries, `\b` treats a hyphen as one, and every runner's username is
+   `runner` — so the literal fixture value `recipe-runner` became
+   `recipe-<USER>`. The rule meant to remove machine variance was introducing
+   it. No baseline re-recorded: the baselines were right, the normalizer was
+   wrong.
 
 **The one-sentence case for the PR:** one deliberate commit left three checks
-stale, and with no CI nobody saw any of them for 67 commits.
+stale, and with no CI nobody saw any of them for 67 commits — and a fourth
+defect was waiting that *only* a CI runner could expose.
 
 ## Choices recorded (no human was waited on)
 
-1. **Gate 4 excluded rather than shipped red or re-recorded.** Shipping it red
-   would install a CI that can never be green until someone makes a product
-   call, and would block every subsequent PR. Re-recording is explicitly
-   forbidden by AGENTS.md. Excluding it *loudly* — workflow header, PR body,
-   this note — was chosen as the only option that neither weakens the gate nor
-   hides the finding. This is a deviation from "honor the repo's own check
-   targets" and is owned as one.
-2. **Findings 1–4 fixed rather than reported.** The goal's own precedent
+1. **Gate 4 fixed at the harness seam, not by re-recording and not by leaving
+   it out.** An earlier revision of this lane shipped the workflow with gate 4
+   unwired and the finding merely reported. That was wrong: a reported finding
+   is not a fixed one, and a gate nobody runs is the decoration this whole
+   exercise exists to prevent. Re-recording `null` would have been worse still —
+   it would have frozen a fixture that claims to pin model-glob provenance while
+   pinning nothing. The frozen, case-declared catalogue fixes the seam that
+   actually broke, leaves the engine alone, and keeps the anti-rot property the
+   no-live-catalogue rule was protecting. AGENTS.md forbids re-recording *to make
+   a change pass*; the harness README sanctions re-recording *for an intended
+   change, diff read first, committed together*. Both are satisfied.
+2. **All findings fixed rather than reported.** The goal's own precedent
    (`b4xs`) is to fix genuine findings as separate named commits. All four are
    behaviour-neutral or intent-preserving, and each is independently
    revertible without touching the workflow.
@@ -125,7 +136,14 @@ finding against the authority.
 4. **NEW — a `.gitignore` carrying `*.log` (this repo has one) silently drops
    committed CI evidence.** Name evidence `*.log.txt` and verify with
    `git show --stat HEAD`.
-5. **NEW — plant red-proof defects that do not interact.** A malformed
+5. **NEW — a normalizer that erases machine variance can *create* it.** The
+   legacy-compat harness replaced the current username with `<USER>` using `\b`
+   boundaries; `\b` treats a hyphen as a boundary, every GitHub runner is
+   `runner`, and the literal fixture text `recipe-runner` became
+   `recipe-<USER>`. Any repo with a golden-baseline harness should check its
+   normalization rules against the string `runner` before wiring CI — the bug is
+   invisible on every developer's laptop and certain on every runner.
+6. **NEW — plant red-proof defects that do not interact.** A malformed
    `behaviors/*.yaml` also fails `test_bundle_dot_freshness`, so the
    bundle-structure defect was pushed as a **second** scratch commit. Two red
    runs give each job a red attributable to its own cause; one mixed run does
