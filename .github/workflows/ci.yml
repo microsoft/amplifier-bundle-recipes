@@ -6,30 +6,12 @@ name: CI
 #
 # The jobs below are AGENTS.md's own "Gates" section, run the same way CI and a
 # developer run them, so a green run here means the same thing as a clean local
-# run. Three of AGENTS.md's four gates are wired:
+# run. All four gates are wired:
 #
 #   gate 1  pytest modules/tool-recipes            -> "Tests (tool-recipes ...)"
 #   gate 2  pytest src/amplifier_recipe_runner     -> "Tests (runner library)"
 #   gate 3  conformance/kit/kit.py --run           -> "Tests (tool-recipes ...)"
-#
-# GATE 4 -- conformance/legacy-compat/harness.py --assert -- IS DELIBERATELY NOT
-# WIRED, AND THAT IS A KNOWN GAP, NOT AN OVERSIGHT. It is RED on clean main
-# today: the `code-review-comprehensive` case drifts from its recorded baseline
-# because commit d5b72b7 changed what an unmatched model pattern resolves to,
-# and that case's fixture pins claude-sonnet-* / claude-opus- globs, whose
-# recorded `provider_preferences` are now dropped rather than emitted with an
-# empty model. Reproduce it in one command:
-#
-#   PYTHONPATH=src:modules/tool-recipes python3 \
-#       conformance/legacy-compat/harness.py --assert
-#
-# The fix is to re-record that baseline WITH THE DIFF REVIEWED, which is a call
-# about legacy engine behaviour and belongs to whoever owns d5b72b7 -- not to
-# the change that installed CI. AGENTS.md is explicit: "Never re-record the
-# legacy-compat baselines to make a change pass." So this workflow does not
-# re-record it, does not run it and pass it vacuously, and does not hide it
-# behind an error-tolerant step key. Wire this gate in as its own job the
-# moment that baseline is settled.
+#   gate 4  conformance/legacy-compat --assert     -> "Conformance (legacy-compat)"
 #
 # Deliberately absent everywhere below: path filters, error-tolerant step keys,
 # and shell failure suppression. Each is a way to report green without having
@@ -126,6 +108,39 @@ jobs:
             --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
             --with pyyaml --with click \
             python conformance/kit/kit.py --run
+
+  legacy-compat:
+    name: Conformance (legacy-compat)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: legacy-compat --assert (AGENTS.md gate 4)
+        # Golden baselines pinning the serialized ToolResult of execute /
+        # resume / approve for legacy recipes, byte-for-byte. Hermetic: the
+        # spawn seam replays responses scripted in cases.yaml and the provider
+        # seam serves a FROZEN, case-declared model catalogue, so nothing here
+        # depends on a live model, an API key, or a vendor's release schedule.
+        #
+        # If this job goes red, read the diff -- it names which of outcome,
+        # agents_by_step, provider_preferences, instruction or final_context
+        # moved. Do NOT re-record the baseline to clear it without reading it
+        # first; see conformance/legacy-compat/README.md and AGENTS.md.
+        env:
+          PYTHONPATH: src:modules/tool-recipes
+        run: |
+          uv run --python ${{ matrix.python }} --no-project \
+            --with "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
+            --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
+            --with pyyaml --with click \
+            python conformance/legacy-compat/harness.py --assert
 
   bundle-structure:
     name: Bundle structure (YAML)
