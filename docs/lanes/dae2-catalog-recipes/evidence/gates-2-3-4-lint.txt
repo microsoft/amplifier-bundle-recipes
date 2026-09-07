@@ -1,0 +1,20 @@
+### AGENTS.md gate 2: pytest src/amplifier_recipe_runner
+..                                                                       [100%]
+574 passed, 4 skipped in 5.18s
+
+### AGENTS.md gate 3: conformance/kit/kit.py --run
+       both engines ran ['a', 'b', 'c'] then, on resume, only ['c', 'd', 'e'] -- identical collected results (5 items, index-aligned), with mid-loop progress recorded on each side
+
+19/20 fixtures passed
+
+SKIPPED (1 -- checked NOTHING, not a pass):
+  - good-activation-install-resolves-the-in-bundle-runner [RCP-101]
+      this host environment does not provide amplifier_foundation, which module activation assumes (the activator installs into the Amplifier CLI's own environment). The install half would run, but the import and load_runner() halves could not.
+
+### AGENTS.md gate 4: conformance/legacy-compat/harness.py --assert
+[assert] dependency-upgrade-staged: PASS
+
+LEGACY-COMPAT OK: 5 case(s) byte-identical to baseline.
+
+### CI lint job: ruff 0.16.6 --isolated --select E4,E7,E9,F
+All checks passed!
