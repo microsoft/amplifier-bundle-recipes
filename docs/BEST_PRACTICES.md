@@ -33,7 +33,7 @@ else runs your recipe.
 schema_version: 2
 
 dependencies:
-  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+  - source: "git+https://github.com/microsoft/amplifier-foundation@main"
     kind: bundle
     required_agents:
       - "foundation:zen-architect"
@@ -59,7 +59,9 @@ it, agents resolve from the recipe's own declared closure.
 
 - List every namespaced (`ns:name`) agent under the `required_agents` of the
   dependency whose bundle ships it — including the recipe's **own** bundle.
-- Pin every `source` to a tag or SHA. Never `@main`.
+- Track canonical Amplifier sources at `@main`. Refresh resolution for new work,
+  then retain the resolved revisions in the run lock and provenance. Keep trust
+  checks enabled and preserve existing run/resume evidence.
 - `agent: self` is exempt; bash-only recipes need no header.
 
 **NEVER rename an agent, and never fork a local copy of a shipped recipe, to
@@ -1589,7 +1591,7 @@ recipe was designed around, and the shipped recipe stays broken for everyone.
 schema_version: 2
 
 dependencies:
-  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+  - source: "git+https://github.com/microsoft/amplifier-foundation@main"
     kind: bundle
     required_agents:
       - "foundation:git-ops"

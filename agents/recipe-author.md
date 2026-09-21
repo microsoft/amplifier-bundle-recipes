@@ -70,7 +70,7 @@ without the header is only correct when it has no agent steps at all
 schema_version: 2
 
 dependencies:
-  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+  - source: "git+https://github.com/microsoft/amplifier-foundation@main"
     kind: bundle
     required_agents:
       - "foundation:zen-architect"
@@ -96,7 +96,7 @@ from any bundle, in-session or through the standalone `recipe-runner` CLI.
 |------|--------|
 | Declare every namespace | Each `ns:name` agent a step references must appear under `required_agents` of the dependency whose bundle ships it. One `dependencies` entry per source bundle. |
 | Self-reference is correct | A recipe using agents from its *own* bundle declares that bundle too. This is not redundant — the closure is what resolution reads. |
-| Pin, never track | `@v2.1.2` or a SHA. Never `@main`. A branch makes the closure change under the recipe. |
+| Track current Amplifier sources | Use canonical `@main` declarations. Refresh resolution for new work, then retain resolved revisions in the run lock and provenance. Existing run/resume evidence and trust checks remain intact. |
 | `agent: self` is exempt | It names no bundle and no `dependencies` entry can supply it. |
 | Aliases are top-level | The `agents:` alias map is a top-level key, never a per-dependency key. Declaring it without `schema_version: 2` is a parse ERROR. |
 | Typos fail loudly | Unknown manifest keys are a parse ERROR, not silently ignored. |
@@ -123,8 +123,9 @@ labelled `legacy-caller-bound`, or `Agent 'x:y' not found in configuration`.
    source silently binds the recipe to the wrong agent.
 3. **Include the recipe's own bundle** if any step references an agent that
    bundle ships.
-4. **Pin each source** to a tag or SHA. Reuse the pin already used elsewhere in
-   the repo rather than inventing a new one (grep for an existing `source:` line).
+4. **Track each Amplifier source** at canonical `@main`. Refresh resolution for
+   new work and retain the resolved revisions in its run lock and provenance;
+   preserve existing evidence when resuming earlier work.
 5. **Write the header** above `name:`, with one `dependencies` entry per bundle
    and every referenced agent under that entry's `required_agents`.
 6. **Verify**: `recipes` tool `operation: validate` on the migrated path — this
@@ -377,7 +378,7 @@ The agent understands:
 schema_version: 2
 
 dependencies:
-  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+  - source: "git+https://github.com/microsoft/amplifier-foundation@main"
     kind: bundle
     required_agents:
       - "foundation:zen-architect"
@@ -502,7 +503,7 @@ Does this structure make sense? Any changes?
 schema_version: 2
 
 dependencies:
-  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+  - source: "git+https://github.com/microsoft/amplifier-foundation@main"
     kind: bundle
     required_agents:
       - "foundation:security-guardian"
@@ -691,7 +692,7 @@ When generating or validating recipes, the agent checks:
 - [ ] Recipe has an `agent:` step → `schema_version: 2` header present
 - [ ] Every namespaced (`ns:name`) agent referenced — flat, staged, and nested `foreach`/`while` bodies — appears under some dependency's `required_agents`
 - [ ] The recipe's own bundle is declared if it supplies any referenced agent
-- [ ] Every `source:` pinned to a tag or SHA, never a branch
+- [ ] Amplifier sources track canonical `@main`; resolved run revisions are recorded and trust checks remain enabled
 - [ ] No agent was renamed, and no shipped recipe was forked, to work around a missing agent
 - [ ] `recipes` tool `operation: validate` passes (manifest parse + plan preflight)
 

@@ -474,11 +474,12 @@ a `#subdirectory=` that names a *file* resolves to the file's parent
 `subdirectory` is now consulted when it names a `.yaml`/`.yml`; directory-style
 partials are unaffected.
 
-`recipes/repo-audit.yaml` keeps its pinned
-`git+…/amplifier-foundation@v2.1.2#subdirectory=providers/anthropic-sonnet.yaml`
-(`kind: behavior`) dependency. The pin is **not** made redundant by the host
-port: it is what makes the recipe reproducible on a host that supplies nothing,
-and case 1 is what guarantees it still wins where a host does.
+`recipes/repo-audit.yaml` declares
+`git+…/amplifier-foundation@main#subdirectory=providers/anthropic-sonnet.yaml`
+(`kind: behavior`). That explicit provider choice remains effective on a host
+that supplies nothing and still wins where a host supplies its own provider.
+New resolutions follow `main`; the run lock and provenance retain the actual
+resolved revision for reproducibility without changing earlier run evidence.
 
 ### Δ11 — A nested `steps:` body without `foreach:`/`while_condition:` is refused
 
