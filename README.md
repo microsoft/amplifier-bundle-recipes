@@ -97,7 +97,7 @@ The agent guides you through:
 schema_version: 2
 
 dependencies:
-  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+  - source: "git+https://github.com/microsoft/amplifier-foundation@main"
     kind: bundle
     required_agents:
       - "foundation:zen-architect"

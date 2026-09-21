@@ -19,7 +19,7 @@ for new recipes, not an opt-in.
 schema_version: 2
 
 dependencies:
-  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+  - source: "git+https://github.com/microsoft/amplifier-foundation@main"
     kind: bundle
     required_agents:
       - "foundation:zen-architect"
@@ -34,8 +34,10 @@ Without it, a step's `agent:` resolves from the **calling session's** agent map:
 the recipe runs in the bundle it was authored in and nowhere else. With it,
 agents resolve from the recipe's own declared closure, so the same file runs
 from any bundle. List every namespaced agent under the `required_agents` of the
-dependency whose bundle ships it (including the recipe's own bundle), and pin
-each `source` to a tag or SHA — never a branch.
+dependency whose bundle ships it (including the recipe's own bundle). Track
+canonical Amplifier sources at `@main`; refresh resolution for new work and
+record the actual resolved revisions in the run lock and provenance. Preserve
+existing run/resume evidence and keep trust checks enabled.
 
 A recipe with **no** `schema_version` is a *legacy recipe*: still executable
 through the Amplifier `recipes` tool, still caller-bound, and rejected outright
@@ -3373,19 +3375,20 @@ the runner resolves it in layers, recipe first:
 
 1. **The recipe's closure declares a provider** — that provider is used, and it
    is **pinned**: the host cannot override it. Declare one the same way you
-   declare an agent-bearing dependency, as a behavior partial from a pinned
+   declare an agent-bearing dependency, as a behavior partial from the canonical
    source:
 
    ```yaml
    dependencies:
-     - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+     - source: "git+https://github.com/microsoft/amplifier-foundation@main"
        kind: behavior
        subdirectory: providers/anthropic-sonnet.yaml
    ```
 
    In an Amplifier session that line is inert; standalone, it is what makes an
-   agent step real. Pin it when the recipe is written *for* a particular model,
-   or when it must reproduce identically wherever it runs.
+   agent step real. Declare it when the recipe is written *for* a particular
+   model; its provider choice wins over the host. Record the resolved source
+   revision in the run lock for reproducibility.
 
 2. **The closure declares none** — the host's approved-provider port supplies
    one, if it offers a mountable provider. From the CLI that is
@@ -3498,6 +3501,9 @@ about 26 of them, so the record separates the two facts:
 An agent whose definition file no reported tree holds records `defined_in:
 null` and an empty `via_includes`: nothing is claimed, rather than the reaching
 dependency's tree being asserted by default.
+
+This historical provenance example retains its original declared tag and resolved
+revision; it is run evidence, not an authoring template.
 
 ```json
 {

@@ -37,7 +37,7 @@ Every recipe that names an agent carries this header. It is the default, not an 
 ```yaml
 schema_version: 2
 dependencies:
-  - source: "git+https://github.com/microsoft/amplifier-foundation@v2.1.2"
+  - source: "git+https://github.com/microsoft/amplifier-foundation@main"
     kind: bundle
     required_agents:
       - "foundation:zen-architect"
@@ -50,7 +50,9 @@ dependencies:
 
 - List **every** namespaced (`ns:name`) agent a step references, under the `required_agents` of the dependency whose bundle ships it. One `dependencies` entry per source bundle.
 - A recipe using agents from its **own** bundle declares that bundle too — self-referential declarations are correct, not redundant.
-- **Pin a tag or SHA, never a branch** (`@v2.1.2`, not `@main`).
+- **Track canonical Amplifier sources at `@main`.** Refresh resolution for new
+  work and retain its resolved revisions in the run lock and provenance. Do not
+  rewrite an earlier run's evidence or bypass trust checks to resume it.
 - `agent: self` needs no declaration and cannot be declared.
 - Unknown manifest keys are a parse ERROR, not silently ignored — typos fail loudly.
 
