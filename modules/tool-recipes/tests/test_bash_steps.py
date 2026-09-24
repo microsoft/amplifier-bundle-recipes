@@ -188,6 +188,51 @@ class TestBashStepExecution:
         assert result.stdout.strip() == "world"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("command", "payload"),
+        [
+            ('printf "%s" "{{payload}}"', "$(touch injected-double)"),
+            ("printf '%s' '{{payload}}'", "'; touch injected-single; printf '"),
+            ("printf '%s' {{payload}}", "; touch injected-unquoted"),
+        ],
+    )
+    async def test_variable_substitution_cannot_inject_shell_syntax(
+        self,
+        executor: RecipeExecutor,
+        project_path: Path,
+        command: str,
+        payload: str,
+    ):
+        step = Step(id="test", type="bash", command=command)
+
+        result = await executor._execute_bash_step(
+            step, {"payload": payload}, project_path
+        )
+
+        assert result.stdout == payload
+        assert not (project_path / "injected-double").exists()
+        assert not (project_path / "injected-single").exists()
+        assert not (project_path / "injected-unquoted").exists()
+
+    @pytest.mark.asyncio
+    async def test_heredoc_variable_cannot_terminate_heredoc(
+        self, executor: RecipeExecutor, project_path: Path
+    ):
+        payload = "PAYLOAD_END\ntouch injected-heredoc\nPAYLOAD_END"
+        step = Step(
+            id="test",
+            type="bash",
+            command="cat <<'PAYLOAD_END'\n{{payload}}\nPAYLOAD_END",
+        )
+
+        result = await executor._execute_bash_step(
+            step, {"payload": payload}, project_path
+        )
+
+        assert result.stdout == payload + "\n"
+        assert not (project_path / "injected-heredoc").exists()
+
+    @pytest.mark.asyncio
     async def test_execute_with_env_variables(
         self, executor: RecipeExecutor, project_path: Path
     ):

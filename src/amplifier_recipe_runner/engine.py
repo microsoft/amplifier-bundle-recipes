@@ -52,6 +52,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import uuid
@@ -76,6 +77,128 @@ from .manifest import FLAT_STAGE_APPROVAL_KEYS
 from .manifest import check_context_block
 from .manifest import unknown_stage_key_error
 from .manifest import unknown_step_key_error
+
+_SHELL_VARIABLE_PATTERN = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
+_HEREDOC_START_PATTERN = re.compile(
+    r"(?P<prefix><<-?\s*)(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_]\w*)(?P=quote)"
+)
+
+
+def _substitute_shell_variables(template: str, context: Mapping[str, Any]) -> str:
+    """Render recipe variables as shell data, never as shell syntax.
+
+    Values are escaped for their current quote context. Heredocs need separate
+    handling because their bodies are not shell tokens: unquoted bodies escape
+    expansion characters, while any injected delimiter line causes the
+    delimiter itself to be rotated.
+    """
+
+    def resolve_variable(var_ref: str) -> str:
+        return substitute_variables(f"{{{{{var_ref}}}}}", context)
+
+    def render_regular(segment: str) -> str:
+        rendered: list[str] = []
+        quote: str | None = None
+        escaped = False
+        cursor = 0
+
+        for match in _SHELL_VARIABLE_PATTERN.finditer(segment):
+            literal = segment[cursor : match.start()]
+            rendered.append(literal)
+            for char in literal:
+                if escaped:
+                    escaped = False
+                elif char == "\\" and quote != "'":
+                    escaped = True
+                elif quote is None and char in ("'", '"'):
+                    quote = char
+                elif char == quote:
+                    quote = None
+
+            # Captured bash stdout conventionally ends in one line ending. The
+            # old textual substitution consumed it as shell syntax; preserve
+            # that established behavior while keeping embedded newlines data.
+            value = (
+                resolve_variable(match.group(1)).removesuffix("\n").removesuffix("\r")
+            )
+            if quote == "'":
+                rendered.append(value.replace("'", "'\"'\"'"))
+            elif quote == '"':
+                rendered.append(
+                    value.replace("\\", "\\\\")
+                    .replace("$", "\\$")
+                    .replace("`", "\\`")
+                    .replace('"', '\\"')
+                )
+            else:
+                rendered.append(shlex.quote(value))
+            cursor = match.end()
+
+        rendered.append(segment[cursor:])
+        return "".join(rendered)
+
+    def render_heredoc_body(body: str, *, quoted: bool) -> str:
+        def replace(match: re.Match[str]) -> str:
+            value = resolve_variable(match.group(1))
+            if quoted:
+                return value
+            return value.replace("\\", "\\\\").replace("$", "\\$").replace("`", "\\`")
+
+        return _SHELL_VARIABLE_PATTERN.sub(replace, body)
+
+    rendered: list[str] = []
+    cursor = 0
+    while True:
+        opener = _HEREDOC_START_PATTERN.search(template, cursor)
+        if opener is None:
+            rendered.append(render_regular(template[cursor:]))
+            break
+
+        line_end = template.find("\n", opener.end())
+        if line_end == -1:
+            rendered.append(render_regular(template[cursor:]))
+            break
+
+        delimiter = opener.group("delimiter")
+        strip_tabs = opener.group("prefix").startswith("<<-")
+        closing_prefix = r"\t*" if strip_tabs else ""
+        closing = re.search(
+            rf"(?m)^{closing_prefix}{re.escape(delimiter)}[ \t]*$",
+            template[line_end + 1 :],
+        )
+        if closing is None:
+            rendered.append(render_regular(template[cursor:]))
+            break
+
+        body_start = line_end + 1
+        closing_start = body_start + closing.start()
+        closing_end = body_start + closing.end()
+        body = render_heredoc_body(
+            template[body_start:closing_start], quoted=bool(opener.group("quote"))
+        )
+
+        safe_delimiter = delimiter
+        if re.search(rf"(?m)^{closing_prefix}{re.escape(delimiter)}[ \t]*$", body):
+            suffix = 1
+            while re.search(
+                rf"(?m)^{closing_prefix}{re.escape(f'{delimiter}_AMPLIFIER_{suffix}')}[ \t]*$",
+                body,
+            ):
+                suffix += 1
+            safe_delimiter = f"{delimiter}_AMPLIFIER_{suffix}"
+
+        rendered.append(render_regular(template[cursor : opener.start()]))
+        rendered.append(template[opener.start() : opener.start("delimiter")])
+        rendered.append(safe_delimiter)
+        rendered.append(template[opener.end("delimiter") : body_start])
+        rendered.append(body)
+        rendered.append(
+            template[closing_start:closing_end].replace(delimiter, safe_delimiter, 1)
+        )
+        cursor = closing_end
+
+    return "".join(rendered)
+
 
 __all__ = [
     "ApprovalLedger",
@@ -1669,7 +1792,7 @@ class StepEngine:
         if not step.command:
             raise UnsupportedStepError(step.id, "it is a bash step with no `command`")
 
-        command = substitute_variables(step.command, context)
+        command = _substitute_shell_variables(step.command, context)
         command_size = len(command.encode("utf-8", errors="replace"))
         oversized = command_size > COMMAND_SIZE_WARN_BYTES
         if oversized:

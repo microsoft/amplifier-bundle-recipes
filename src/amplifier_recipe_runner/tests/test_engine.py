@@ -20,6 +20,7 @@ Nothing here spawns a model: agent steps run against an injected double.
 from __future__ import annotations
 
 import asyncio
+import json
 import textwrap
 from collections.abc import Mapping
 from pathlib import Path
@@ -281,6 +282,70 @@ class TestBashSteps:
             context={"who": "world"},
         )
         assert ctx["greeting"] == "world\n"
+
+    @pytest.mark.parametrize(
+        ("command", "payload", "marker"),
+        [
+            (
+                'printf "%s" "{{payload}}"',
+                "$(touch injected-double)",
+                "injected-double",
+            ),
+            (
+                "printf '%s' '{{payload}}'",
+                "'; touch injected-single; printf '",
+                "injected-single",
+            ),
+            (
+                "printf '%s' {{payload}}",
+                "; touch injected-unquoted",
+                "injected-unquoted",
+            ),
+        ],
+    )
+    def test_variable_substitution_cannot_inject_shell_syntax(
+        self,
+        tmp_path: Path,
+        command: str,
+        payload: str,
+        marker: str,
+    ) -> None:
+        outcome, ctx = run_program(
+            f"""
+            steps:
+              - id: safe
+                type: bash
+                command: {json.dumps(command)}
+                output: shown
+            """,
+            workspace=tmp_path,
+            context={"payload": payload},
+        )
+
+        assert outcome.status == "succeeded"
+        assert ctx["shown"] == payload
+        assert not (tmp_path / marker).exists()
+
+    def test_heredoc_variable_cannot_terminate_heredoc(self, tmp_path: Path) -> None:
+        payload = "PAYLOAD_END\ntouch injected-heredoc\nPAYLOAD_END"
+        outcome, ctx = run_program(
+            """
+            steps:
+              - id: safe
+                type: bash
+                command: |
+                  cat <<'PAYLOAD_END'
+                  {{payload}}
+                  PAYLOAD_END
+                output: shown
+            """,
+            workspace=tmp_path,
+            context={"payload": payload},
+        )
+
+        assert outcome.status == "succeeded"
+        assert ctx["shown"] == payload + "\n"
+        assert not (tmp_path / "injected-heredoc").exists()
 
     def test_a_nonzero_exit_fails_the_run_by_default(self, tmp_path: Path) -> None:
         outcome, _ctx = run_program(
