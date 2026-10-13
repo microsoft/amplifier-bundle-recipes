@@ -115,11 +115,11 @@ def _substitute_shell_variables(
                     quote = None
 
             # Captured bash stdout conventionally ends in one line ending. The
-            # old textual substitution consumed it as shell syntax; preserve
-            # that established behavior while keeping embedded newlines data.
-            value = (
-                resolve_variable(match.group(1)).removesuffix("\n").removesuffix("\r")
-            )
+            # old textual substitution consumed it as shell syntax only when
+            # unquoted; inside quotes it was literal data. Preserve both.
+            value = resolve_variable(match.group(1))
+            if quote is None:
+                value = value.removesuffix("\n").removesuffix("\r")
             if quote == "'":
                 rendered.append(value.replace("'", "'\"'\"'"))
             elif quote == '"':

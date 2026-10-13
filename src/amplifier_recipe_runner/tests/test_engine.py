@@ -347,6 +347,32 @@ class TestBashSteps:
         assert ctx["shown"] == payload + "\n"
         assert not (tmp_path / "injected-heredoc").exists()
 
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ('printf "%s|" "{{value}}"', "line\n|"),
+            ("printf '%s|' '{{value}}'", "line\n|"),
+            ("printf '%s|' {{value}}", "line|"),
+        ],
+    )
+    def test_trailing_newline_follows_legacy_quote_semantics(
+        self, tmp_path: Path, command: str, expected: str
+    ) -> None:
+        outcome, ctx = run_program(
+            f"""
+            steps:
+              - id: shown
+                type: bash
+                command: {json.dumps(command)}
+                output: shown
+            """,
+            workspace=tmp_path,
+            context={"value": "line\n"},
+        )
+
+        assert outcome.status == "succeeded"
+        assert ctx["shown"] == expected
+
     def test_a_nonzero_exit_fails_the_run_by_default(self, tmp_path: Path) -> None:
         outcome, _ctx = run_program(
             """

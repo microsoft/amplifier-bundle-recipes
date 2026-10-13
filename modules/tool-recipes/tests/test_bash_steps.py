@@ -233,6 +233,30 @@ class TestBashStepExecution:
         assert not (project_path / "injected-heredoc").exists()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ('printf "%s|" "{{value}}"', "line\n|"),
+            ("printf '%s|' '{{value}}'", "line\n|"),
+            ("printf '%s|' {{value}}", "line|"),
+        ],
+    )
+    async def test_trailing_newline_follows_legacy_quote_semantics(
+        self,
+        executor: RecipeExecutor,
+        project_path: Path,
+        command: str,
+        expected: str,
+    ):
+        step = Step(id="test", type="bash", command=command)
+
+        result = await executor._execute_bash_step(
+            step, {"value": "line\n"}, project_path
+        )
+
+        assert result.stdout == expected
+
+    @pytest.mark.asyncio
     async def test_execute_with_env_variables(
         self, executor: RecipeExecutor, project_path: Path
     ):
