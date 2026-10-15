@@ -50,7 +50,7 @@ def _field(node: Node) -> str | None:
 
 
 def _command(node: Node, source: bytes) -> str | None:
-    current = node
+    current = _command_node(node)
     while current is not None:
         if current.type in ("command", "declaration_command", "unset_command"):
             name = current.child_by_field_name("name")
@@ -62,7 +62,13 @@ def _command(node: Node, source: bytes) -> str | None:
 
 
 def _command_node(node: Node) -> Node | None:
-    return _ancestor(node, ("command", "declaration_command", "unset_command"))
+    command = _ancestor(node, ("command", "declaration_command", "unset_command"))
+    if command is not None:
+        return command
+    redirected = _ancestor(node, ("redirected_statement",))
+    if redirected is not None:
+        return next((c for c in redirected.named_children if c.type in ("command", "declaration_command", "unset_command")), None)
+    return None
 
 
 def _island(node: Node, role: str, source: bytes) -> Span:
@@ -73,6 +79,8 @@ def _island(node: Node, role: str, source: bytes) -> Span:
     candidates = [child for index, child in enumerate(parent.children)
                   if parent.field_name_for_child(index) == field
                   or (role == "ARG" and parent.type == "declaration_command" and child.type == "variable_assignment")]
+    if role == "ARG" and parent.type == "file_redirect":
+        candidates = [c for index, c in enumerate(parent.children) if parent.field_name_for_child(index) == "destination"][1:]
     if node not in candidates:
         return Span(node.start_byte, node.end_byte)
     position = candidates.index(node)
@@ -119,7 +127,13 @@ def _choose(node: Node, source: bytes, arithmetic: bool) -> tuple[Node, str, str
                         return parent, "ARG", None
                     return current, "ASSIGN", None
                 return current, "NAME", None
-            if parent.type in ("file_redirect", "herestring_redirect") and field in ("destination", "body"):
+            if parent.type == "file_redirect" and field == "destination":
+                destinations = [c for index, c in enumerate(parent.children) if parent.field_name_for_child(index) == "destination"]
+                if current != destinations[0]:
+                    return current, "ARG", None
+                operator_bytes = source[parent.start_byte:current.start_byte]
+                if b">&" in operator_bytes or b"<&" in operator_bytes:
+                    return current, "NAME", None
                 return current, "FILE", None
             if parent.type in ("command", "declaration_command", "unset_command") and field == "argument":
                 return current, "ARG", None

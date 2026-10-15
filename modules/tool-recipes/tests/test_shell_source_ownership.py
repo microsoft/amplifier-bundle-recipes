@@ -41,3 +41,13 @@ def test_hole_free_nonvanishing_prefix_is_certified_without_runtime_lookup(prefi
 def test_runtime_name_cannot_vanish_and_promote_data_to_executable_name(prefix):
     with pytest.raises(ShellSourceError, match="NONVANISHING_PREFIX"):
         establish_ownership(bind(prefix + " {{x}} -I", lambda _: "payload"))
+
+
+def test_only_first_cst_redirect_destination_is_the_filename():
+    result = establish_ownership(bind("echo before >{{file}} {{args}}", lambda _: "x"))
+    assert [word.role for word in result.words] == ["FILE", "ARG"]
+
+
+def test_descriptor_duplication_operand_is_not_filename_data():
+    result = establish_ownership(bind("echo text >&{{fd}}", lambda _: "2"))
+    assert [word.role for word in result.words] == ["NAME"]
