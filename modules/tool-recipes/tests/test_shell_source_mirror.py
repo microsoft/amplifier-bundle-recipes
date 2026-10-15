@@ -1,19 +1,24 @@
 """The native runner ships exactly the canonical compiler, with no drift."""
+
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-SPEC = importlib.util.spec_from_file_location("shell_source_sync", ROOT / "scripts/sync-shell-source.py")
+SPEC = importlib.util.spec_from_file_location(
+    "shell_source_sync", ROOT / "scripts/sync-shell-source.py"
+)
 assert SPEC and SPEC.loader
 sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
 
 
 def test_checked_in_mirror_is_fresh():
-    assert sync.synchronize(ROOT, check=True) == [], "Run python scripts/sync-shell-source.py"
+    assert sync.synchronize(ROOT, check=True) == [], (
+        "Run python scripts/sync-shell-source.py"
+    )
 
 
 def test_mirror_detects_and_repairs_modified_missing_and_stale_files(tmp_path):
