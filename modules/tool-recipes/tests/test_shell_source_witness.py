@@ -108,6 +108,19 @@ def test_original_ordinary_roles_and_trusted_expansions_remain(source, text):
     verify_program(*word_case(source, text))
 
 
+@pytest.mark.parametrize("text", ["~/'one'", "~root/'one'", "~~/'one'"])
+def test_contiguous_tilde_prefix_is_part_of_conditional_operand(text):
+    verify_program(*word_case('[[ {{x}} == "$HOME/one" ]]', text))
+
+
+@pytest.mark.parametrize(
+    "text", ["~ /'one'", "! /'one'", "~$(printf BAD)", "~'one' || true"]
+)
+def test_conditional_tilde_spelling_cannot_hide_unowned_syntax(text):
+    with pytest.raises(ShellSourceError):
+        verify_program(*word_case('[[ {{x}} == "$HOME/one" ]]', text))
+
+
 @pytest.mark.parametrize(
     "source,text",
     [

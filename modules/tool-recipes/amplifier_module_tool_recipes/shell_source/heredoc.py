@@ -52,14 +52,23 @@ def _validate(doc: HereDocument) -> None:
             doc,
         )
     width = len(doc.delimiter.encode("utf-8"))
+    closer = doc.delimiter if doc.closer_spelling is None else doc.closer_spelling
+    # The enclosing reader supplies the original complete closing span. Only
+    # authored continuations may make an unquoted closer wider than its name;
+    # quoted documents compare the physical spelling without this read step.
+    logical_closer = closer if doc.quoted else closer.replace("\\\n", "")
     if (
         doc.opener_delimiter.end - doc.opener_delimiter.start != width
-        or doc.closer_delimiter.end - doc.closer_delimiter.start != width
+        or doc.closer_delimiter.end - doc.closer_delimiter.start
+        != len(closer.encode("utf-8"))
+        or logical_closer != doc.delimiter
         or doc.opener_delimiter.end > doc.body.start
         or doc.body.end > doc.closer_delimiter.start
     ):
         _fail(
-            "BODY_OWNERSHIP_CONFLICT", "opener, body and closer ownership overlap", doc
+            "BODY_OWNERSHIP_CONFLICT",
+            "opener, body or closer ownership is invalid",
+            doc,
         )
     text = [(i, e) for i, e in enumerate(doc.events) if isinstance(e, TextEvent)]
     if doc.terminal_lf_source is None:

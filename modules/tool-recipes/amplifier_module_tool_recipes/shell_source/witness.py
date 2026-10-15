@@ -37,6 +37,23 @@ def _field(node: Node) -> str | None:
     _fail("parsed child is absent from its parent", _span(node))
 
 
+def _conditional_tilde_word(node: Node) -> bool:
+    # The pinned grammar represents an unquoted tilde prefix inside [[ ... ]]
+    # as unary '~', although Bash expands it as part of the operand word.
+    # Only adjacent word bytes qualify; real unary/boolean syntax stays visible.
+    if node.type != "unary_expression":
+        return False
+    operator = node.child_by_field_name("operator")
+    operands = node.named_children
+    if operator is None or operator.type != "~" or len(operands) != 1:
+        return False
+    operand = operands[0]
+    return (
+        operator.start_byte == node.start_byte
+        and operator.end_byte == operand.start_byte
+    )
+
+
 def _role(node: Node) -> str | None:
     parent = node.parent
     if parent is None:
@@ -65,17 +82,20 @@ def _role(node: Node) -> str | None:
             or parent.type == "unary_expression"
             and field is None
         )
-        and node.type
-        in (
-            "word",
-            "string",
-            "raw_string",
-            "concatenation",
-            "simple_expansion",
-            "expansion",
-            "number",
-            "command_substitution",
-            "arithmetic_expansion",
+        and (
+            node.type
+            in (
+                "word",
+                "string",
+                "raw_string",
+                "concatenation",
+                "simple_expansion",
+                "expansion",
+                "number",
+                "command_substitution",
+                "arithmetic_expansion",
+            )
+            or _conditional_tilde_word(node)
         )
     ):
         ancestor = parent

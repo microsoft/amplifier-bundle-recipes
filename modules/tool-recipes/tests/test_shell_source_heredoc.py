@@ -307,6 +307,60 @@ def test_terminal_identity_is_checked_independently_of_endswith_lf():
         compile_document(replace(doc, terminal_lf_source=Span(10, 11)))
 
 
+@pytest.mark.parametrize("spelling", ["EO\\\nF", "E\\\nO\\\nF", "\\\nEOF", "EOF\\\n"])
+def test_owned_original_logical_closer_has_independently_checked_spelling(spelling):
+    doc = document(("D", "literal"), ("T", "\n"))
+    doc = replace(
+        doc,
+        closer_spelling=spelling,
+        closer_delimiter=Span(
+            doc.closer_delimiter.start,
+            doc.closer_delimiter.start + len(spelling.encode()),
+        ),
+    )
+    encoded = compile_document(doc)
+    assert encoded.delimiter == "EOF"
+    assert actual_output(doc, encoded) == "literal\n"
+
+
+@pytest.mark.parametrize(
+    "spelling", ["EO\\\nF", "E\nOF", "E\\\\\nOF", "OTHER", "EOF\x00", ""]
+)
+def test_quoted_closer_must_have_exact_physical_spelling(spelling):
+    doc = document(("D", "literal"), ("T", "\n"), quoted=True)
+    doc = replace(
+        doc,
+        closer_spelling=spelling,
+        closer_delimiter=Span(
+            doc.closer_delimiter.start,
+            doc.closer_delimiter.start + len(spelling.encode()),
+        ),
+    )
+    with pytest.raises(ShellSourceError, match="BODY_OWNERSHIP_CONFLICT"):
+        compile_document(doc)
+
+
+@pytest.mark.parametrize("spelling", ["E\nOF", "E\\\\\nOF", "OTHER", "EOF\x00", ""])
+def test_unquoted_closer_cannot_hide_other_source_bytes(spelling):
+    doc = document(("D", "literal"), ("T", "\n"))
+    doc = replace(
+        doc,
+        closer_spelling=spelling,
+        closer_delimiter=Span(
+            doc.closer_delimiter.start,
+            doc.closer_delimiter.start + len(spelling.encode()),
+        ),
+    )
+    with pytest.raises(ShellSourceError, match="BODY_OWNERSHIP_CONFLICT"):
+        compile_document(doc)
+
+
+def test_logical_closer_still_requires_the_complete_original_byte_span():
+    doc = document(("D", "literal"), ("T", "\n"))
+    with pytest.raises(ShellSourceError, match="BODY_OWNERSHIP_CONFLICT"):
+        compile_document(replace(doc, closer_spelling="EO\\\nF"))
+
+
 def test_parameter_name_is_braced_only_when_next_encoded_source_can_extend_it():
     assert (
         compile_document(document(("T", "$stamp"), ("D", "more"), ("T", "\n"))).body
