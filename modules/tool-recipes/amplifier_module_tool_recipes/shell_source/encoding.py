@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 from .model import FieldPart, FieldProjection, ShellSourceError, Span
-
 
 _IDENTITY = re.compile(r"[A-Za-z0-9_./:+,\-]+\Z")
 
@@ -24,8 +23,7 @@ def quote(text: str) -> str:
 
 def _bracket(text: str) -> bool:
     inner = text[1:-1]
-    if inner.startswith("!"):
-        inner = inner[1:]
+    inner = inner.removeprefix("!")
     if not inner:
         return False
     index = 0
@@ -38,7 +36,10 @@ def _bracket(text: str) -> bool:
             return False
         if index + 2 < len(inner) and inner[index + 1] == "-":
             end = inner[index + 2]
-            if not any(low <= character <= end <= high for low, high in (("a", "z"), ("A", "Z"), ("0", "9"))):
+            if not any(
+                low <= character <= end <= high
+                for low, high in (("a", "z"), ("A", "Z"), ("0", "9"))
+            ):
                 return False
             index += 3
         else:
@@ -61,28 +62,53 @@ def simple_patterns(parts: tuple[FieldPart, ...]) -> tuple[LiteralAtom, ...]:
             index += 1
             continue
         if part.text in ("*", "?"):
-            result.append(LiteralAtom(Span(offsets[index], offsets[index] + 1), part.text, True))
+            result.append(
+                LiteralAtom(Span(offsets[index], offsets[index] + 1), part.text, True)
+            )
         elif part.text == "[":
             end = index + 1
-            while end < len(parts) and parts[end].kind == "literal" and not parts[end].quoted and parts[end].text and parts[end].text != "]":
+            while (
+                end < len(parts)
+                and parts[end].kind == "literal"
+                and not parts[end].quoted
+                and parts[end].text
+                and parts[end].text != "]"
+            ):
                 end += 1
-            if end < len(parts) and parts[end].kind == "literal" and not parts[end].quoted and parts[end].text == "]":
-                text = "".join(p.text for p in parts[index:end + 1])
+            if (
+                end < len(parts)
+                and parts[end].kind == "literal"
+                and not parts[end].quoted
+                and parts[end].text == "]"
+            ):
+                text = "".join(p.text for p in parts[index : end + 1])
                 if not _bracket(text):
-                    raise ShellSourceError("GLOB_DOMAIN", "unquoted bracket pattern is outside the simple-pattern domain")
-                result.append(LiteralAtom(Span(offsets[index], offsets[end] + 1), text, True))
+                    raise ShellSourceError(
+                        "GLOB_DOMAIN",
+                        "unquoted bracket pattern is outside the simple-pattern domain",
+                    )
+                result.append(
+                    LiteralAtom(Span(offsets[index], offsets[end] + 1), text, True)
+                )
                 index = end
         index += 1
     return tuple(result)
 
 
-def encode_field(field: FieldProjection, *, preserved: tuple[LiteralAtom, ...] = ()) -> str:
+def encode_field(
+    field: FieldProjection, *, preserved: tuple[LiteralAtom, ...] = ()
+) -> str:
     """Emit closed literals around exact qualified pattern/tilde envelopes.
 
     ``preserved`` is supplied by the separately verified tilde component. Every
     span addresses complete cooked parts and may not cross another envelope.
     """
-    atoms = tuple(sorted((*simple_patterns(field.parts), *preserved), key=lambda atom: (atom.span.start, -atom.span.end)))
+    atoms = tuple(
+        sorted(
+            (*simple_patterns(field.parts), *preserved),
+            key=lambda atom: (atom.span.start, -atom.span.end),
+        )
+    )
     # A larger tilde raw-finder envelope may deliberately own a glob spelling.
     chosen: list[LiteralAtom] = []
     for atom in atoms:
@@ -113,7 +139,9 @@ def encode_field(field: FieldProjection, *, preserved: tuple[LiteralAtom, ...] =
                 offset += len(field.parts[index].text.encode())
                 index += 1
             if offset != atom.span.end:
-                raise ShellSourceError("ENCODING_ENVELOPE", "literal atom cuts a cooked part")
+                raise ShellSourceError(
+                    "ENCODING_ENVELOPE", "literal atom cuts a cooked part"
+                )
             continue
         if part.kind == "expansion":
             flush()

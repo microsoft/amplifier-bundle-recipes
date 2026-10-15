@@ -19,24 +19,30 @@ def _nodes(node: Node):
 def certified_word(bound: BoundTemplate, node: Node) -> bool:
     """Verify one wholly trusted source word; never inspect runtime values."""
     span = Span(node.start_byte, node.end_byte)
-    if any(o.span.start < span.end and o.span.end > span.start for o in bound.occurrences):
+    if any(
+        o.span.start < span.end and o.span.end > span.start for o in bound.occurrences
+    ):
         return False
     source = bound.source.encode()
     expansions: dict[int, Expansion] = {}
     for child in _nodes(node):
         if child.type not in ("expansion", "simple_expansion", "command_substitution"):
             continue
-        spelling = source[child.start_byte:child.end_byte].decode()
+        spelling = source[child.start_byte : child.end_byte].decode()
         if child.type == "command_substitution":
             if not spelling.startswith("$(") or not spelling.endswith(")"):
                 return False
             # Its actual child topology is checked in the complete-root CST.
         else:
             try:
-                copied_envelope(spelling, child.type, Span(child.start_byte, child.end_byte))
+                copied_envelope(
+                    spelling, child.type, Span(child.start_byte, child.end_byte)
+                )
             except ShellSourceError:
                 return False
-        expansions[child.start_byte] = Expansion(Span(child.start_byte, child.end_byte), spelling, child.type)
+        expansions[child.start_byte] = Expansion(
+            Span(child.start_byte, child.end_byte), spelling, child.type
+        )
     try:
         cooked = cook_island(events_in(bound, span), "ARG", expansion_at=expansions.get)
     except ShellSourceError:
@@ -46,7 +52,9 @@ def certified_word(bound: BoundTemplate, node: Node) -> bool:
     field = cooked.pieces[0]
     for part in field.parts:
         if part.kind == "expansion":
-            if not part.quoted or not (scalar_expansion(part.text) or part.text.startswith("$(")):
+            if not part.quoted or not (
+                scalar_expansion(part.text) or part.text.startswith("$(")
+            ):
                 return False
         elif not part.quoted and part.text in "*?[]~{}()":
             return False
@@ -71,4 +79,8 @@ def require_prefix(bound: BoundTemplate, command: Node, first_occurrence: int) -
         # The boundary after a certificate cannot be consumed by an authored
         # trailing escape. Cooked word qualification rejects that escape too.
         return
-    raise ShellSourceError("NONVANISHING_PREFIX", "no hole-free scalar word precedes the first data argument", Span(command.start_byte, command.end_byte))
+    raise ShellSourceError(
+        "NONVANISHING_PREFIX",
+        "no hole-free scalar word precedes the first data argument",
+        Span(command.start_byte, command.end_byte),
+    )

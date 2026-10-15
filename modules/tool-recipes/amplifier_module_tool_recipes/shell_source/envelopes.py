@@ -6,7 +6,6 @@ import re
 
 from .model import ShellSourceError, Span
 
-
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SCALAR_HEAD = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[?$!#*\-])")
 
@@ -26,17 +25,30 @@ def parameter_end(text: str, start: int = 0, *, scalar: bool = False) -> int:
         if head is None:
             raise ShellSourceError("NONSCALAR_PREFIX", "parameter head is not scalar")
         index = head.end()
-        if text[index:index + 1] != "}":
-            operator = next((op for op in (":-", ":+", ":=", ":?", "-", "+", "=", "?") if text.startswith(op, index)), None)
+        if text[index : index + 1] != "}":
+            operator = next(
+                (
+                    op
+                    for op in (":-", ":+", ":=", ":?", "-", "+", "=", "?")
+                    if text.startswith(op, index)
+                ),
+                None,
+            )
             if operator is None or not _NAME.fullmatch(head.group()):
-                raise ShellSourceError("NONSCALAR_PREFIX", "parameter operator is not a scalar default operator")
+                raise ShellSourceError(
+                    "NONSCALAR_PREFIX",
+                    "parameter operator is not a scalar default operator",
+                )
             index += len(operator)
     while index < len(text):
         char = text[index]
         if char == "}":
             return index + 1
         if char in "'\"\\`{":
-            raise ShellSourceError("PARAMETER_ENVELOPE", "parameter contains an unowned quote, escape or brace")
+            raise ShellSourceError(
+                "PARAMETER_ENVELOPE",
+                "parameter contains an unowned quote, escape or brace",
+            )
         if char == "$":
             if text.startswith("${", index):
                 index = parameter_end(text, index, scalar=scalar)
@@ -45,10 +57,14 @@ def parameter_end(text: str, start: int = 0, *, scalar: bool = False) -> int:
             if name:
                 index = name.end()
                 continue
-            if text[index + 1:index + 2] in tuple("0123456789?$!#*-" + ("" if scalar else "@")):
+            if text[index + 1 : index + 2] in tuple(
+                "0123456789?$!#*-" + ("" if scalar else "@")
+            ):
                 index += 2
                 continue
-            raise ShellSourceError("PARAMETER_ENVELOPE", "unknown dollar form in parameter envelope")
+            raise ShellSourceError(
+                "PARAMETER_ENVELOPE", "unknown dollar form in parameter envelope"
+            )
         index += 1
     raise ShellSourceError("PARAMETER_ENVELOPE", "unclosed parameter envelope")
 
@@ -67,7 +83,9 @@ def copied_envelope(text: str, kind: str, span: Span) -> None:
     """Independently check the lexical endpoints of a hole-free opaque atom."""
     if kind == "expansion":
         if parameter_end(text) != len(text):
-            raise ShellSourceError("PARAMETER_ENVELOPE", "parameter has an unowned suffix", span)
+            raise ShellSourceError(
+                "PARAMETER_ENVELOPE", "parameter has an unowned suffix", span
+            )
         return
     if kind == "simple_expansion":
         if re.fullmatch(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@?$!#*\-])", text):
@@ -90,7 +108,12 @@ def copied_envelope(text: str, kind: str, span: Span) -> None:
     elif kind == "command_substitution" and text.startswith("`"):
         index = 1
         while index < len(text):
-            if text[index] == "\\" and text[index + 1:index + 2] in ("\\", "$", "`", "\n"):
+            if text[index] == "\\" and text[index + 1 : index + 2] in (
+                "\\",
+                "$",
+                "`",
+                "\n",
+            ):
                 index += 2
             elif text[index] == "`":
                 if index == len(text) - 1:
@@ -98,4 +121,6 @@ def copied_envelope(text: str, kind: str, span: Span) -> None:
                 break
             else:
                 index += 1
-    raise ShellSourceError("UNSUPPORTED_SOURCE_ENVELOPE", f"unowned trusted {kind} envelope", span)
+    raise ShellSourceError(
+        "UNSUPPORTED_SOURCE_ENVELOPE", f"unowned trusted {kind} envelope", span
+    )

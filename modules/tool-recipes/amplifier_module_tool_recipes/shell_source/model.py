@@ -75,7 +75,8 @@ class BoundTemplate:
 class HereDocument:
     """One original FIFO-owned document, before any DATA is emitted.
 
-    The delimiter spans cover identifier bytes only, excluding quotes/tabs.
+    The opener span covers identifier bytes only, excluding quotes. The closer
+    span also includes authored line continuations in a logical closer.
     ``body`` includes the authored final LF, when one exists. Its immutable
     identity is explicit so a continuation cannot silently swallow the closer.
     Header-LF handoff is performed by the owning compiler, which prepends DATA
@@ -92,6 +93,7 @@ class HereDocument:
     closer_delimiter: Span
     events: tuple[Event, ...]
     terminal_lf_source: Span | None
+    closer_spelling: str | None = None
 
 
 @dataclass(frozen=True)

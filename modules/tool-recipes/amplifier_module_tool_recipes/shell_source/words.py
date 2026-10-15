@@ -7,11 +7,20 @@ state. This module does not execute a shell or resolve expansion results.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
-import re
 
-from .model import Event, FenceEvent, FieldFence, FieldPart, FieldProjection, ShellSourceError, Span, TextEvent
+from .model import (
+    Event,
+    FenceEvent,
+    FieldFence,
+    FieldPart,
+    FieldProjection,
+    ShellSourceError,
+    Span,
+    TextEvent,
+)
 
 
 @dataclass(frozen=True)
@@ -41,7 +50,12 @@ _NAME_CHAR = re.compile(r"[A-Za-z_0-9]")
 _ASSIGNMENT_PREFIX = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=\Z")
 
 
-def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[[int], Expansion | None] = lambda _: None) -> CookedIsland:
+def cook_island(
+    events: tuple[Event, ...],
+    role: str,
+    *,
+    expansion_at: Callable[[int], Expansion | None] = lambda _: None,
+) -> CookedIsland:
     pieces: list[FieldProjection | FieldSeparator] = []
     parts: list[FieldPart] = []
     field_fences: list[FieldFence] = []
@@ -76,7 +90,17 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
                     break
             spelling = "".join(prefix)
             assigned = spelling if _ASSIGNMENT_PREFIX.fullmatch(spelling) else None
-            pieces.append(FieldProjection(tuple(parts), tuple(field_fences), role, forced, assigned, events[field_start:stop], field_start))
+            pieces.append(
+                FieldProjection(
+                    tuple(parts),
+                    tuple(field_fences),
+                    role,
+                    forced,
+                    assigned,
+                    events[field_start:stop],
+                    field_start,
+                )
+            )
         parts.clear()
         field_fences.clear()
         forced = False
@@ -99,7 +123,12 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
                 flush(index)
                 owners = [index]
                 end = index + 1
-                while end < len(events) and isinstance(events[end], TextEvent) and events[end].kind == "data" and events[end].text in " \t":
+                while (
+                    end < len(events)
+                    and isinstance(events[end], TextEvent)
+                    and events[end].kind == "data"
+                    and events[end].text in " \t"
+                ):
                     owners.append(end)
                     end += 1
                 # DATA layout has field semantics; it never creates operators.
@@ -113,7 +142,9 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
         if mode == "single":
             if char == "'":
                 if quote_start is not None and len(parts) == quote_start[1]:
-                    parts.append(FieldPart("literal", "", True, False, (quote_start[0], index)))
+                    parts.append(
+                        FieldPart("literal", "", True, False, (quote_start[0], index))
+                    )
                 quote_start = None
                 mode = "ordinary"
                 consumed.append(index)
@@ -131,7 +162,9 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
         if char == '"':
             if mode == "double":
                 if quote_start is not None and len(parts) == quote_start[1]:
-                    parts.append(FieldPart("literal", "", True, False, (quote_start[0], index)))
+                    parts.append(
+                        FieldPart("literal", "", True, False, (quote_start[0], index))
+                    )
                 quote_start = None
             else:
                 quote_start = (index, len(parts))
@@ -143,19 +176,33 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
         if char == "\\":
             following = next_text(index + 1)
             if following == len(events):
-                raise ShellSourceError("OWNER_CONFLICT", "trusted escape leaves its original word island", event.source)
+                raise ShellSourceError(
+                    "OWNER_CONFLICT",
+                    "trusted escape leaves its original word island",
+                    event.source,
+                )
             target = events[following]
             assert isinstance(target, TextEvent)
             crossed_fence = following != index + 1
-            if crossed_fence and target.kind == "trusted" and target.text in "\n'\";&|()<>":
-                raise ShellSourceError("OWNER_CONFLICT", "empty occurrence exposes an authored structural boundary", target.source)
+            if (
+                crossed_fence
+                and target.kind == "trusted"
+                and target.text in "\n'\";&|()<>"
+            ):
+                raise ShellSourceError(
+                    "OWNER_CONFLICT",
+                    "empty occurrence exposes an authored structural boundary",
+                    target.source,
+                )
             special = mode == "ordinary" or target.text in '$`"\\\n'
             if special:
                 consumed.append(index)
                 if target.text == "\n":
                     consumed.append(following)
                 else:
-                    literal(target.text, True, target.kind == "data", (index, following))
+                    literal(
+                        target.text, True, target.kind == "data", (index, following)
+                    )
                 index = following + 1
                 continue
             literal("\\", True, False, (index,))
@@ -165,21 +212,50 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
         if char in " \t" and mode == "ordinary" and role in ("ARG", "FOR_VALUES"):
             flush(index)
             end = index + 1
-            while end < len(events) and isinstance(events[end], TextEvent) and events[end].kind == "trusted" and events[end].text in " \t":
+            while (
+                end < len(events)
+                and isinstance(events[end], TextEvent)
+                and events[end].kind == "trusted"
+                and events[end].text in " \t"
+            ):
                 end += 1
-            pieces.append(FieldSeparator("".join(events[i].text for i in range(index, end)), tuple(range(index, end)), True))
+            pieces.append(
+                FieldSeparator(
+                    "".join(events[i].text for i in range(index, end)),
+                    tuple(range(index, end)),
+                    True,
+                )
+            )
             index = end
             field_start = end
             continue
         if char == "$":
             # Fences, even EMPTY, terminate a trusted simple parameter name.
             end = index + 1
-            if end < len(events) and isinstance(events[end], TextEvent) and events[end].kind == "trusted" and _NAME_START.fullmatch(events[end].text):
+            if (
+                end < len(events)
+                and isinstance(events[end], TextEvent)
+                and events[end].kind == "trusted"
+                and _NAME_START.fullmatch(events[end].text)
+            ):
                 end += 1
-                while end < len(events) and isinstance(events[end], TextEvent) and events[end].kind == "trusted" and _NAME_CHAR.fullmatch(events[end].text):
+                while (
+                    end < len(events)
+                    and isinstance(events[end], TextEvent)
+                    and events[end].kind == "trusted"
+                    and _NAME_CHAR.fullmatch(events[end].text)
+                ):
                     end += 1
                 name = "".join(events[i].text for i in range(index + 1, end))
-                parts.append(FieldPart("expansion", "${" + name + "}", mode == "double", False, tuple(range(index, end))))
+                parts.append(
+                    FieldPart(
+                        "expansion",
+                        "${" + name + "}",
+                        mode == "double",
+                        False,
+                        tuple(range(index, end)),
+                    )
+                )
                 index = end
                 continue
             if end == len(events) or isinstance(events[end], FenceEvent):
@@ -189,20 +265,38 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
         opaque = expansion_at(event.source.start)
         if opaque is not None:
             if opaque.source.start != event.source.start:
-                raise ShellSourceError("EXPANSION_OWNER", "opaque expansion starts outside its original owner", opaque.source)
+                raise ShellSourceError(
+                    "EXPANSION_OWNER",
+                    "opaque expansion starts outside its original owner",
+                    opaque.source,
+                )
             end = index
             while end < len(events) and events[end].source.start < opaque.source.end:
                 if isinstance(events[end], FenceEvent):
                     fence(events[end], end)
                 if events[end].source.end > opaque.source.end:
-                    raise ShellSourceError("EXPANSION_OWNER", "opaque expansion cuts an occurrence", opaque.source)
+                    raise ShellSourceError(
+                        "EXPANSION_OWNER",
+                        "opaque expansion cuts an occurrence",
+                        opaque.source,
+                    )
                 end += 1
-            parts.append(FieldPart("expansion", opaque.spelling, mode == "double", False, tuple(range(index, end))))
+            parts.append(
+                FieldPart(
+                    "expansion",
+                    opaque.spelling,
+                    mode == "double",
+                    False,
+                    tuple(range(index, end)),
+                )
+            )
             index = end
             continue
         literal(char, mode == "double", False, (index,))
         index += 1
     if mode != "ordinary":
-        raise ShellSourceError("UNCLOSED_WORD", "word owner did not close its authored quote")
+        raise ShellSourceError(
+            "UNCLOSED_WORD", "word owner did not close its authored quote"
+        )
     flush(len(events))
     return CookedIsland(tuple(pieces), tuple(consumed), tuple(fences))

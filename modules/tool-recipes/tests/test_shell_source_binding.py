@@ -1,9 +1,17 @@
 """Binding prerequisites, independent of any eventual Bash admission verdict."""
 
 import pytest
-
-from amplifier_module_tool_recipes.shell_source.binding import bind, events_in, neutral_bytes
-from amplifier_module_tool_recipes.shell_source.model import FenceEvent, ShellSourceError, Span, TextEvent
+from amplifier_module_tool_recipes.shell_source.binding import (
+    bind,
+    events_in,
+    neutral_bytes,
+)
+from amplifier_module_tool_recipes.shell_source.model import (
+    FenceEvent,
+    ShellSourceError,
+    Span,
+    TextEvent,
+)
 
 
 def test_binding_preserves_original_order_empty_fences_and_utf8_byte_spans():
@@ -18,7 +26,10 @@ def test_binding_preserves_original_order_empty_fences_and_utf8_byte_spans():
     assert seen == ["a", "empty", "nest.value", "a"]
     assert [o.id for o in bound.occurrences] == [0, 1, 2, 3]
     assert bound.occurrences[0].span.start == 3
-    assert [e.edge for e in events_in(bound, bound.occurrences[1].span)] == ["start", "end"]
+    assert [e.edge for e in events_in(bound, bound.occurrences[1].span)] == [
+        "start",
+        "end",
+    ]
     data = [e for e in bound.events if isinstance(e, TextEvent) and e.kind == "data"]
     assert data[0].text == "λ" and data[0].value_span == Span(0, 2)
     assert sum(isinstance(e, FenceEvent) for e in bound.events) == 8
@@ -42,7 +53,9 @@ def test_converter_exception_is_not_replaced_or_retried():
     assert calls == ["first"]
 
 
-@pytest.mark.parametrize("value,code", [("a\x00b", "NUL_DATA"), ("\ud800", "INVALID_ENCODING")])
+@pytest.mark.parametrize(
+    "value,code", [("a\x00b", "NUL_DATA"), ("\ud800", "INVALID_ENCODING")]
+)
 def test_invalid_process_source_data_fails_before_any_shell(value, code):
     with pytest.raises(ShellSourceError) as caught:
         bind("echo {{x}}", lambda _: value)

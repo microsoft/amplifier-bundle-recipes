@@ -284,23 +284,27 @@ class TestBashSteps:
         assert ctx["greeting"] == "world\n"
 
     @pytest.mark.parametrize(
-        ("command", "payload", "marker"),
+        ("command", "payload", "marker", "expected"),
         [
             (
                 'printf "%s" "{{payload}}"',
                 "$(touch injected-double)",
                 "injected-double",
+                "$(touch injected-double)",
             ),
             (
                 "printf '%s' '{{payload}}'",
                 "'; touch injected-single; printf '",
                 "injected-single",
+                "'; touch injected-single; printf '",
             ),
             (
                 "printf '%s' {{payload}}",
                 "; touch injected-unquoted",
                 "injected-unquoted",
+                ";touchinjected-unquoted",
             ),
+            ("printf '<%s>' {{payload}}", "alpha\t beta", "injected-unquoted", "<alpha><beta>"),
         ],
     )
     def test_variable_substitution_cannot_inject_shell_syntax(
@@ -309,6 +313,7 @@ class TestBashSteps:
         command: str,
         payload: str,
         marker: str,
+        expected: str,
     ) -> None:
         outcome, ctx = run_program(
             f"""
@@ -323,8 +328,40 @@ class TestBashSteps:
         )
 
         assert outcome.status == "succeeded"
-        assert ctx["shown"] == payload
+        # SP/TAB in an unquoted DATA island retain ordinary argument boundaries.
+        assert ctx["shown"] == expected
         assert not (tmp_path / marker).exists()
+
+    def test_unqualified_runtime_is_refused_before_any_process(self, tmp_path: Path, monkeypatch):
+        wrapper = tmp_path / "bash-wrapper"
+        wrapper.write_text("#!/bin/sh\n# @(#)Bash version 5.2.21(1) release GNU\n")
+        monkeypatch.setattr("amplifier_recipe_runner.engine.resolve_bash", lambda: str(wrapper))
+        async def unexpected(*args, **kwargs):
+            pytest.fail("unqualified runtime was launched")
+        monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected)
+        outcome, _ = run_program("steps:\n  - id: safe\n    type: bash\n    command: echo {{value}}\n", workspace=tmp_path, context={"value": "safe"})
+        assert outcome.status == "failed"
+        assert "BASH_RUNTIME_PROFILE" in str(outcome.error)
+
+    @pytest.mark.parametrize("policy", ["continue", "skip_remaining"])
+    @pytest.mark.parametrize("reason", ["runtime", "source"])
+    def test_refusal_preserves_step_error_policy(self, tmp_path, monkeypatch, policy, reason):
+        wrapper = tmp_path / "bash-wrapper"
+        wrapper.write_text("#!/bin/sh\n")
+        monkeypatch.setattr("amplifier_recipe_runner.engine.resolve_bash", lambda: str(wrapper))
+        async def unexpected(*args, **kwargs):
+            pytest.fail("refused command was launched")
+        monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected)
+        command = "echo {{value}}" if reason == "runtime" else "{{value}}"
+        emitter = CollectingEmitter()
+        outcome, context = run_program(f"steps:\n  - id: safe\n    type: bash\n    command: {json.dumps(command)}\n    on_error: {policy}\n    output_exit_code: code\n", workspace=tmp_path, context={"value": "safe"}, emit=emitter)
+        assert outcome.status == "succeeded"
+        if policy == "continue":
+            assert context["code"] == "126"
+            expected = "BASH_RUNTIME_PROFILE" if reason == "runtime" else "FORBIDDEN_SLOT"
+            assert any(kind == "step:failed" and expected in data.get("error", "") for kind, data in emitter.events)
+        else:
+            assert "code" not in context
 
     def test_heredoc_variable_cannot_terminate_heredoc(self, tmp_path: Path) -> None:
         payload = "PAYLOAD_END\ntouch injected-heredoc\nPAYLOAD_END"

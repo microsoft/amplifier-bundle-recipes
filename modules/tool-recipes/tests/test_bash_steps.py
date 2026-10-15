@@ -189,11 +189,13 @@ class TestBashStepExecution:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("command", "payload"),
+        ("command", "payload", "expected"),
         [
-            ('printf "%s" "{{payload}}"', "$(touch injected-double)"),
-            ("printf '%s' '{{payload}}'", "'; touch injected-single; printf '"),
-            ("printf '%s' {{payload}}", "; touch injected-unquoted"),
+            ('printf "%s" "{{payload}}"', "$(touch injected-double)", "$(touch injected-double)"),
+            ("printf '%s' '{{payload}}'", "'; touch injected-single; printf '", "'; touch injected-single; printf '"),
+            # Unquoted SP/TAB retain argument boundaries; syntax stays DATA.
+            ("printf '%s' {{payload}}", "; touch injected-unquoted", ";touchinjected-unquoted"),
+            ("printf '<%s>' {{payload}}", "alpha\t beta", "<alpha><beta>"),
         ],
     )
     async def test_variable_substitution_cannot_inject_shell_syntax(
@@ -202,6 +204,7 @@ class TestBashStepExecution:
         project_path: Path,
         command: str,
         payload: str,
+        expected: str,
     ):
         step = Step(id="test", type="bash", command=command)
 
@@ -209,10 +212,43 @@ class TestBashStepExecution:
             step, {"payload": payload}, project_path
         )
 
-        assert result.stdout == payload
+        assert result.stdout == expected
         assert not (project_path / "injected-double").exists()
         assert not (project_path / "injected-single").exists()
         assert not (project_path / "injected-unquoted").exists()
+
+    @pytest.mark.asyncio
+    async def test_unqualified_runtime_is_refused_before_any_process(
+        self, executor: RecipeExecutor, project_path: Path, monkeypatch
+    ):
+        wrapper = project_path / "bash-wrapper"
+        wrapper.write_text("#!/bin/sh\n# @(#)Bash version 5.2.21(1) release GNU\n")
+        monkeypatch.setattr("amplifier_module_tool_recipes.executor._resolve_bash", lambda: str(wrapper))
+        async def unexpected(*args, **kwargs):
+            pytest.fail("unqualified runtime was launched")
+        monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected)
+        with pytest.raises(ValueError, match="BASH_RUNTIME_PROFILE"):
+            await executor._execute_bash_step(Step(id="test", type="bash", command="echo {{value}}"), {"value": "safe"}, project_path)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy", ["continue", "skip_remaining"])
+    @pytest.mark.parametrize("reason", ["runtime", "source"])
+    async def test_refusal_preserves_step_error_policy(self, executor, project_path, monkeypatch, policy, reason):
+        wrapper = project_path / "bash-wrapper"
+        wrapper.write_text("#!/bin/sh\n")
+        monkeypatch.setattr("amplifier_module_tool_recipes.executor._resolve_bash", lambda: str(wrapper))
+        async def unexpected(*args, **kwargs):
+            pytest.fail("refused command was launched")
+        monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected)
+        command = "echo {{value}}" if reason == "runtime" else "{{value}}"
+        step = Step(id="test", type="bash", command=command, on_error=policy)
+        if policy == "skip_remaining":
+            with pytest.raises(executor_mod.SkipRemainingError, match="refused shell preparation"):
+                await executor._execute_bash_step(step, {"value": "safe"}, project_path)
+        else:
+            result = await executor._execute_bash_step(step, {"value": "safe"}, project_path)
+            assert result.exit_code == 126
+            assert ("BASH_RUNTIME_PROFILE" if reason == "runtime" else "FORBIDDEN_SLOT") in result.stderr
 
     @pytest.mark.asyncio
     async def test_heredoc_variable_cannot_terminate_heredoc(

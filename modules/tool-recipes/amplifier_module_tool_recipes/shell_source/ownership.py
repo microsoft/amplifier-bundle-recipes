@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 
-from tree_sitter import Language, Node, Parser
 import tree_sitter_bash
+from tree_sitter import Language, Node, Parser
 
 from .documents import DocumentOwnership, collect_documents
 from .model import BoundTemplate, ShellSourceError, Span
-from .recovery import recovery_projection
 from .prefix import require_prefix
+from .recovery import recovery_projection
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,11 @@ def parse(source: bytes) -> Node:
     parser = Parser(Language(tree_sitter_bash.language()))
     root = parser.parse(source).root_node
     if root.has_error:
-        raise ShellSourceError("INVALID_TEMPLATE_SYNTAX", "original or emitted Bash source has an error/missing CST node", Span(root.start_byte, root.end_byte))
+        raise ShellSourceError(
+            "INVALID_TEMPLATE_SYNTAX",
+            "original or emitted Bash source has an error/missing CST node",
+            Span(root.start_byte, root.end_byte),
+        )
     return root
 
 
@@ -56,7 +61,11 @@ def _command(node: Node, source: bytes) -> str | None:
             name = current.child_by_field_name("name")
             if name is None:
                 name = next((c for c in current.children if not c.is_named), None)
-            return source[name.start_byte:name.end_byte].decode() if name is not None else None
+            return (
+                source[name.start_byte : name.end_byte].decode()
+                if name is not None
+                else None
+            )
         current = current.parent
     return None
 
@@ -67,7 +76,14 @@ def _command_node(node: Node) -> Node | None:
         return command
     redirected = _ancestor(node, ("redirected_statement",))
     if redirected is not None:
-        return next((c for c in redirected.named_children if c.type in ("command", "declaration_command", "unset_command")), None)
+        return next(
+            (
+                c
+                for c in redirected.named_children
+                if c.type in ("command", "declaration_command", "unset_command")
+            ),
+            None,
+        )
     return None
 
 
@@ -76,18 +92,35 @@ def _island(node: Node, role: str, source: bytes) -> Span:
     if parent is None or role not in ("ARG", "FOR_VALUES"):
         return Span(node.start_byte, node.end_byte)
     field = "argument" if role == "ARG" else "value"
-    candidates = [child for index, child in enumerate(parent.children)
-                  if parent.field_name_for_child(index) == field
-                  or (role == "ARG" and parent.type == "declaration_command" and child.type == "variable_assignment")]
+    candidates = [
+        child
+        for index, child in enumerate(parent.children)
+        if parent.field_name_for_child(index) == field
+        or (
+            role == "ARG"
+            and parent.type == "declaration_command"
+            and child.type == "variable_assignment"
+        )
+    ]
     if role == "ARG" and parent.type == "file_redirect":
-        candidates = [c for index, c in enumerate(parent.children) if parent.field_name_for_child(index) == "destination"][1:]
+        candidates = [
+            c
+            for index, c in enumerate(parent.children)
+            if parent.field_name_for_child(index) == "destination"
+        ][1:]
     if node not in candidates:
         return Span(node.start_byte, node.end_byte)
     position = candidates.index(node)
     first = last = position
-    while first and all(c in b" \t" for c in source[candidates[first - 1].end_byte:candidates[first].start_byte]):
+    while first and all(
+        c in b" \t"
+        for c in source[candidates[first - 1].end_byte : candidates[first].start_byte]
+    ):
         first -= 1
-    while last + 1 < len(candidates) and all(c in b" \t" for c in source[candidates[last].end_byte:candidates[last + 1].start_byte]):
+    while last + 1 < len(candidates) and all(
+        c in b" \t"
+        for c in source[candidates[last].end_byte : candidates[last + 1].start_byte]
+    ):
         last += 1
     return Span(candidates[first].start_byte, candidates[last].end_byte)
 
@@ -101,17 +134,36 @@ def _ancestor(node: Node, types: tuple[str, ...]) -> Node | None:
     return None
 
 
-def _choose(node: Node, source: bytes, arithmetic: bool) -> tuple[Node, str, str | None]:
+def _choose(
+    node: Node, source: bytes, arithmetic: bool
+) -> tuple[Node, str, str | None]:
     # A nested command argument cannot launder DATA into the outer command
     # name. Check the complete ancestor chain before choosing the nearest ARG.
     if _ancestor(node, ("command_name",)) is not None:
         return node, "NAME", None
-    unsupported = _ancestor(node, ("process_substitution", "herestring_redirect", "ansi_c_string", "translated_string", "brace_expression"))
+    unsupported = _ancestor(
+        node,
+        (
+            "process_substitution",
+            "herestring_redirect",
+            "ansi_c_string",
+            "translated_string",
+            "brace_expression",
+        ),
+    )
     if unsupported is not None:
-        raise ShellSourceError("UNSUPPORTED_SOURCE_ENVELOPE", f"context occurrence is inside {unsupported.type}", Span(unsupported.start_byte, unsupported.end_byte))
+        raise ShellSourceError(
+            "UNSUPPORTED_SOURCE_ENVELOPE",
+            f"context occurrence is inside {unsupported.type}",
+            Span(unsupported.start_byte, unsupported.end_byte),
+        )
     expansion = _ancestor(node, ("expansion",))
     if expansion is not None:
-        raise ShellSourceError("DATA_PARAMETER_SYNTAX", "context data cannot complete a braced parameter envelope", Span(expansion.start_byte, expansion.end_byte))
+        raise ShellSourceError(
+            "DATA_PARAMETER_SYNTAX",
+            "context data cannot complete a braced parameter envelope",
+            Span(expansion.start_byte, expansion.end_byte),
+        )
     current = node
     while current is not None:
         parent = current.parent
@@ -123,30 +175,57 @@ def _choose(node: Node, source: bytes, arithmetic: bool) -> tuple[Node, str, str
                 return current, "NAME", None
             if parent.type == "variable_assignment":
                 if field == "value":
-                    if parent.parent is not None and parent.parent.type == "declaration_command":
+                    if (
+                        parent.parent is not None
+                        and parent.parent.type == "declaration_command"
+                    ):
                         return parent, "ARG", None
                     return current, "ASSIGN", None
                 return current, "NAME", None
             if parent.type == "file_redirect" and field == "destination":
-                destinations = [c for index, c in enumerate(parent.children) if parent.field_name_for_child(index) == "destination"]
+                destinations = [
+                    c
+                    for index, c in enumerate(parent.children)
+                    if parent.field_name_for_child(index) == "destination"
+                ]
                 if current != destinations[0]:
                     return current, "ARG", None
-                operator_bytes = source[parent.start_byte:current.start_byte]
+                operator_bytes = source[parent.start_byte : current.start_byte]
                 if b">&" in operator_bytes or b"<&" in operator_bytes:
                     return current, "NAME", None
                 return current, "FILE", None
-            if parent.type in ("command", "declaration_command", "unset_command") and field == "argument":
+            if (
+                parent.type in ("command", "declaration_command", "unset_command")
+                and field == "argument"
+            ):
                 return current, "ARG", None
             if parent.type == "for_statement":
                 return current, "FOR_VALUES" if field == "value" else "NAME", None
-            if parent.type in ("binary_expression", "unary_expression") and _ancestor(parent, ("test_command",)) is not None:
+            if (
+                parent.type in ("binary_expression", "unary_expression")
+                and _ancestor(parent, ("test_command",)) is not None
+            ):
                 operator = parent.child_by_field_name("operator")
-                spelling = source[operator.start_byte:operator.end_byte].decode() if operator is not None else None
-                return current, "TEST_NUMBER" if spelling in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge") else "TEST_DATA", spelling
+                spelling = (
+                    source[operator.start_byte : operator.end_byte].decode()
+                    if operator is not None
+                    else None
+                )
+                return (
+                    current,
+                    "TEST_NUMBER"
+                    if spelling in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge")
+                    else "TEST_DATA",
+                    spelling,
+                )
             if arithmetic and current.type in ("variable_name", "number"):
                 return current, "NUMBER", None
         current = parent
-    raise ShellSourceError("UNOWNED_OCCURRENCE", "context occurrence has no supported original word owner", Span(node.start_byte, node.end_byte))
+    raise ShellSourceError(
+        "UNOWNED_OCCURRENCE",
+        "context occurrence has no supported original word owner",
+        Span(node.start_byte, node.end_byte),
+    )
 
 
 def establish_ownership(bound: BoundTemplate) -> Ownership:
@@ -162,31 +241,103 @@ def establish_ownership(bound: BoundTemplate) -> Ownership:
             raise
         projection, recovery_markers = recovered
         root = parse(projection)
-    grouped: dict[tuple[int, int, str, int, str | None, str | None, tuple[int, int] | None], list[int]] = {}
+    grouped: dict[
+        tuple[int, int, str, int, str | None, str | None, tuple[int, int] | None],
+        list[int],
+    ] = {}
     for occurrence in bound.occurrences:
         context = documents.contexts[occurrence.span.start]
         if context.mode == "heredoc":
             continue
-        node = root.descendant_for_byte_range(occurrence.span.start, occurrence.span.end)
-        owner, role, operator = _choose(node, documents.skeleton, context.mode == "arithmetic")
+        node = root.descendant_for_byte_range(
+            occurrence.span.start, occurrence.span.end
+        )
+        owner, role, operator = _choose(
+            node, documents.skeleton, context.mode == "arithmetic"
+        )
         if role == "NUMBER":
             current = owner
-            while current.parent is not None and current.parent.type not in ("arithmetic_expansion", "arithmetic_command"):
+            while current.parent is not None and current.parent.type not in (
+                "arithmetic_expansion",
+                "arithmetic_command",
+            ):
                 parent = current.parent
                 operator_node = parent.child_by_field_name("operator")
-                spelling = documents.skeleton[operator_node.start_byte:operator_node.end_byte] if operator_node is not None else b""
-                if parent.type == "subscript" or spelling in (b"++", b"--") or (_field(current) == "left" and spelling in (b"=", b"+=", b"-=", b"*=", b"/=", b"%=", b"<<=", b">>=", b"&=", b"|=", b"^=")):
-                    raise ShellSourceError("NUMERIC_OWNER", "numeric occurrence is not a complete arithmetic rvalue", occurrence.span)
+                spelling = (
+                    documents.skeleton[
+                        operator_node.start_byte : operator_node.end_byte
+                    ]
+                    if operator_node is not None
+                    else b""
+                )
+                if (
+                    parent.type == "subscript"
+                    or spelling in (b"++", b"--")
+                    or (
+                        _field(current) == "left"
+                        and spelling
+                        in (
+                            b"=",
+                            b"+=",
+                            b"-=",
+                            b"*=",
+                            b"/=",
+                            b"%=",
+                            b"<<=",
+                            b">>=",
+                            b"&=",
+                            b"|=",
+                            b"^=",
+                        )
+                    )
+                ):
+                    raise ShellSourceError(
+                        "NUMERIC_OWNER",
+                        "numeric occurrence is not a complete arithmetic rvalue",
+                        occurrence.span,
+                    )
                 current = parent
-        if owner.start_byte > occurrence.span.start or owner.end_byte < occurrence.span.end:
-            raise ShellSourceError("SPLIT_OCCURRENCE", "CST owner does not contain the entire occurrence", occurrence.span)
+        if (
+            owner.start_byte > occurrence.span.start
+            or owner.end_byte < occurrence.span.end
+        ):
+            raise ShellSourceError(
+                "SPLIT_OCCURRENCE",
+                "CST owner does not contain the entire occurrence",
+                occurrence.span,
+            )
         command = _command(owner, documents.skeleton)
         span = _island(owner, role, documents.skeleton)
         command_node = _command_node(owner)
-        command_span = (command_node.start_byte, command_node.end_byte) if command_node is not None else None
-        key = (span.start, span.end, role, context.frame, command, operator, command_span)
+        command_span = (
+            (command_node.start_byte, command_node.end_byte)
+            if command_node is not None
+            else None
+        )
+        key = (
+            span.start,
+            span.end,
+            role,
+            context.frame,
+            command,
+            operator,
+            command_span,
+        )
         grouped.setdefault(key, []).append(occurrence.id)
-    words = tuple(WordOwner(Span(start, end), role, frame, tuple(ids), command, operator, Span(*command_span) if command_span is not None else None) for (start, end, role, frame, command, operator, command_span), ids in sorted(grouped.items()))
+    words = tuple(
+        WordOwner(
+            Span(start, end),
+            role,
+            frame,
+            tuple(ids),
+            command,
+            operator,
+            Span(*command_span) if command_span is not None else None,
+        )
+        for (start, end, role, frame, command, operator, command_span), ids in sorted(
+            grouped.items()
+        )
+    )
     checked_commands: set[tuple[int, int]] = set()
     for owner in words:
         if owner.role != "ARG" or owner.command_span is None:
@@ -195,16 +346,28 @@ def establish_ownership(bound: BoundTemplate) -> Ownership:
         if key in checked_commands:
             continue
         command = root.descendant_for_byte_range(*key)
-        while command.type not in ("command", "declaration_command", "unset_command") and command.parent is not None:
+        while (
+            command.type not in ("command", "declaration_command", "unset_command")
+            and command.parent is not None
+        ):
             command = command.parent
-        first = min(o.span.start for o in bound.occurrences if o.id in owner.occurrences)
+        first = min(
+            o.span.start for o in bound.occurrences if o.id in owner.occurrences
+        )
         require_prefix(bound, command, first)
         checked_commands.add(key)
-    for left, right in zip(words, words[1:]):
-        if left.span.start < right.span.end and right.span.start < left.span.end:
-            # An outer DQ word can own holes beside a nested command whose ARG
-            # owns other holes. The compiler must recurse through these owners;
-            # neither may absorb the other's DATA/events.
-            if not (left.span.start <= right.span.start and left.span.end >= right.span.end):
-                raise ShellSourceError("CROSSING_OWNERS", "original word owners cross rather than nest", right.span)
+    for left, right in pairwise(words):
+        # An outer DQ word may contain an independently owned child ARG.
+        if (
+            left.span.start < right.span.end
+            and right.span.start < left.span.end
+            and not (
+                left.span.start <= right.span.start and left.span.end >= right.span.end
+            )
+        ):
+            raise ShellSourceError(
+                "CROSSING_OWNERS",
+                "original word owners cross rather than nest",
+                right.span,
+            )
     return Ownership(documents, words, recovery_markers)

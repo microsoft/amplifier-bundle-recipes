@@ -12,12 +12,13 @@ import re
 from .binding import neutral_bytes
 from .model import BoundTemplate, Span
 
-
 _MARKER = re.compile(rb"(?:\{% if [A-Za-z_][A-Za-z0-9_]* != '' %\}|\{% endif %\})\Z")
 _OUTPUT = re.compile(rb'(?:echo|cat)[ \t]+"[^"\\$`\n]*"\Z')
 
 
-def recovery_projection(bound: BoundTemplate, source: bytes) -> tuple[bytes, tuple[Span, ...]] | None:
+def recovery_projection(
+    bound: BoundTemplate, source: bytes
+) -> tuple[bytes, tuple[Span, ...]] | None:
     """Validate *all* physical lines, then mask only hole-free marker bytes."""
     neutral = neutral_bytes(bound)
     if source != neutral:
@@ -33,10 +34,13 @@ def recovery_projection(bound: BoundTemplate, source: bytes) -> tuple[bytes, tup
             pass
         elif _MARKER.fullmatch(text):
             span = Span(offset, offset + len(body))
-            if any(o.span.start < span.end and o.span.end > span.start for o in bound.occurrences):
+            if any(
+                o.span.start < span.end and o.span.end > span.start
+                for o in bound.occurrences
+            ):
                 return None
             markers.append(span)
-            result[span.start:span.end] = b" " * (span.end - span.start)
+            result[span.start : span.end] = b" " * (span.end - span.start)
         elif _OUTPUT.fullmatch(text):
             pass
         else:

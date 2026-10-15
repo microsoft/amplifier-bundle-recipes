@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import re
+from collections.abc import Callable
 
-from .model import BoundTemplate, Event, FenceEvent, Occurrence, ShellSourceError, Span, TextEvent
-
+from .model import (
+    BoundTemplate,
+    Event,
+    FenceEvent,
+    Occurrence,
+    ShellSourceError,
+    Span,
+    TextEvent,
+)
 
 _HOLE = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
+
+
+def has_occurrences(source: str) -> bool:
+    return _HOLE.search(source) is not None
 
 
 def bind(source: str, resolve: Callable[[str], str]) -> BoundTemplate:
@@ -20,7 +31,9 @@ def bind(source: str, resolve: Callable[[str], str]) -> BoundTemplate:
     try:
         source.encode("utf-8", errors="strict")
     except UnicodeEncodeError as exc:
-        raise ShellSourceError("INVALID_ENCODING", "template is not valid UTF-8") from exc
+        raise ShellSourceError(
+            "INVALID_ENCODING", "template is not valid UTF-8"
+        ) from exc
     if "\x00" in source:
         raise ShellSourceError("NUL_SOURCE", "Bash source cannot contain NUL")
 
@@ -36,7 +49,7 @@ def bind(source: str, resolve: Callable[[str], str]) -> BoundTemplate:
             byte_cursor = end
 
     for match in _HOLE.finditer(source):
-        trusted(source[char_cursor:match.start()])
+        trusted(source[char_cursor : match.start()])
         span = Span(byte_cursor, byte_cursor + len(match.group().encode("utf-8")))
         value = resolve(match.group(1))
         if not isinstance(value, str):
@@ -44,16 +57,24 @@ def bind(source: str, resolve: Callable[[str], str]) -> BoundTemplate:
         try:
             value.encode("utf-8", errors="strict")
         except UnicodeEncodeError as exc:
-            raise ShellSourceError("INVALID_ENCODING", "context value is not valid UTF-8", span) from exc
+            raise ShellSourceError(
+                "INVALID_ENCODING", "context value is not valid UTF-8", span
+            ) from exc
         if "\x00" in value:
-            raise ShellSourceError("NUL_DATA", "Bash context data cannot contain NUL", span)
+            raise ShellSourceError(
+                "NUL_DATA", "Bash context data cannot contain NUL", span
+            )
         occurrence = Occurrence(len(occurrences), match.group(1), span, value)
         occurrences.append(occurrence)
         events.append(FenceEvent(occurrence.id, "start", span))
         value_cursor = 0
         for character in value:
             end = value_cursor + len(character.encode("utf-8"))
-            events.append(TextEvent("data", character, span, occurrence.id, Span(value_cursor, end)))
+            events.append(
+                TextEvent(
+                    "data", character, span, occurrence.id, Span(value_cursor, end)
+                )
+            )
             value_cursor = end
         events.append(FenceEvent(occurrence.id, "end", span))
         char_cursor = match.end()
@@ -67,7 +88,9 @@ def neutral_bytes(bound: BoundTemplate) -> bytes:
     source = bound.source.encode("utf-8")
     result = bytearray(source)
     for occurrence in bound.occurrences:
-        result[occurrence.span.start:occurrence.span.end] = b"x" * (occurrence.span.end - occurrence.span.start)
+        result[occurrence.span.start : occurrence.span.end] = b"x" * (
+            occurrence.span.end - occurrence.span.start
+        )
     return bytes(result)
 
 
@@ -79,5 +102,9 @@ def events_in(bound: BoundTemplate, span: Span) -> tuple[Event, ...]:
         if owner.start >= span.start and owner.end <= span.end:
             result.append(event)
         elif owner.start < span.end and owner.end > span.start:
-            raise ShellSourceError("SPLIT_OCCURRENCE", "source owner splits a character or occurrence", owner)
+            raise ShellSourceError(
+                "SPLIT_OCCURRENCE",
+                "source owner splits a character or occurrence",
+                owner,
+            )
     return tuple(result)

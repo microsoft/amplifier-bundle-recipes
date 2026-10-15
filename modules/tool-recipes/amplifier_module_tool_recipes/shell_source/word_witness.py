@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
-from tree_sitter import Language, Node, Parser
 import tree_sitter_bash
+from tree_sitter import Language, Node, Parser
 
 from .encoding import simple_patterns
 from .model import FieldProjection, ShellSourceError
@@ -21,13 +21,27 @@ class ReadPart:
 
 def _expansions(node: Node, source: bytes, offset: int) -> dict[int, tuple[int, str]]:
     result = {}
+
     def walk(current: Node) -> None:
-        text = source[current.start_byte:current.end_byte].decode()
-        if current.type in ("simple_expansion", "expansion", "command_substitution", "arithmetic_expansion", "process_substitution", "ansi_c_string") or current.type == "string" and text.startswith('$"'):
+        text = source[current.start_byte : current.end_byte].decode()
+        if (
+            current.type
+            in (
+                "simple_expansion",
+                "expansion",
+                "command_substitution",
+                "arithmetic_expansion",
+                "process_substitution",
+                "ansi_c_string",
+            )
+            or current.type == "string"
+            and text.startswith('$"')
+        ):
             result[current.start_byte - offset] = (current.end_byte - offset, text)
             return
         for child in current.named_children:
             walk(child)
+
     walk(node)
     return result
 
@@ -37,12 +51,28 @@ def read_field(source: str) -> tuple[ReadPart, ...]:
     prefix = b"__recipe_word__ "
     raw = source.encode()
     tree = Parser(Language(tree_sitter_bash.language())).parse(prefix + raw).root_node
-    if tree.has_error or len(tree.named_children) != 1 or tree.named_children[0].type != "command":
-        raise ShellSourceError("WORD_WITNESS", "emitted field changes executable topology")
+    if (
+        tree.has_error
+        or len(tree.named_children) != 1
+        or tree.named_children[0].type != "command"
+    ):
+        raise ShellSourceError(
+            "WORD_WITNESS", "emitted field changes executable topology"
+        )
     command = tree.named_children[0]
-    arguments = [child for index, child in enumerate(command.children) if command.field_name_for_child(index) == "argument"]
-    if len(arguments) != 1 or arguments[0].start_byte != len(prefix) or arguments[0].end_byte != len(prefix) + len(raw):
-        raise ShellSourceError("WORD_WITNESS", "emitted field is not exactly one complete argument")
+    arguments = [
+        child
+        for index, child in enumerate(command.children)
+        if command.field_name_for_child(index) == "argument"
+    ]
+    if (
+        len(arguments) != 1
+        or arguments[0].start_byte != len(prefix)
+        or arguments[0].end_byte != len(prefix) + len(raw)
+    ):
+        raise ShellSourceError(
+            "WORD_WITNESS", "emitted field is not exactly one complete argument"
+        )
     expansion = _expansions(arguments[0], prefix + raw, len(prefix))
     output: list[ReadPart] = []
     mode = "ordinary"
@@ -75,7 +105,9 @@ def read_field(source: str) -> tuple[ReadPart, ...]:
                 continue
             if char == "\\":
                 if index + 1 >= len(raw):
-                    raise ShellSourceError("WORD_WITNESS", "emitted escape is incomplete")
+                    raise ShellSourceError(
+                        "WORD_WITNESS", "emitted escape is incomplete"
+                    )
                 following = chr(raw[index + 1])
                 if mode == "ordinary" or following in '$`"\\\n':
                     index += 1
@@ -93,7 +125,9 @@ def read_field(source: str) -> tuple[ReadPart, ...]:
                 index = end
                 continue
             if mode == "ordinary" and char == "{":
-                brace = re.match(rb"\{[A-Za-z0-9_./:+-]+(?:,[A-Za-z0-9_./:+-]+)+\}", raw[index:])
+                brace = re.match(
+                    rb"\{[A-Za-z0-9_./:+-]+(?:,[A-Za-z0-9_./:+-]+)+\}", raw[index:]
+                )
                 if brace is not None:
                     spelling = brace.group().decode()
                     output.append(ReadPart("expansion", spelling, False))
@@ -111,6 +145,7 @@ def _semantic(parts) -> tuple:
     result = []
     text = []
     forced = False
+
     def flush():
         nonlocal forced
         if text:
@@ -119,6 +154,7 @@ def _semantic(parts) -> tuple:
         elif forced:
             result.append(("empty-quote",))
         forced = False
+
     for part in parts:
         if part.kind == "literal":
             if part.text:
@@ -147,7 +183,12 @@ def _actual_patterns(parts: tuple[ReadPart, ...]) -> tuple[tuple[int, str], ...]
             elif item.text == "[":
                 end = index + 1
                 token = "["
-                while end < len(parts) and parts[end].kind == "literal" and not parts[end].protected and parts[end].text:
+                while (
+                    end < len(parts)
+                    and parts[end].kind == "literal"
+                    and not parts[end].protected
+                    and parts[end].text
+                ):
                     token += parts[end].text
                     if parts[end].text == "]":
                         result.append((position, token))
@@ -164,7 +205,11 @@ def verify_field(field: FieldProjection, source: str) -> None:
     if not expected and field.forced:
         expected = (ReadPart("literal", "", True),)
     if _semantic(actual) != _semantic(expected):
-        raise ShellSourceError("WORD_WITNESS", "emitted literal/expansion/empty-word semantics differ")
-    wanted = tuple((atom.span.start, atom.text) for atom in simple_patterns(field.parts))
+        raise ShellSourceError(
+            "WORD_WITNESS", "emitted literal/expansion/empty-word semantics differ"
+        )
+    wanted = tuple(
+        (atom.span.start, atom.text) for atom in simple_patterns(field.parts)
+    )
     if _actual_patterns(actual) != wanted:
         raise ShellSourceError("WORD_WITNESS", "emitted pathname-pattern masks differ")

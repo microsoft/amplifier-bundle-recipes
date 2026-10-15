@@ -135,10 +135,7 @@ def _right(text: str) -> _Source:
         not arguments
         or arguments[0].start_byte != len(prefix)
         or arguments[-1].end_byte != len(prefix) + len(raw)
-        or any(
-            left.end_byte != right.start_byte
-            for left, right in pairwise(arguments)
-        )
+        or any(left.end_byte != right.start_byte for left, right in pairwise(arguments))
     ):
         _fail("TILDE_WITNESS", "emitted field is not one complete source operand")
     atoms: dict[int, tuple[int, str]] = {}

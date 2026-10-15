@@ -8,8 +8,11 @@ command roles without mistaking document contents for executable statements.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
+
+import tree_sitter_bash
+from tree_sitter import Language, Parser
 
 from .binding import events_in, neutral_bytes
 from .model import BoundTemplate, HereDocument, ShellSourceError, Span
@@ -53,6 +56,26 @@ class _Reader:
         self.documents: list[HereDocument] = []
         self.frame_serial = 0
         self.ordinal = 0
+        # Compound grammar belongs to the real CST. The preliminary tree may
+        # contain heredoc ERROR nodes; only these physically present case-item
+        # punctuation tokens are consulted, and the complete masked CST is
+        # required error-free after document collection.
+        tree = (
+            Parser(Language(tree_sitter_bash.language())).parse(self.source).root_node
+        )
+        self.case_punctuation: set[int] = set()
+
+        def inspect(node) -> None:
+            if node.type == "case_item":
+                self.case_punctuation.update(
+                    child.start_byte
+                    for child in node.children
+                    if not child.is_named and child.type in ("(", ")")
+                )
+            for child in node.named_children:
+                inspect(child)
+
+        inspect(tree)
 
     def mark(self, start: int, end: int, mode: str, frame: int) -> None:
         self.contexts[start:end] = [LexicalContext(mode, frame)] * (end - start)
@@ -81,14 +104,22 @@ class _Reader:
                 self.mark(index, index + 1, mode, frame)
                 index = self.script(index + 1, self.new_frame(), 96)
                 continue
-            if quote == 34 and character == 92 and index + 1 < len(self.source):
-                if self.source[index + 1] in b'$`"\\\n':
-                    self.mark(index, index + 2, mode, frame)
-                    index += 2
-                    continue
+            if (
+                quote == 34
+                and character == 92
+                and index + 1 < len(self.source)
+                and self.source[index + 1] in b'$`"\\\n'
+            ):
+                self.mark(index, index + 2, mode, frame)
+                index += 2
+                continue
             self.mark(index, index + 1, mode, frame)
             index += 1
-        raise ShellSourceError("UNCLOSED_QUOTE", "original template has an unclosed quote", Span(start, index))
+        raise ShellSourceError(
+            "UNCLOSED_QUOTE",
+            "original template has an unclosed quote",
+            Span(start, index),
+        )
 
     def arithmetic(self, start: int, frame: int, *, dollar: bool) -> int:
         index = start + (3 if dollar else 2)
@@ -103,37 +134,73 @@ class _Reader:
             elif self.source[index] == 41:
                 depth -= 1
             index += 1
-        raise ShellSourceError("UNCLOSED_ARITHMETIC", "original arithmetic frame is not closed", Span(start, index))
+        raise ShellSourceError(
+            "UNCLOSED_ARITHMETIC",
+            "original arithmetic frame is not closed",
+            Span(start, index),
+        )
 
     def opener(self, start: int, frame: int) -> tuple[_Pending, int]:
         index = start + 2
-        strip_tabs = self.source[index:index + 1] == b"-"
+        strip_tabs = self.source[index : index + 1] == b"-"
         if strip_tabs:
             index += 1
         operator = Span(start, index)
-        while self.source[index:index + 1] in (b" ", b"\t"):
+        while self.source[index : index + 1] in (b" ", b"\t"):
             index += 1
         word_start = index
-        quoted = self.source[index:index + 1] in (b"'", b'"')
+        quoted = self.source[index : index + 1] in (b"'", b'"')
         quote = self.source[index] if quoted else None
         if quote is not None:
             index += 1
         identifier_start = index
-        while index < len(self.source) and (self.source[index] != quote if quoted else self.source[index] not in _WORD_END):
+        while index < len(self.source) and (
+            self.source[index] != quote
+            if quoted
+            else self.source[index] not in _WORD_END
+        ):
             index += 1
         identifier_end = index
         delimiter = self.source[identifier_start:identifier_end]
         if quoted:
             if index == len(self.source):
-                raise ShellSourceError("UNCLOSED_DELIMITER", "original document delimiter quote is not closed", Span(word_start, index))
+                raise ShellSourceError(
+                    "UNCLOSED_DELIMITER",
+                    "original document delimiter quote is not closed",
+                    Span(word_start, index),
+                )
             index += 1
         if not _IDENTIFIER.fullmatch(delimiter):
-            raise ShellSourceError("DOCUMENT_DELIMITER_DOMAIN", "document delimiter must be an authored ASCII identifier", Span(word_start, index))
+            raise ShellSourceError(
+                "DOCUMENT_DELIMITER_DOMAIN",
+                "document delimiter must be an authored ASCII identifier",
+                Span(word_start, index),
+            )
         if index < len(self.source) and self.source[index] not in _WORD_END:
-            raise ShellSourceError("DOCUMENT_DELIMITER_DOMAIN", "mixed delimiter quoting is not owned", Span(word_start, index + 1))
-        if any(o.span.start < index and o.span.end > word_start for o in self.bound.occurrences):
-            raise ShellSourceError("DATA_DELIMITER", "context data cannot own a document delimiter", Span(word_start, index))
-        pending = _Pending(operator, Span(word_start, index), Span(identifier_start, identifier_end), delimiter, quoted, strip_tabs, frame, self.ordinal)
+            raise ShellSourceError(
+                "DOCUMENT_DELIMITER_DOMAIN",
+                "mixed delimiter quoting is not owned",
+                Span(word_start, index + 1),
+            )
+        if any(
+            o.span.start < index and o.span.end > word_start
+            for o in self.bound.occurrences
+        ):
+            raise ShellSourceError(
+                "DATA_DELIMITER",
+                "context data cannot own a document delimiter",
+                Span(word_start, index),
+            )
+        pending = _Pending(
+            operator,
+            Span(word_start, index),
+            Span(identifier_start, identifier_end),
+            delimiter,
+            quoted,
+            strip_tabs,
+            frame,
+            self.ordinal,
+        )
         self.ordinal += 1
         return pending, index
 
@@ -141,27 +208,72 @@ class _Reader:
         for document in pending:
             body_start = index
             while index <= len(self.source):
-                line_end = self.source.find(b"\n", index)
-                if line_end < 0:
-                    line_end = len(self.source)
-                line = self.source[index:line_end]
-                leading = len(line) - len(line.lstrip(b"\t")) if document.strip_tabs else 0
+                # Bash compares an expanding document's logical source line:
+                # BS-LF is consumed before delimiter matching, whereas BS-c
+                # consumes the following byte without allowing it to start
+                # another continuation. Quoted delimiters use physical lines.
+                line_end = index
+                logical = bytearray()
+                while line_end < len(self.source) and self.source[line_end] != 10:
+                    if (
+                        not document.quoted
+                        and self.source[line_end] == 92
+                        and line_end + 1 < len(self.source)
+                    ):
+                        following = self.source[line_end + 1]
+                        if following != 10:
+                            logical.extend(self.source[line_end : line_end + 2])
+                        line_end += 2
+                    else:
+                        logical.append(self.source[line_end])
+                        line_end += 1
+                line = bytes(logical)
+                leading = (
+                    len(line) - len(line.lstrip(b"\t")) if document.strip_tabs else 0
+                )
                 if line[leading:] == document.delimiter:
                     body = Span(body_start, index)
                     closer = Span(index + leading, line_end)
-                    final_lf = Span(index - 1, index) if index > body_start and self.source[index - 1:index] == b"\n" else None
-                    self.documents.append(HereDocument(document.frame, document.ordinal, document.delimiter.decode("ascii"), document.quoted, document.strip_tabs, document.identifier, body, closer, events_in(self.bound, body), final_lf))
+                    final_lf = (
+                        Span(index - 1, index)
+                        if index > body_start
+                        and self.source[index - 1 : index] == b"\n"
+                        else None
+                    )
+                    spelling = self.source[closer.start : closer.end].decode()
+                    self.documents.append(
+                        HereDocument(
+                            document.frame,
+                            document.ordinal,
+                            document.delimiter.decode("ascii"),
+                            document.quoted,
+                            document.strip_tabs,
+                            document.identifier,
+                            body,
+                            closer,
+                            events_in(self.bound, body),
+                            final_lf,
+                            spelling,
+                        )
+                    )
                     self.mark(body_start, line_end, "heredoc", document.frame)
                     # The redirect still occupies one CST destination, and all
                     # document/closer bytes retain their original coordinates.
-                    self.skeleton[document.operator.start:document.operator.end] = b"<" + b" " * (document.operator.end - document.operator.start - 1)
+                    self.skeleton[document.operator.start : document.operator.end] = (
+                        b"<"
+                        + b" " * (document.operator.end - document.operator.start - 1)
+                    )
                     for position in range(body_start, line_end):
                         if self.skeleton[position] != 10:
                             self.skeleton[position] = 32
                     index = line_end + (line_end < len(self.source))
                     break
                 if line_end == len(self.source):
-                    raise ShellSourceError("UNCLOSED_DOCUMENT", "original document has no exact owned closer", document.word)
+                    raise ShellSourceError(
+                        "UNCLOSED_DOCUMENT",
+                        "original document has no exact owned closer",
+                        document.word,
+                    )
                 index = line_end + 1
         pending.clear()
         return index
@@ -169,13 +281,16 @@ class _Reader:
     def script(self, index: int, frame: int, stop: int | None = None) -> int:
         pending: list[_Pending] = []
         word_start = True
-        cases: list[bool] = []  # True while reading a case pattern.
         while index < len(self.source):
             character = self.source[index]
             self.mark(index, index + 1, "ordinary", frame)
-            if character == stop and not (stop == 41 and cases and cases[-1]):
+            if character == stop and index not in self.case_punctuation:
                 if pending:
-                    raise ShellSourceError("DOCUMENT_FRAME", "document collection crosses its shell frame", pending[0].word)
+                    raise ShellSourceError(
+                        "DOCUMENT_FRAME",
+                        "document collection crosses its shell frame",
+                        pending[0].word,
+                    )
                 return index + 1
             if character == 92:
                 self.mark(index, min(index + 2, len(self.source)), "ordinary", frame)
@@ -194,7 +309,9 @@ class _Reader:
                 index = self.arithmetic(index, frame, dollar=False)
                 word_start = False
                 continue
-            if self.source.startswith(b"$(", index) or self.source[index:index + 2] in (b"<(", b">("):
+            if self.source.startswith(b"$(", index) or self.source[
+                index : index + 2
+            ] in (b"<(", b">("):
                 self.mark(index, index + 2, "ordinary", frame)
                 index = self.script(index + 2, self.new_frame(), 41)
                 word_start = False
@@ -227,23 +344,24 @@ class _Reader:
                 word_start = True
                 continue
             if character == 40:
+                if index in self.case_punctuation:
+                    index += 1
+                    word_start = True
+                    continue
                 index = self.script(index + 1, self.new_frame(), 41)
                 word_start = True
                 continue
-            if character == 41 and cases and cases[-1]:
-                cases[-1] = False
-            if self.source.startswith(b";;", index) and cases:
-                cases[-1] = True
-            if word_start and (65 <= character <= 90 or 97 <= character <= 122 or character == 95):
+            if word_start and (
+                65 <= character <= 90 or 97 <= character <= 122 or character == 95
+            ):
                 end = index + 1
-                while end < len(self.source) and (65 <= self.source[end] <= 90 or 97 <= self.source[end] <= 122 or 48 <= self.source[end] <= 57 or self.source[end] == 95):
+                while end < len(self.source) and (
+                    65 <= self.source[end] <= 90
+                    or 97 <= self.source[end] <= 122
+                    or 48 <= self.source[end] <= 57
+                    or self.source[end] == 95
+                ):
                     end += 1
-                token = self.source[index:end]
-                if end == len(self.source) or self.source[end] in _WORD_END:
-                    if token == b"case":
-                        cases.append(True)
-                    elif token == b"esac" and cases:
-                        cases.pop()
                 self.mark(index, end, "ordinary", frame)
                 index = end
                 word_start = False
@@ -251,11 +369,19 @@ class _Reader:
             word_start = character in _WORD_END
             index += 1
         if pending or stop is not None:
-            raise ShellSourceError("UNCLOSED_FRAME", "original shell frame or document is not closed", Span(index, index))
+            raise ShellSourceError(
+                "UNCLOSED_FRAME",
+                "original shell frame or document is not closed",
+                Span(index, index),
+            )
         return index
 
 
 def collect_documents(bound: BoundTemplate) -> DocumentOwnership:
     reader = _Reader(bound)
     reader.script(0, 0)
-    return DocumentOwnership(tuple(sorted(reader.documents, key=lambda d: d.ordinal)), bytes(reader.skeleton), tuple(reader.contexts))
+    return DocumentOwnership(
+        tuple(sorted(reader.documents, key=lambda d: d.ordinal)),
+        bytes(reader.skeleton),
+        tuple(reader.contexts),
+    )
