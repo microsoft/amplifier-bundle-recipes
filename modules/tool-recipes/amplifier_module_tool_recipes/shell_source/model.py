@@ -200,6 +200,9 @@ class Replacement:
     # Attempt-local intended fields, qualified by the independent word reader.
     # They are not an authority to suppress root/frame/command checks.
     fields: tuple[FieldProjection, ...] = ()
+    # Independently checked trailing DATA LF count emitted only as empty list
+    # terminators. Pending-heredoc handoff uses BODY events instead.
+    tail_lfs: int = 0
 
 
 class ShellSourceError(ValueError):
