@@ -180,6 +180,14 @@ class TildePlan:
     requests: tuple[TildeRequest, ...]
 
 
+@dataclass(frozen=True)
+class Replacement:
+    source: Span
+    text: str
+    kind: Literal["word", "document-body", "document-delimiter", "comment", "number"]
+    role: str
+
+
 class ShellSourceError(ValueError):
     """A named pre-launch ownership/encoding failure, never a raw fallback."""
 
