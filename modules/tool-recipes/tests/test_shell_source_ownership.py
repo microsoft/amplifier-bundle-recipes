@@ -30,3 +30,14 @@ def test_marker_recovery_rejects_any_unadmitted_line_in_entire_root(extra):
     source = 'echo "{{x}}"\n{% if notes != \'\' %}\n' + extra + '\n{% endif %}\n'
     with pytest.raises(ShellSourceError, match="INVALID_TEMPLATE_SYNTAX"):
         establish_ownership(bind(source, lambda _: "value"))
+
+
+@pytest.mark.parametrize("prefix", ['echo', '"$cmd"', '"${AMPLIFIER_PYTHON:-python3}"', '${maybe_empty} -I', '"$(printf echo)"'])
+def test_hole_free_nonvanishing_prefix_is_certified_without_runtime_lookup(prefix):
+    assert establish_ownership(bind(prefix + " {{x}}", lambda _: "payload")).words
+
+
+@pytest.mark.parametrize("prefix", ['${maybe_empty}', 'prefix$runtime', '"$@"', '"${@:1:0}"', 'no_match_*', '~missing'])
+def test_runtime_name_cannot_vanish_and_promote_data_to_executable_name(prefix):
+    with pytest.raises(ShellSourceError, match="NONVANISHING_PREFIX"):
+        establish_ownership(bind(prefix + " {{x}} -I", lambda _: "payload"))

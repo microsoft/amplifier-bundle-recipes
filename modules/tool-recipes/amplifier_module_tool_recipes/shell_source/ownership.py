@@ -10,6 +10,7 @@ import tree_sitter_bash
 from .documents import DocumentOwnership, collect_documents
 from .model import BoundTemplate, ShellSourceError, Span
 from .recovery import recovery_projection
+from .prefix import require_prefix
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,19 @@ def establish_ownership(bound: BoundTemplate) -> Ownership:
         key = (span.start, span.end, role, context.frame, command, operator, command_span)
         grouped.setdefault(key, []).append(occurrence.id)
     words = tuple(WordOwner(Span(start, end), role, frame, tuple(ids), command, operator, Span(*command_span) if command_span is not None else None) for (start, end, role, frame, command, operator, command_span), ids in sorted(grouped.items()))
+    checked_commands: set[tuple[int, int]] = set()
+    for owner in words:
+        if owner.role != "ARG" or owner.command_span is None:
+            continue
+        key = (owner.command_span.start, owner.command_span.end)
+        if key in checked_commands:
+            continue
+        command = root.descendant_for_byte_range(*key)
+        while command.type not in ("command", "declaration_command", "unset_command") and command.parent is not None:
+            command = command.parent
+        first = min(o.span.start for o in bound.occurrences if o.id in owner.occurrences)
+        require_prefix(bound, command, first)
+        checked_commands.add(key)
     for left, right in zip(words, words[1:]):
         if left.span.start < right.span.end and right.span.start < left.span.end:
             # An outer DQ word can own holes beside a nested command whose ARG
