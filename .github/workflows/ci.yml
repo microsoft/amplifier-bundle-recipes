@@ -48,7 +48,8 @@ jobs:
 
   runner-tests:
     name: Tests (runner library)
-    runs-on: ubuntu-latest
+    # This image supplies the qualified GNU Bash 5.2.21 caller profile.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +74,7 @@ jobs:
 
   module-tests:
     name: Tests (tool-recipes + conformance kit)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -117,7 +118,7 @@ jobs:
 
   legacy-compat:
     name: Conformance (legacy-compat)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
