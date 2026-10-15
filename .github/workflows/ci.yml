@@ -65,7 +65,9 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
+          python3 scripts/shell-source-requirements.py > "$RUNNER_TEMP/recipe-parser-requirements.txt"
           uv run --python ${{ matrix.python }} --no-project \
+            --with-requirements "$RUNNER_TEMP/recipe-parser-requirements.txt" \
             --with pyyaml --with click --with "pytest>=8" \
             python -m pytest src/amplifier_recipe_runner/tests -q
 
@@ -92,7 +94,9 @@ jobs:
         # pyproject's amplifier-foundation dependency); the cost is that a
         # change in either repo can turn this job red on an unrelated PR.
         run: |
+          python3 scripts/shell-source-requirements.py > "$RUNNER_TEMP/recipe-parser-requirements.txt"
           uv run --python ${{ matrix.python }} --no-project \
+            --with-requirements "$RUNNER_TEMP/recipe-parser-requirements.txt" \
             --with "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
             --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
             --with "pytest>=8" --with "pytest-asyncio>=0.23" \
@@ -103,7 +107,9 @@ jobs:
         env:
           PYTHONPATH: src:modules/tool-recipes
         run: |
+          python3 scripts/shell-source-requirements.py > "$RUNNER_TEMP/recipe-parser-requirements.txt"
           uv run --python ${{ matrix.python }} --no-project \
+            --with-requirements "$RUNNER_TEMP/recipe-parser-requirements.txt" \
             --with "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
             --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
             --with pyyaml --with click \
@@ -136,7 +142,9 @@ jobs:
         env:
           PYTHONPATH: src:modules/tool-recipes
         run: |
+          python3 scripts/shell-source-requirements.py > "$RUNNER_TEMP/recipe-parser-requirements.txt"
           uv run --python ${{ matrix.python }} --no-project \
+            --with-requirements "$RUNNER_TEMP/recipe-parser-requirements.txt" \
             --with "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
             --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
             --with pyyaml --with click \
