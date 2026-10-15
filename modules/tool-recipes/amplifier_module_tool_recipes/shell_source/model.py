@@ -186,6 +186,9 @@ class Replacement:
     text: str
     kind: Literal["word", "document-body", "document-delimiter", "comment", "number"]
     role: str
+    # Attempt-local intended fields, qualified by the independent word reader.
+    # They are not an authority to suppress root/frame/command checks.
+    fields: tuple[FieldProjection, ...] = ()
 
 
 class ShellSourceError(ValueError):
