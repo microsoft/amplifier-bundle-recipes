@@ -122,6 +122,64 @@ class EncodedDocument:
     dispositions: tuple[EventDisposition, ...]
 
 
+@dataclass(frozen=True)
+class FieldPart:
+    """One cooked literal character or one complete trusted expansion.
+
+    ``quoted`` is the original effective protection mask after trusted escape
+    reconciliation, not the quoting chosen by the emitter. ``data`` cannot be
+    true for an expansion. Events index the containing island's event tuple.
+    """
+
+    kind: Literal["literal", "expansion"]
+    text: str
+    quoted: bool
+    data: bool
+    events: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class FieldFence:
+    occurrence: int
+    edge: Literal["start", "end"]
+    # Byte offset in the concatenated FieldPart.text spellings.
+    position: int
+
+
+@dataclass(frozen=True)
+class FieldProjection:
+    parts: tuple[FieldPart, ...]
+    fences: tuple[FieldFence, ...]
+    role: str
+    forced: bool
+    # A hole-free original NAME= prefix, when the ARG itself is assignment
+    # shaped. True ASSIGN owners contain only the RHS and use role=ASSIGN.
+    authored_assignment_prefix: str | None = None
+
+
+@dataclass(frozen=True)
+class TildeEnvelope:
+    # UTF-8 byte offsets in concatenated FieldPart.text spellings.
+    span: Span
+
+
+@dataclass(frozen=True)
+class TildeRequest:
+    position: int
+    request: str
+    tflag: int
+    profile: str
+    # Symbolic history: earlier requests may consume or fall back. No lookup
+    # result or library state is inferred from the manager's machine.
+    history: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TildePlan:
+    envelopes: tuple[TildeEnvelope, ...]
+    requests: tuple[TildeRequest, ...]
+
+
 class ShellSourceError(ValueError):
     """A named pre-launch ownership/encoding failure, never a raw fallback."""
 
