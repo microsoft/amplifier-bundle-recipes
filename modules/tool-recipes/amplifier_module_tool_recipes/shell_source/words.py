@@ -51,6 +51,7 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
     forced = False
     index = 0
     field_start = 0
+    quote_start: tuple[int, int] | None = None
 
     def position() -> int:
         return sum(len(part.text.encode("utf-8")) for part in parts)
@@ -75,7 +76,7 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
                     break
             spelling = "".join(prefix)
             assigned = spelling if _ASSIGNMENT_PREFIX.fullmatch(spelling) else None
-            pieces.append(FieldProjection(tuple(parts), tuple(field_fences), role, forced, assigned, events[field_start:stop]))
+            pieces.append(FieldProjection(tuple(parts), tuple(field_fences), role, forced, assigned, events[field_start:stop], field_start))
         parts.clear()
         field_fences.clear()
         forced = False
@@ -111,6 +112,9 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
             continue
         if mode == "single":
             if char == "'":
+                if quote_start is not None and len(parts) == quote_start[1]:
+                    parts.append(FieldPart("literal", "", True, False, (quote_start[0], index)))
+                quote_start = None
                 mode = "ordinary"
                 consumed.append(index)
             else:
@@ -118,12 +122,19 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
             index += 1
             continue
         if char == "'" and mode == "ordinary":
+            quote_start = (index, len(parts))
             mode = "single"
             forced = True
             consumed.append(index)
             index += 1
             continue
         if char == '"':
+            if mode == "double":
+                if quote_start is not None and len(parts) == quote_start[1]:
+                    parts.append(FieldPart("literal", "", True, False, (quote_start[0], index)))
+                quote_start = None
+            else:
+                quote_start = (index, len(parts))
             mode = "ordinary" if mode == "double" else "double"
             forced = True
             consumed.append(index)

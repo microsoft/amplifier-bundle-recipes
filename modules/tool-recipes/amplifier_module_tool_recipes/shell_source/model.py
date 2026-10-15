@@ -126,6 +126,9 @@ class EncodedDocument:
 class FieldPart:
     """One cooked literal character or one complete trusted expansion.
 
+    An empty protected literal retains an authored empty quote at its exact
+    position; this differs from an expansion which might itself vanish.
+
     ``quoted`` is the original effective protection mask after trusted escape
     reconciliation, not the quoting chosen by the emitter. ``data`` cannot be
     true for an expansion. Events index the containing island's event tuple.
@@ -159,11 +162,15 @@ class FieldProjection:
     # and consumed continuations), excluding only field-separator whitespace.
     # Raw tilde lookup requests cannot be derived from normalized expansions.
     source_events: tuple[Event, ...] = ()
+    # FieldPart.events index the enclosing island. This offset maps each raw
+    # source_events entry back to that immutable island-event coordinate.
+    source_event_start: int = 0
 
 
 @dataclass(frozen=True)
 class TildeEnvelope:
-    # UTF-8 byte offsets in concatenated FieldPart.text spellings.
+    # UTF-8 offsets in concatenated TextEvent.text from source_events, retaining
+    # original quote/escape/expansion spelling (fences have zero width).
     span: Span
 
 
