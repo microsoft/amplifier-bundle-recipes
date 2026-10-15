@@ -117,6 +117,21 @@ def test_for_values_and_test_operands_preserve_structure():
     )
 
 
+@pytest.mark.parametrize("value,expected", [(1, b"ok-1\n"), (2, b"")])
+def test_authored_neighboring_test_operator_keeps_exact_source(value, expected):
+    source = "test {{x}} != 2 && echo ok-{{x}}"
+    rendered = lower(source, x=str(value))
+    assert " != " in rendered
+    assert "'!='" not in rendered
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", rendered],
+        capture_output=True,
+        check=False,
+    )
+    assert result.stdout == expected
+    assert result.returncode == (0 if value == 1 else 1)
+
+
 @pytest.mark.parametrize("value,expected", [("1", b"2"), ("-5", b"8"), ("+3", b"0")])
 def test_numeric_complete_rvalue_retains_decimal_semantics(value, expected):
     assert bash(lower("printf '%s' \"$((3-{{x}}))\"", x=value)) == expected

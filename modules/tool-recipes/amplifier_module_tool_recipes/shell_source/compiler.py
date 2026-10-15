@@ -376,7 +376,16 @@ def compile_bound(bound: BoundTemplate) -> CompiledSource:
             from .tilde import plan_tildes, verify_tildes
 
             plan = plan_tildes(piece)
-            text = encode_field(piece, preserved=_raw_envelopes(piece, plan))
+            if all(
+                isinstance(event, TextEvent) and event.kind == "trusted"
+                for event in piece.source_events
+            ):
+                # An ARG island can include authored neighboring operands.
+                # Preserve their spelling, including trusted test operators;
+                # only fields with actual DATA/fences require source lowering.
+                text = "".join(event.text for event in piece.source_events)
+            else:
+                text = encode_field(piece, preserved=_raw_envelopes(piece, plan))
             verify_field(piece, text)
             verify_tildes(piece, text)
             rendered.append(text)
