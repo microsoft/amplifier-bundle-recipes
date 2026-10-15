@@ -9,6 +9,7 @@ import tree_sitter_bash
 
 from .documents import DocumentOwnership, collect_documents
 from .model import BoundTemplate, ShellSourceError, Span
+from .recovery import recovery_projection
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class WordOwner:
 class Ownership:
     documents: DocumentOwnership
     words: tuple[WordOwner, ...]
+    recovery_markers: tuple[Span, ...] = ()
 
 
 def parse(source: bytes) -> Node:
@@ -91,6 +93,16 @@ def _ancestor(node: Node, types: tuple[str, ...]) -> Node | None:
 
 
 def _choose(node: Node, source: bytes, arithmetic: bool) -> tuple[Node, str, str | None]:
+    # A nested command argument cannot launder DATA into the outer command
+    # name. Check the complete ancestor chain before choosing the nearest ARG.
+    if _ancestor(node, ("command_name",)) is not None:
+        return node, "NAME", None
+    unsupported = _ancestor(node, ("process_substitution", "herestring_redirect", "ansi_c_string", "translated_string", "brace_expression"))
+    if unsupported is not None:
+        raise ShellSourceError("UNSUPPORTED_SOURCE_ENVELOPE", f"context occurrence is inside {unsupported.type}", Span(unsupported.start_byte, unsupported.end_byte))
+    expansion = _ancestor(node, ("expansion",))
+    if expansion is not None:
+        raise ShellSourceError("DATA_PARAMETER_SYNTAX", "context data cannot complete a braced parameter envelope", Span(expansion.start_byte, expansion.end_byte))
     current = node
     while current is not None:
         parent = current.parent
@@ -124,7 +136,17 @@ def _choose(node: Node, source: bytes, arithmetic: bool) -> tuple[Node, str, str
 
 def establish_ownership(bound: BoundTemplate) -> Ownership:
     documents = collect_documents(bound)
-    root = parse(documents.skeleton)
+    recovery_markers: tuple[Span, ...] = ()
+    try:
+        root = parse(documents.skeleton)
+    except ShellSourceError as error:
+        if error.code != "INVALID_TEMPLATE_SYNTAX":
+            raise
+        recovered = recovery_projection(bound, documents.skeleton)
+        if recovered is None:
+            raise
+        projection, recovery_markers = recovered
+        root = parse(projection)
     grouped: dict[tuple[int, int, str, int, str | None, str | None, tuple[int, int] | None], list[int]] = {}
     for occurrence in bound.occurrences:
         context = documents.contexts[occurrence.span.start]
@@ -148,4 +170,4 @@ def establish_ownership(bound: BoundTemplate) -> Ownership:
             # neither may absorb the other's DATA/events.
             if not (left.span.start <= right.span.start and left.span.end >= right.span.end):
                 raise ShellSourceError("CROSSING_OWNERS", "original word owners cross rather than nest", right.span)
-    return Ownership(documents, words)
+    return Ownership(documents, words, recovery_markers)

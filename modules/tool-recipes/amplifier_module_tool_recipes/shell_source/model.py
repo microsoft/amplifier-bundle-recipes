@@ -155,6 +155,10 @@ class FieldProjection:
     # A hole-free original NAME= prefix, when the ARG itself is assignment
     # shaped. True ASSIGN owners contain only the RHS and use role=ASSIGN.
     authored_assignment_prefix: str | None = None
+    # Exact pre-encoding field events (including authored quote/escape bytes
+    # and consumed continuations), excluding only field-separator whitespace.
+    # Raw tilde lookup requests cannot be derived from normalized expansions.
+    source_events: tuple[Event, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -60,3 +60,11 @@ def test_empty_fence_cannot_complete_dollar_parameter_syntax():
     result = cooked('echo "${{x}}HOME"', "")
     assert fields(result) == ["$HOME"]
     assert not any(p.kind == "expansion" for f in result.pieces if isinstance(f, FieldProjection) for p in f.parts)
+
+
+def test_raw_field_events_preserve_quotes_escape_and_original_parameter_spelling():
+    result = cooked('echo ""~bob$SFX/{{x}} next', "data")
+    field = next(f for f in result.pieces if isinstance(f, FieldProjection))
+    from amplifier_module_tool_recipes.shell_source.model import TextEvent
+    assert "".join(e.text for e in field.source_events if isinstance(e, TextEvent)) == '""~bob$SFX/data'
+    assert "${SFX}" in "".join(p.text for p in field.parts)

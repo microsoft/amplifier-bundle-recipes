@@ -50,6 +50,7 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
     mode = "ordinary"
     forced = False
     index = 0
+    field_start = 0
 
     def position() -> int:
         return sum(len(part.text.encode("utf-8")) for part in parts)
@@ -62,7 +63,7 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
         for char in text:
             parts.append(FieldPart("literal", char, quoted, data, owners))
 
-    def flush() -> None:
+    def flush(stop: int) -> None:
         nonlocal forced
         if parts or forced:
             prefix: list[str] = []
@@ -74,7 +75,7 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
                     break
             spelling = "".join(prefix)
             assigned = spelling if _ASSIGNMENT_PREFIX.fullmatch(spelling) else None
-            pieces.append(FieldProjection(tuple(parts), tuple(field_fences), role, forced, assigned))
+            pieces.append(FieldProjection(tuple(parts), tuple(field_fences), role, forced, assigned, events[field_start:stop]))
         parts.clear()
         field_fences.clear()
         forced = False
@@ -94,7 +95,7 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
         char = event.text
         if event.kind == "data":
             if mode == "ordinary" and role in ("ARG", "FOR_VALUES") and char in " \t":
-                flush()
+                flush(index)
                 owners = [index]
                 end = index + 1
                 while end < len(events) and isinstance(events[end], TextEvent) and events[end].kind == "data" and events[end].text in " \t":
@@ -103,6 +104,7 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
                 # DATA layout has field semantics; it never creates operators.
                 pieces.append(FieldSeparator(" ", tuple(owners), False))
                 index = end
+                field_start = end
                 continue
             literal(char, mode != "ordinary", True, (index,))
             index += 1
@@ -150,12 +152,13 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
             index = following
             continue
         if char in " \t" and mode == "ordinary" and role in ("ARG", "FOR_VALUES"):
-            flush()
+            flush(index)
             end = index + 1
             while end < len(events) and isinstance(events[end], TextEvent) and events[end].kind == "trusted" and events[end].text in " \t":
                 end += 1
             pieces.append(FieldSeparator("".join(events[i].text for i in range(index, end)), tuple(range(index, end)), True))
             index = end
+            field_start = end
             continue
         if char == "$":
             # Fences, even EMPTY, terminate a trusted simple parameter name.
@@ -190,5 +193,5 @@ def cook_island(events: tuple[Event, ...], role: str, *, expansion_at: Callable[
         index += 1
     if mode != "ordinary":
         raise ShellSourceError("UNCLOSED_WORD", "word owner did not close its authored quote")
-    flush()
+    flush(len(events))
     return CookedIsland(tuple(pieces), tuple(consumed), tuple(fences))
