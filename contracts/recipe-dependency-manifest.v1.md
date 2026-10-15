@@ -56,10 +56,31 @@ Ratified basis: owner Phase-1 decisions, 2026-09-01 ("go").
 
 10. **Legacy mode is labeled and confined.** A legacy recipe runs ONLY through
     the embedded Amplifier tool adapter, in explicitly labeled caller-bound
-    mode, with a deprecation warning. Its behavior there is byte-identical to
-    pre-contract behavior (including failure when the caller lacks a referenced
-    agent). The standalone `recipe-runner` CLI rejects legacy recipes with an
-    actionable error.
+    mode, with a deprecation warning. Except for the Bash rule below, its
+    behavior there is byte-identical to pre-contract behavior (including
+    failure when the caller lacks a referenced agent). The standalone
+    `recipe-runner` CLI rejects legacy recipes with an actionable error.
+
+    **Bash rule (legacy and schema-v2).** Context interpolation uses the
+    existing converters and must prevent context text from introducing
+    executable Bash syntax into the initial shell source. Preserve benign
+    SP/TAB argument splitting, simple globbing and tilde behavior without
+    recipe migrations: unquoted red blue remains two arguments; context text
+    supplied as quoted data, such as $(printf INJECTED), remains literal
+    rather than introducing an executed command. Benign compatibility is
+    required for existing recipe patterns, not only the examples listed
+    here. An unsupported required benign pattern is an implementation
+    blocker; changing the recipe is not a remedy. Only command-source and
+    associated diagnostic/log-record changes needed for this confinement
+    are permitted, without changing existing serialized successful result
+    payloads or golden baselines. Unknown cases fail closed before the Bash
+    step launches, through existing step error policies, with no raw-
+    substitution fallback. Such refusal is not a compatibility exception
+    for required benign behavior. This does not promise support for every
+    possible Bash value or adopt changes to conversion or newline semantics;
+    existing converters and actual pre-contract behavior remain the basis.
+    The guarantee is initial shell-source confinement, not a sandbox for
+    trusted eval, bash -c, builtins or application re-evaluation.
 
 11. **No namespace inference.** The runner never infers dependencies from
     agent-name namespaces (e.g. `foundation:*`).
@@ -110,4 +131,11 @@ BAD:
 
 ## Changelog
 
+- 2026-10-14 — Applied the owner-ratified Bash compatibility policy from
+  `contracts/recipe-dependency-manifest.v2-candidate.md`: preserve benign
+  recipe patterns without migrations, exclude data-origin Bash syntax injection
+  from compatibility, and permit only necessary command-source/diagnostic-record
+  differences. Other invariants and DRAFT status remain unchanged; no passing
+  implementation, golden change, schema activation or verification waiver is
+  implied.
 - 2026-09-01 — Initial DRAFT authored from owner-ratified Phase-1 decisions.
