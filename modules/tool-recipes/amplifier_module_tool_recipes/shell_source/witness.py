@@ -60,7 +60,11 @@ def _role(node: Node) -> str | None:
         return "FOR_VALUES"
     if (
         parent.type in ("binary_expression", "unary_expression")
-        and field in ("left", "right", "argument")
+        and (
+            field in ("left", "right", "argument")
+            or parent.type == "unary_expression"
+            and field is None
+        )
         and node.type
         in (
             "word",
@@ -437,7 +441,11 @@ def _slot_boundaries(root: Node, source: bytes, edits: tuple[_Edit, ...]) -> Non
             continue
         text = source[span.start : span.end]
         if replacement.kind == "number":
-            if not re.fullmatch(rb"-?[0-9]+", text):
+            decimal = rb"[+-]?(?:0|[1-9][0-9]*)"
+            signed_rvalue = rb"\([+-](?:0|[1-9][0-9]*)\)"
+            if not re.fullmatch(decimal, text) and not (
+                replacement.role == "NUMBER" and re.fullmatch(signed_rvalue, text)
+            ):
                 _fail("numeric replacement is not a closed decimal source token", span)
             if not any(
                 node.start_byte == span.start and node.end_byte == span.end

@@ -350,3 +350,52 @@ def test_forged_tail_certificate_cannot_change_authored_boundaries(
     edits = (Replacement(owner.span, text, "word", owner.role, tail_lfs=count),)
     with pytest.raises(ShellSourceError):
         verify_program(bound, ownership, edits, emitted(bound, edits))
+
+
+@pytest.mark.parametrize(
+    "source,text",
+    [
+        ("echo $((1-{{x}}))", "(-5)"),
+        ("echo $((1+{{x}}))", "(+3)"),
+        ("echo $((1*{{x}}))", "(-0)"),
+        ("[[ {{x}} -eq 3 ]]", "+3"),
+    ],
+)
+def test_signed_decimal_is_one_complete_arithmetic_rvalue(source, text):
+    verify_program(*word_case(source, text, kind="number"))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "(1+2)",
+        "(+3);touch marker",
+        "(-x)",
+        "(-2+3)",
+        "((+3))",
+        "(+03)",
+        "03",
+        "0x10",
+        "(-3",
+        "+3)",
+    ],
+)
+def test_signed_numeric_wrapper_does_not_mask_other_expression_syntax(text):
+    with pytest.raises(ShellSourceError):
+        verify_program(*word_case("echo $((1+{{x}}))", text, kind="number"))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '[ -f "{{x}}" ]',
+        '[ ! -f "{{x}}" ]',
+        '[[ -n "{{x}}" ]]',
+        'if [ -z "{{x}}" ]; then echo empty; else echo present; fi',
+    ],
+)
+def test_unary_test_unnamed_operand_retains_its_actual_operator(source):
+    verify_program(*word_case(source, "'path with spaces'"))
+    for corrupt in ("x -o y", "$(touch marker)"):
+        with pytest.raises(ShellSourceError):
+            verify_program(*word_case(source, corrupt))
