@@ -32,7 +32,7 @@ def test_mirror_detects_and_repairs_modified_missing_and_stale_files(tmp_path):
     assert (mirror / "policy.py").read_bytes() == b"ANSWER = 0\n"
     assert sync.synchronize(tmp_path) == expected
     assert sync.synchronize(tmp_path, check=True) == []
-    assert (mirror / "policy.py").read_bytes() == sync.HEADER + (source / "policy.py").read_bytes()
+    assert (mirror / "policy.py").read_bytes() == (source / "policy.py").read_bytes()
     assert (mirror / "note.txt").read_text() == "not generated"
 
 
