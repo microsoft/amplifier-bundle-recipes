@@ -169,6 +169,15 @@ def establish_ownership(bound: BoundTemplate) -> Ownership:
             continue
         node = root.descendant_for_byte_range(occurrence.span.start, occurrence.span.end)
         owner, role, operator = _choose(node, documents.skeleton, context.mode == "arithmetic")
+        if role == "NUMBER":
+            current = owner
+            while current.parent is not None and current.parent.type not in ("arithmetic_expansion", "arithmetic_command"):
+                parent = current.parent
+                operator_node = parent.child_by_field_name("operator")
+                spelling = documents.skeleton[operator_node.start_byte:operator_node.end_byte] if operator_node is not None else b""
+                if parent.type == "subscript" or spelling in (b"++", b"--") or (_field(current) == "left" and spelling in (b"=", b"+=", b"-=", b"*=", b"/=", b"%=", b"<<=", b">>=", b"&=", b"|=", b"^=")):
+                    raise ShellSourceError("NUMERIC_OWNER", "numeric occurrence is not a complete arithmetic rvalue", occurrence.span)
+                current = parent
         if owner.start_byte > occurrence.span.start or owner.end_byte < occurrence.span.end:
             raise ShellSourceError("SPLIT_OCCURRENCE", "CST owner does not contain the entire occurrence", occurrence.span)
         command = _command(owner, documents.skeleton)

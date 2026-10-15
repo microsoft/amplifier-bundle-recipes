@@ -92,6 +92,13 @@ def read_field(source: str) -> tuple[ReadPart, ...]:
                 output.append(ReadPart("expansion", spelling, mode == "double"))
                 index = end
                 continue
+            if mode == "ordinary" and char == "{":
+                brace = re.match(rb"\{[A-Za-z0-9_./:+-]+(?:,[A-Za-z0-9_./:+-]+)+\}", raw[index:])
+                if brace is not None:
+                    spelling = brace.group().decode()
+                    output.append(ReadPart("expansion", spelling, False))
+                    index += len(brace.group())
+                    continue
         character = raw[index:].decode()[0]
         output.append(ReadPart("literal", character, mode != "ordinary"))
         index += len(character.encode())
@@ -154,6 +161,8 @@ def _actual_patterns(parts: tuple[ReadPart, ...]) -> tuple[tuple[int, str], ...]
 def verify_field(field: FieldProjection, source: str) -> None:
     actual = read_field(source)
     expected = tuple(ReadPart(p.kind, p.text, p.quoted) for p in field.parts)
+    if not expected and field.forced:
+        expected = (ReadPart("literal", "", True),)
     if _semantic(actual) != _semantic(expected):
         raise ShellSourceError("WORD_WITNESS", "emitted literal/expansion/empty-word semantics differ")
     wanted = tuple((atom.span.start, atom.text) for atom in simple_patterns(field.parts))
