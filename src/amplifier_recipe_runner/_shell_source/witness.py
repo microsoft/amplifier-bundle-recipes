@@ -94,6 +94,7 @@ def _role(node: Node) -> str | None:
                 "number",
                 "command_substitution",
                 "arithmetic_expansion",
+                "regex",
             )
             or _conditional_tilde_word(node)
         )
@@ -103,6 +104,9 @@ def _role(node: Node) -> str | None:
             if ancestor.type == "arithmetic_expansion":
                 return None
             if ancestor.type == "test_command":
+                operator = parent.child_by_field_name("operator")
+                if field == "right" and operator is not None and operator.type == "=~":
+                    return "TEST_REGEX"
                 return "TEST_DATA"
             ancestor = ancestor.parent
     return None
@@ -584,6 +588,26 @@ class _Program:
             return ("number-data",)
         role = None if ignore_role else _role(node)
         if role is not None and role != "DECLARG":
+            if role == "TEST_REGEX":
+                from .regex import read_regex
+
+                # Do not trust the opaque regex terminal to reveal expansions.
+                # Reparse each independently read atom as a normal shell word;
+                # keep nested command/operator structure, not just atom text.
+                raw = self.raw(node)
+                if self.authored is not None:
+                    raw = self.authored[node.start_byte:node.end_byte]
+                nested = []
+                for part in read_regex(raw.decode()):
+                    if part.kind != "expansion":
+                        continue
+                    mini = b"__recipe_word__ " + part.text.encode()
+                    docs = collect_documents(BoundTemplate(mini.decode(), (), ()))
+                    tree = parse(docs.skeleton)
+                    program = _Program(docs.skeleton, docs, frozenset(), mini if self.authored is not None else None)
+                    argument = tree.named_children[0].children_by_field_name("argument")[0]
+                    nested.extend(program.inside_word(argument))
+                return (role, tuple(nested))
             document = next(
                 (
                     d

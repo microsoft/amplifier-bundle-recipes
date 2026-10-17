@@ -17,7 +17,7 @@ Conventions for any agent (or human) changing `amplifier-bundle-recipes`.
 Run all four before opening a PR:
 
 ```bash
-"${AMPLIFIER_PYTHON:-python3}" -m pytest modules/tool-recipes -q
+PYTHONPATH=src:modules/tool-recipes "${AMPLIFIER_PYTHON:-python3}" -m pytest modules/tool-recipes -q
 PYTHONPATH=src uvx --with pyyaml --with click pytest src/amplifier_recipe_runner/tests -q
 PYTHONPATH=src:modules/tool-recipes "${AMPLIFIER_PYTHON:-python3}" conformance/kit/kit.py --run
 PYTHONPATH=src:modules/tool-recipes "${AMPLIFIER_PYTHON:-python3}" conformance/legacy-compat/harness.py --assert

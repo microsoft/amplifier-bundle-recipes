@@ -200,7 +200,12 @@ def _actual_patterns(parts: tuple[ReadPart, ...]) -> tuple[tuple[int, str], ...]
 
 
 def verify_field(field: FieldProjection, source: str) -> None:
-    actual = read_field(source)
+    if field.role == "TEST_REGEX":
+        from .regex import read_regex
+
+        actual = read_regex(source)
+    else:
+        actual = read_field(source)
     expected = tuple(ReadPart(p.kind, p.text, p.quoted) for p in field.parts)
     if not expected and field.forced:
         expected = (ReadPart("literal", "", True),)
@@ -208,6 +213,20 @@ def verify_field(field: FieldProjection, source: str) -> None:
         raise ShellSourceError(
             "WORD_WITNESS", "emitted literal/expansion/empty-word semantics differ"
         )
+    if field.role == "TEST_REGEX":
+        # ERE protection is not a pathname-glob mask. In particular dots,
+        # anchors, grouping and captures retain their authored protection.
+        # This comparison reads emitted bytes; it never calls the encoder.
+        def protection(parts):
+            return tuple(
+                (i, p.text, p.protected)
+                for i, p in enumerate(parts)
+                if p.kind == "literal" and p.text in ".^$*+?[](){}|\\"
+            )
+
+        if protection(actual) != protection(expected):
+            raise ShellSourceError("REGEX_WITNESS", "emitted ERE protection differs")
+        return
     wanted = tuple(
         (atom.span.start, atom.text) for atom in simple_patterns(field.parts)
     )

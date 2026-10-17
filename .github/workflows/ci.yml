@@ -86,6 +86,8 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: pytest modules/tool-recipes (AGENTS.md gate 1)
+        env:
+          PYTHONPATH: src:modules/tool-recipes
         # Not `uv sync`: modules/tool-recipes/pyproject.toml resolves
         # amplifier-core through [tool.uv.sources] to ../../../amplifier-core,
         # a sibling checkout that exists on a developer's machine and never on

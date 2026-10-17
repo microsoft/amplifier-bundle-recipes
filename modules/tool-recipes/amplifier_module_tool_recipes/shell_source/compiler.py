@@ -278,7 +278,17 @@ def compile_bound(bound: BoundTemplate) -> CompiledSource:
                 else source[span.start : span.end].decode()
             ),
         )
+        if owner.role == "TEST_REGEX":
+            from .regex import parameter_atoms
+
+            atoms.update(parameter_atoms(bound, owner.span))
         cooked = cook_island(events, owner.role, expansion_at=atoms.get)
+        if owner.role == "TEST_REGEX":
+            from .regex import compile_regex
+
+            result = compile_regex(owner.span, cooked, raw_envelopes=_raw_envelopes)
+            cache[owner.span] = result
+            return result
         pieces = list(cooked.pieces)
         if not pieces and owner.role == "ASSIGN":
             pieces = [FieldProjection((), (), "ASSIGN", True, None, events, 0)]

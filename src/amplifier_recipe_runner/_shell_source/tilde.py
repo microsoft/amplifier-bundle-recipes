@@ -111,7 +111,13 @@ def _left(field: FieldProjection) -> _Source:
     return _Source(raw, tuple(trusted), tuple(protected), atoms, frozenset(fences))
 
 
-def _right(text: str) -> _Source:
+def _right(text: str, *, role: str | None = None) -> _Source:
+    if role == "TEST_REGEX":
+        from .regex import read_regex
+
+        atoms = {}
+        read_regex(text, expansions=atoms)
+        return _Source(text, (True,) * len(text), (False,) * len(text), atoms)
     """Derive actual emitted atoms from a fresh parse, not encoder annotations."""
     prefix = b"__recipe_tilde__ "
     raw = text.encode("utf-8", errors="strict")
@@ -401,7 +407,7 @@ def _profiles(role: str, prefix: str | None) -> tuple[_Profile, ...]:
             _Profile(f"{role.lower()}:{mode}", prefix is not None, False, False, posix)
             for mode, posix in (("default", False), ("posix", True))
         )
-    if role == "TEST_DATA":
+    if role in ("TEST_DATA", "TEST_REGEX"):
         # execute_cmd.c:3916,3958-3965 -> subst.c:4117-4131 calls MAIN
         # directly, adding NOSPLIT2 only. Its Q_ARITH variant does not set
         # either Q_DOUBLE_QUOTES or Q_HERE_DOCUMENT in the tilde gate.
@@ -751,7 +757,7 @@ def verify_tildes(field: FieldProjection, emitted: str) -> None:
     state induction remains the enclosing compiler's obligation.
     """
     _, expected = _read(field, _left(field), original=True)
-    _, actual = _read(field, _right(emitted), original=False)
+    _, actual = _read(field, _right(emitted, role=field.role), original=False)
     if expected != actual:
         _fail(
             "TILDE_WITNESS",

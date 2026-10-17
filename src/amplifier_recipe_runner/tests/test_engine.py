@@ -255,6 +255,27 @@ class TestJsonHandling:
 
 
 class TestBashSteps:
+    @pytest.mark.parametrize("rhs,pattern,expected", [
+        ("{{pattern}}", "a.c", "yes<abc>"),
+        ("{{pattern}}", "^a.c$", "yes<abc>"),
+        ('"{{pattern}}"', "a.c", "no"),
+        ("{{pattern}}", "^(a)(bc)$", "yes<abc><a><bc>"),
+    ])
+    def test_regex_interpolation_preserves_quotes_and_captures(
+        self, tmp_path, rhs, pattern, expected
+    ):
+        command = (
+            "if [[ abc =~ " + rhs + " ]]; then printf yes; "
+            "printf '<%s>' \"${BASH_REMATCH[@]}\"; else printf no; fi"
+        )
+        outcome, context = run_program(
+            "steps:\n  - id: regex\n    type: bash\n    command: " + json.dumps(command)
+            + "\n    output: shown\n",
+            workspace=tmp_path, context={"pattern": pattern},
+        )
+        assert outcome.status == "succeeded"
+        assert context["shown"] == expected
+
     def test_stdout_becomes_the_step_output(self, tmp_path: Path) -> None:
         outcome, ctx = run_program(
             """

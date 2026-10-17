@@ -188,6 +188,28 @@ class TestBashStepExecution:
         assert result.stdout.strip() == "world"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("rhs,pattern,expected", [
+        ("{{pattern}}", "a.c", "yes<abc>"),
+        ("{{pattern}}", "^a.c$", "yes<abc>"),
+        ('"{{pattern}}"', "a.c", "no"),
+        ("{{pattern}}", "^(a)(bc)$", "yes<abc><a><bc>"),
+    ])
+    async def test_regex_interpolation_preserves_quotes_and_captures(
+        self, executor, project_path, rhs, pattern, expected
+    ):
+        command = (
+            "if [[ abc =~ " + rhs + " ]]; then printf yes; "
+            "printf '<%s>' \"${BASH_REMATCH[@]}\"; else printf no; fi"
+        )
+        result = await executor._execute_bash_step(
+            Step(id="regex", type="bash", command=command),
+            {"pattern": pattern}, project_path,
+        )
+        assert result.stdout == expected
+        assert result.stderr == ""
+        assert result.exit_code == 0
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("command", "payload", "expected"),
         [

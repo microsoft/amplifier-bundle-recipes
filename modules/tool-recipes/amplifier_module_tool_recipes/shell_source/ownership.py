@@ -215,6 +215,8 @@ def _choose(
                     current,
                     "TEST_NUMBER"
                     if spelling in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge")
+                    else "TEST_REGEX"
+                    if spelling == "=~" and field == "right"
                     else "TEST_DATA",
                     spelling,
                 )
