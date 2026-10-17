@@ -146,6 +146,20 @@ def test_closed_regex_reference_matrix(case, lhs, rhs, pattern, native):
     assert run_bash(candidate) == run_bash(reference)
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("value", ["a'b", "a'.b", "λ'.空"])
+def test_quoted_regex_apostrophe_keeps_literal_meaning(value, native):
+    source = (
+        'if [[ "' + value + '" =~ "{{p}}" ]]; then printf yes; '
+        "else printf no; fi"
+    )
+    converter = native_string if native else object.__new__(RecipeExecutor).substitute_variables
+    reference = converter(source, {"p": value})
+    assert run_bash(reference) == (b"yes", b"", 0)
+    candidate = prepare_with_converter(source, {"p": value}, native)
+    assert run_bash(candidate) == run_bash(reference)
+
+
 REGEX_CONFINEMENT_PATTERNS = [
     "$(touch marker)", "$((x=7))", "<(touch marker)", "`touch marker`",
     "'\";touch marker", "x ]] || touch marker #", "x && touch marker",

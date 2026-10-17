@@ -218,9 +218,12 @@ def verify_field(field: FieldProjection, source: str) -> None:
         # anchors, grouping and captures retain their authored protection.
         # This comparison reads emitted bytes; it never calls the encoder.
         def protection(parts):
+            # Empty quote scaffolding has no ERE character position. Genuine
+            # empty-field intent was checked separately by _semantic above.
+            characters = (p for p in parts if p.kind != "literal" or p.text)
             return tuple(
                 (i, p.text, p.protected)
-                for i, p in enumerate(parts)
+                for i, p in enumerate(characters)
                 if p.kind == "literal" and p.text in ".^$*+?[](){}|\\-:="
             )
 

@@ -256,8 +256,12 @@ def compile_regex(span: Span, cooked, *, raw_envelopes) -> Replacement:
             # The pinned conditional grammar rejects a single-quoted lone
             # backslash; the equivalent DQ spelling has a complete CST.
             output.append('"\\\\"')
-        elif part.quoted or not part.text:
-            output.append(quote(part.text))
+        elif part.quoted or not part.text or part.text == "'":
+            # Closed DQ literals avoid the pinned grammar's rejection of
+            # single-quote break sequences while retaining ERE protection.
+            literal = part.text.replace("\\", "\\\\").replace('"', '\\"')
+            literal = literal.replace("$", "\\$").replace("`", "\\`")
+            output.append('"' + literal + '"')
         elif part.text.isalnum() or part.text in "_./:^$*+?[](){}|,!=~-":
             output.append(part.text)
         else:

@@ -43,6 +43,14 @@ def test_forged_regex_bytes_fail_independent_local_witness(source, value, forged
         verify_field(field, forged)
 
 
+def test_empty_quote_scaffolding_does_not_shift_regex_protection():
+    compiled = compile_bound(bind('[[ abc =~ "{{p}}" ]]', lambda _: "a'.b"))
+    field = compiled.replacements[0].fields[0]
+    verify_field(field, '"a\'"' + '""' + '".b"')
+    with pytest.raises(ShellSourceError):
+        verify_field(field, '"a\'".b')
+
+
 @pytest.mark.parametrize("forged", [
     "a${HOME}bc", "a$(touch marker)bc", "a`touch marker`bc",
     "a$((1+2))bc", "a<(touch marker)bc", "abc || true",
