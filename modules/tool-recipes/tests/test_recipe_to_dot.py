@@ -21,7 +21,7 @@ from amplifier_module_tool_recipes.recipe_to_dot import (
 # pytest can parametrize over them without a fixture).
 # ---------------------------------------------------------------------------
 
-_BUNDLE_ROOT = Path("/home/bkrabach/dev/recipe-dot-docs/amplifier-bundle-recipes")
+_BUNDLE_ROOT = Path(__file__).resolve().parents[3]
 _EXAMPLE_YAMLS: list[str] = sorted(
     glob.glob(str(_BUNDLE_ROOT / "examples" / "*.yaml"))
     + glob.glob(str(_BUNDLE_ROOT / "recipes" / "*.yaml"))

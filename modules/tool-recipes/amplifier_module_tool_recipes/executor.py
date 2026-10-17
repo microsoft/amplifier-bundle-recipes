@@ -11,6 +11,7 @@ import re
 import shutil
 import sys
 import uuid
+from collections.abc import Callable
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -74,6 +75,15 @@ _WINDOWS_PROGRAM_ROOT_VARS = (
     "ProgramFiles",
     "ProgramFiles(x86)",
 )
+
+
+def _substitute_shell_variables(
+    template: str, resolve_variable: Callable[[str], str]
+) -> str:
+    """Prepare original occurrences with the legacy STRING converter."""
+    from .shell_source import prepare
+
+    return prepare(template, resolve_variable)
 
 
 def _model_role_label(role: Any) -> str | None:
@@ -4898,9 +4908,26 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
             asyncio.TimeoutError: If command exceeds timeout
         """
         assert step.command is not None, "Bash step must have command"
+        from .shell_source.model import ShellSourceError
 
-        # Substitute variables in command
-        command = self.substitute_variables(step.command, context)
+        def refused(error: ShellSourceError) -> BashResult:
+            message = f"Step '{step.id}': refused shell preparation: {error}"
+            if step.on_error == "fail":
+                raise ValueError(message) from error
+            if step.on_error == "skip_remaining":
+                raise SkipRemainingError(message) from error
+            logger.warning("%s (on_error=continue, absorbed)", message)
+            return BashResult(stdout="", stderr=message, exit_code=_EXEC_FAILURE_EXIT_CODE)
+
+        try:
+            command = _substitute_shell_variables(
+                step.command,
+                lambda var_ref: self.substitute_variables(
+                    f"{{{{{var_ref}}}}}", context
+                ),
+            )
+        except ShellSourceError as error:
+            return refused(error)
         if record_sink is not None:
             record_sink["command"] = command
 
@@ -4958,8 +4985,11 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
         # this is resolved per-platform (and why WSL is rejected on Windows).
         try:
             try:
+                from .shell_source.runtime import qualify_template_runtime
+                bash_executable = _resolve_bash()
+                qualify_template_runtime(step.command, bash_executable)
                 process = await asyncio.create_subprocess_exec(
-                    _resolve_bash(),
+                    bash_executable,
                     "-c",
                     command,
                     stdout=asyncio.subprocess.PIPE,
@@ -4967,6 +4997,8 @@ DO NOT return the JSON as a string or with escape characters. Return actual JSON
                     cwd=str(cwd),
                     env=env,
                 )
+            except ShellSourceError as error:
+                return refused(error)
             except OSError as exec_error:
                 # The command never started: the OS refused the exec itself
                 # (E2BIG from an oversized command, ENOENT, EACCES, EMFILE...).

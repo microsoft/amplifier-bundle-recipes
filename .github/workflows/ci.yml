@@ -48,7 +48,8 @@ jobs:
 
   runner-tests:
     name: Tests (runner library)
-    runs-on: ubuntu-latest
+    # This image supplies the qualified GNU Bash 5.2.21 caller profile.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -65,13 +66,15 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
+          python3 scripts/shell-source-requirements.py > "$RUNNER_TEMP/recipe-parser-requirements.txt"
           uv run --python ${{ matrix.python }} --no-project \
+            --with-requirements "$RUNNER_TEMP/recipe-parser-requirements.txt" \
             --with pyyaml --with click --with "pytest>=8" \
             python -m pytest src/amplifier_recipe_runner/tests -q
 
   module-tests:
     name: Tests (tool-recipes + conformance kit)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -83,6 +86,8 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: pytest modules/tool-recipes (AGENTS.md gate 1)
+        env:
+          PYTHONPATH: src:modules/tool-recipes
         # Not `uv sync`: modules/tool-recipes/pyproject.toml resolves
         # amplifier-core through [tool.uv.sources] to ../../../amplifier-core,
         # a sibling checkout that exists on a developer's machine and never on
@@ -92,7 +97,9 @@ jobs:
         # pyproject's amplifier-foundation dependency); the cost is that a
         # change in either repo can turn this job red on an unrelated PR.
         run: |
+          python3 scripts/shell-source-requirements.py > "$RUNNER_TEMP/recipe-parser-requirements.txt"
           uv run --python ${{ matrix.python }} --no-project \
+            --with-requirements "$RUNNER_TEMP/recipe-parser-requirements.txt" \
             --with "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
             --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
             --with "pytest>=8" --with "pytest-asyncio>=0.23" \
@@ -103,7 +110,9 @@ jobs:
         env:
           PYTHONPATH: src:modules/tool-recipes
         run: |
+          python3 scripts/shell-source-requirements.py > "$RUNNER_TEMP/recipe-parser-requirements.txt"
           uv run --python ${{ matrix.python }} --no-project \
+            --with-requirements "$RUNNER_TEMP/recipe-parser-requirements.txt" \
             --with "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
             --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
             --with pyyaml --with click \
@@ -111,7 +120,7 @@ jobs:
 
   legacy-compat:
     name: Conformance (legacy-compat)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -136,7 +145,9 @@ jobs:
         env:
           PYTHONPATH: src:modules/tool-recipes
         run: |
+          python3 scripts/shell-source-requirements.py > "$RUNNER_TEMP/recipe-parser-requirements.txt"
           uv run --python ${{ matrix.python }} --no-project \
+            --with-requirements "$RUNNER_TEMP/recipe-parser-requirements.txt" \
             --with "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
             --with "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main" \
             --with pyyaml --with click \

@@ -20,6 +20,7 @@ Nothing here spawns a model: agent steps run against an injected double.
 from __future__ import annotations
 
 import asyncio
+import json
 import textwrap
 from collections.abc import Mapping
 from pathlib import Path
@@ -254,6 +255,46 @@ class TestJsonHandling:
 
 
 class TestBashSteps:
+    @pytest.mark.parametrize("rhs,pattern,expected", [
+        ("{{pattern}}", "a.c", "yes<abc>"),
+        ("{{pattern}}", "^a.c$", "yes<abc>"),
+        ('"{{pattern}}"', "a.c", "no"),
+        ("{{pattern}}", "^(a)(bc)$", "yes<abc><a><bc>"),
+    ])
+    def test_regex_interpolation_preserves_quotes_and_captures(
+        self, tmp_path, rhs, pattern, expected
+    ):
+        command = (
+            "if [[ abc =~ " + rhs + " ]]; then printf yes; "
+            "printf '<%s>' \"${BASH_REMATCH[@]}\"; else printf no; fi"
+        )
+        outcome, context = run_program(
+            "steps:\n  - id: regex\n    type: bash\n    command: " + json.dumps(command)
+            + "\n    output: shown\n",
+            workspace=tmp_path, context={"pattern": pattern},
+        )
+        assert outcome.status == "succeeded"
+        assert context["shown"] == expected
+
+    def test_regex_refusal_reaches_error_policy_without_launch(self, tmp_path, monkeypatch):
+        async def unexpected(*args, **kwargs):
+            pytest.fail("unproved regex was launched")
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected)
+        emitter = CollectingEmitter()
+        outcome, context = run_program(
+            "steps:\n  - id: regex\n    type: bash\n"
+            "    command: '[[ abc =~ {{pattern}} ]]'\n"
+            "    on_error: continue\n    output_exit_code: code\n",
+            workspace=tmp_path, context={"pattern": "${HOME}"}, emit=emitter,
+        )
+        assert outcome.status == "succeeded"
+        assert context["code"] == "126"
+        assert any(
+            kind == "step:failed" and "WORD_WITNESS" in data.get("error", "")
+            for kind, data in emitter.events
+        )
+
     def test_stdout_becomes_the_step_output(self, tmp_path: Path) -> None:
         outcome, ctx = run_program(
             """
@@ -281,6 +322,133 @@ class TestBashSteps:
             context={"who": "world"},
         )
         assert ctx["greeting"] == "world\n"
+
+    @pytest.mark.parametrize(
+        ("command", "payload", "marker", "expected"),
+        [
+            (
+                'printf "%s" "{{payload}}"',
+                "$(touch injected-double)",
+                "injected-double",
+                "$(touch injected-double)",
+            ),
+            (
+                "printf '%s' '{{payload}}'",
+                "'; touch injected-single; printf '",
+                "injected-single",
+                "'; touch injected-single; printf '",
+            ),
+            (
+                "printf '%s' {{payload}}",
+                "; touch injected-unquoted",
+                "injected-unquoted",
+                ";touchinjected-unquoted",
+            ),
+            ("printf '<%s>' {{payload}}", "alpha\t beta", "injected-unquoted", "<alpha><beta>"),
+        ],
+    )
+    def test_variable_substitution_cannot_inject_shell_syntax(
+        self,
+        tmp_path: Path,
+        command: str,
+        payload: str,
+        marker: str,
+        expected: str,
+    ) -> None:
+        outcome, ctx = run_program(
+            f"""
+            steps:
+              - id: safe
+                type: bash
+                command: {json.dumps(command)}
+                output: shown
+            """,
+            workspace=tmp_path,
+            context={"payload": payload},
+        )
+
+        assert outcome.status == "succeeded"
+        # SP/TAB in an unquoted DATA island retain ordinary argument boundaries.
+        assert ctx["shown"] == expected
+        assert not (tmp_path / marker).exists()
+
+    def test_unqualified_runtime_is_refused_before_any_process(self, tmp_path: Path, monkeypatch):
+        wrapper = tmp_path / "bash-wrapper"
+        wrapper.write_text("#!/bin/sh\n# @(#)Bash version 5.2.21(1) release GNU\n")
+        monkeypatch.setattr("amplifier_recipe_runner.engine.resolve_bash", lambda: str(wrapper))
+        async def unexpected(*args, **kwargs):
+            pytest.fail("unqualified runtime was launched")
+        monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected)
+        outcome, _ = run_program("steps:\n  - id: safe\n    type: bash\n    command: echo {{value}}\n", workspace=tmp_path, context={"value": "safe"})
+        assert outcome.status == "failed"
+        assert "BASH_RUNTIME_PROFILE" in str(outcome.error)
+
+    @pytest.mark.parametrize("policy", ["continue", "skip_remaining"])
+    @pytest.mark.parametrize("reason", ["runtime", "source"])
+    def test_refusal_preserves_step_error_policy(self, tmp_path, monkeypatch, policy, reason):
+        wrapper = tmp_path / "bash-wrapper"
+        wrapper.write_text("#!/bin/sh\n")
+        monkeypatch.setattr("amplifier_recipe_runner.engine.resolve_bash", lambda: str(wrapper))
+        async def unexpected(*args, **kwargs):
+            pytest.fail("refused command was launched")
+        monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected)
+        command = "echo {{value}}" if reason == "runtime" else "{{value}}"
+        emitter = CollectingEmitter()
+        outcome, context = run_program(f"steps:\n  - id: safe\n    type: bash\n    command: {json.dumps(command)}\n    on_error: {policy}\n    output_exit_code: code\n", workspace=tmp_path, context={"value": "safe"}, emit=emitter)
+        assert outcome.status == "succeeded"
+        if policy == "continue":
+            assert context["code"] == "126"
+            expected = "BASH_RUNTIME_PROFILE" if reason == "runtime" else "FORBIDDEN_SLOT"
+            assert any(kind == "step:failed" and expected in data.get("error", "") for kind, data in emitter.events)
+        else:
+            assert "code" not in context
+
+    def test_heredoc_variable_cannot_terminate_heredoc(self, tmp_path: Path) -> None:
+        payload = "PAYLOAD_END\ntouch injected-heredoc\nPAYLOAD_END"
+        outcome, ctx = run_program(
+            """
+            steps:
+              - id: safe
+                type: bash
+                command: |
+                  cat <<'PAYLOAD_END'
+                  {{payload}}
+                  PAYLOAD_END
+                output: shown
+            """,
+            workspace=tmp_path,
+            context={"payload": payload},
+        )
+
+        assert outcome.status == "succeeded"
+        assert ctx["shown"] == payload + "\n"
+        assert not (tmp_path / "injected-heredoc").exists()
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ('printf "%s|" "{{value}}"', "line\n|"),
+            ("printf '%s|' '{{value}}'", "line\n|"),
+            ("printf '%s|' {{value}}", "line|"),
+        ],
+    )
+    def test_trailing_newline_follows_legacy_quote_semantics(
+        self, tmp_path: Path, command: str, expected: str
+    ) -> None:
+        outcome, ctx = run_program(
+            f"""
+            steps:
+              - id: shown
+                type: bash
+                command: {json.dumps(command)}
+                output: shown
+            """,
+            workspace=tmp_path,
+            context={"value": "line\n"},
+        )
+
+        assert outcome.status == "succeeded"
+        assert ctx["shown"] == expected
 
     def test_a_nonzero_exit_fails_the_run_by_default(self, tmp_path: Path) -> None:
         outcome, _ctx = run_program(

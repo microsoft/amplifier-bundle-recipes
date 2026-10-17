@@ -77,6 +77,13 @@ from .manifest import check_context_block
 from .manifest import unknown_stage_key_error
 from .manifest import unknown_step_key_error
 
+def _substitute_shell_variables(template: str, context: Mapping[str, Any]) -> str:
+    """Prepare original occurrences with the native STRING converter."""
+    from ._shell_source import prepare
+
+    return prepare(template, lambda name: substitute_variables(f"{{{{{name}}}}}", context))
+
+
 __all__ = [
     "ApprovalLedger",
     "ApprovalPaused",
@@ -1669,7 +1676,21 @@ class StepEngine:
         if not step.command:
             raise UnsupportedStepError(step.id, "it is a bash step with no `command`")
 
-        command = substitute_variables(step.command, context)
+        from ._shell_source.model import ShellSourceError
+
+        def refused(error: ShellSourceError) -> BashOutcome:
+            message = f"Step '{step.id}': refused shell preparation: {error}"
+            if step.on_error == "fail":
+                raise StepFailedError(step.id, message) from error
+            if step.on_error == "skip_remaining":
+                raise SkipRemaining() from error
+            self._emit("step:failed", {"step_id": step.id, "absorbed": True, "error": message})
+            return BashOutcome(stdout="", stderr=message, exit_code=EXEC_FAILURE_EXIT_CODE)
+
+        try:
+            command = _substitute_shell_variables(step.command, context)
+        except ShellSourceError as error:
+            return refused(error)
         command_size = len(command.encode("utf-8", errors="replace"))
         oversized = command_size > COMMAND_SIZE_WARN_BYTES
         if oversized:
@@ -1700,8 +1721,11 @@ class StepEngine:
         effective_timeout = resolve_step_timeout(step, context)
 
         try:
+            from ._shell_source.runtime import qualify_template_runtime
+            bash_executable = resolve_bash()
+            qualify_template_runtime(step.command, bash_executable)
             process = await asyncio.create_subprocess_exec(
-                resolve_bash(),
+                bash_executable,
                 "-c",
                 command,
                 stdout=asyncio.subprocess.PIPE,
@@ -1709,6 +1733,8 @@ class StepEngine:
                 cwd=str(cwd),
                 env=env,
             )
+        except ShellSourceError as error:
+            return refused(error)
         except OSError as exec_error:
             # The command never started: the OS refused the exec itself. There
             # is no exit code to inspect, but this is still THIS STEP failing,

@@ -1,0 +1,204 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-15",
+  "repository": "microsoft/amplifier-bundle-recipes",
+  "baseCommit": "46e9c5fb521bea07836d2eafb0c00bb6ac8658f6",
+  "qualifiedImplementationCommit": "620d786a4379c936b0cf082bd66ad3faf5e910ee",
+  "frozenArchiveSha256": "57e255266e427ec9c45d0c9235e1d04e9a692d94bbae4bed77d271362cb47950",
+  "verifiedSourceFiles": 404,
+  "environment": {
+    "isolation": "Owned Linux aarch64 DTU; private source, state, dependency environment and process namespace",
+    "python": "3.13.16",
+    "treeSitter": "0.25.2",
+    "treeSitterBash": "0.25.1",
+    "bash": "5.2.21",
+    "bashSha256": "af955ef55333c8fc9c5aa50df91ad1a629d9a79a9afa125cd5e9629585f78015",
+    "network": "Offline repository acceptance using exact private dependency mirrors and warmed caches",
+    "providerCalls": 0,
+    "sharedInstallationChanges": false
+  },
+  "repositoryGates": [
+    {
+      "gate": "tool module",
+      "passed": 1646,
+      "skipped": 1,
+      "warnings": 6,
+      "warningScope": "Existing legacy recipe deprecation warnings",
+      "exitCode": 0,
+      "seconds": 26.36609500274062,
+      "skippedCase": "test_recipe_to_dot.py::test_all_example_recipes: original hardcoded author checkout yielded an empty parameter set",
+      "supplement": {
+        "testOnlyChange": "Resolve shipped examples relative to the test file",
+        "passed": 22,
+        "seconds": 0.13,
+        "implementationUnchanged": true
+      }
+    },
+    {
+      "gate": "standalone runner",
+      "passed": 590,
+      "skipped": 1,
+      "exitCode": 0,
+      "seconds": 5.138422081246972,
+      "environmentNote": "Exact declared parser dependencies exposed from the private environment; no shared install changes",
+      "skippedCase": "test_unknown_step_and_stage_keys.py::test_both_engines_agree_on_the_key_lists: opposite engine absent from this isolated gate PYTHONPATH",
+      "supplement": {
+        "change": "Expose the exact frozen counterpart package for this unchanged comparison node",
+        "passed": 1,
+        "implementationUnchanged": true
+      }
+    },
+    {
+      "gate": "conformance kit",
+      "passed": 19,
+      "skipped": 1,
+      "failed": 0,
+      "exitCode": 0,
+      "seconds": 0.8178900955244899,
+      "environmentNote": "Activation transport uses exact fixed historical dependency mirrors; candidate live identity is separately verified",
+      "skippedCase": "Immutable source archive omitted Git metadata required by the historical activation regression control",
+      "supplement": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "seconds": 0.8182739708572626,
+        "change": "Supply private immutable historical Git objects; current implementation source unchanged",
+        "sourceFilesVerifiedBeforeAndAfter": 404,
+        "historicalControlDiscriminated": true
+      }
+    },
+    {
+      "gate": "legacy compatibility",
+      "passed": 5,
+      "failed": 0,
+      "exitCode": 0,
+      "seconds": 0.5169855412095785,
+      "goldensChanged": false,
+      "comparison": "Byte-identical serialized outputs"
+    }
+  ],
+  "additionalQualification": {
+    "focusedHelpersAndEnginePolicies": {
+      "passed": 593,
+      "sourceNote": "Preceding coherent source; later trusted-neighbor correction covered by final module/runner gates and35 focused compiler tests"
+    },
+    "actualCli": {
+      "passed": true,
+      "script": "scripts/live-proof.sh",
+      "operation": "recipes validate",
+      "engineIdentityMatchedFrozenSource": true,
+      "warnings": [],
+      "modelCalls": 0
+    },
+    "independentChecker": {
+      "commit": "2c2047abb4b895e863371015455f4b2ff71c6aca",
+      "changed": false,
+      "safeFixtures": 7,
+      "actualEnginePairs": 14,
+      "provedBeforeExecution": 14,
+      "safeBashEffectsPassed": 14
+    },
+    "corpus": {
+      "sourceRows": 1227,
+      "distinctTemplates": 519,
+      "interpolatedTemplates": 375,
+      "zeroOccurrenceTemplates": 144,
+      "sourcePathsRecoveredByExactHash": 199,
+      "exactRouteMatches": 1218,
+      "unmatchedRows": {
+        "generatedTestStrings": 7,
+        "priorMarkdownWhitespaceNormalization": 2
+      },
+      "cases": 3492,
+      "bothEnginePreparations": 6984,
+      "verifiedSource": 6984,
+      "admittedRefusals": 0,
+      "caseCounts": {
+        "integer-scalar": 375,
+        "plain-string": 375,
+        "unicode": 374,
+        "boolean": 374,
+        "quoted-structured": 314,
+        "quoted-control-literal": 314,
+        "tilde": 263,
+        "empty": 363,
+        "recovered-literal-defaults": 296,
+        "argument-space-tab": 136,
+        "simple-glob": 136,
+        "identity": 144,
+        "argument-tail-lf": 28
+      },
+      "literalDefaults": {
+        "completeInterpolatingTemplates": 152,
+        "completeIncludingZeroOccurrenceTemplates": 296,
+        "historicalRuntimeInputs": false
+      },
+      "corpusSha256": "c25cd4be5c2754fd3ad54053886e75c80c407631ebf63829874c547f8e2503f7",
+      "recoveredContextInventorySha256": "35bf82c3373b7cf925b8db3f3c74893a13f9850bc183732447448f2160da08f0",
+      "retainedOriginalCommandsExecuted": 0
+    }
+  },
+  "preservedFailures": [
+    {
+      "classification": "Old expectation contradicted approved unquoted space/tab field cardinality",
+      "action": "Kept no-effect assertions, corrected expected stdout, added benign actual multi-field control"
+    },
+    {
+      "classification": "New fixture expected native refusal to escape rather than persist failed outcome",
+      "action": "Asserted actual failed outcome and zero subprocess starts"
+    },
+    {
+      "classification": "Immutable checker refused a newly quoted trusted neighboring test operator",
+      "action": "Preserved exact source-only neighboring fields, reran all14 pairs unchanged"
+    },
+    {
+      "classification": "Whole-corpus driver generated28 invalid tail-LF placements,56 both-engine refusals",
+      "action": "Required the occurrence itself to end its owner before generating terminal-LF cases; original refusals retained"
+    },
+    {
+      "classification": "Gate driver absent inside newly mounted private tmp directory",
+      "action": "Corrected private script location before the four gates; no tests ran in the failed setup"
+    },
+    {
+      "classification": "Archive kit skipped its historical Git regression control",
+      "action": "Preserved19PASS/1SKIP, then exact unchanged control passed with private historical Git metadata"
+    },
+    {
+      "classification": "Isolated native gate skipped its cross-engine key-list comparison",
+      "action": "Preserved broad skip, then unchanged node passed with the exact frozen opposite-engine package"
+    },
+    {
+      "classification": "Original diagram test used an author-specific absolute checkout path",
+      "action": "Portable test-only path correction exercised22 shipped examples; initial empty parameter skip retained"
+    }
+  ],
+  "limits": [
+    "Corpus preparation and internal witnesses are source/semantic evidence, not execution of all original recipes.",
+    "Recovered defaults are literal source defaults; historical step outputs, user inputs and foreach values are not reconstructed.",
+    "GNU Bash5.2.21 is the qualified caller profile; unknown runtimes fail closed. Executable marker inspection is version evidence within the trusted package boundary, not binary authenticity.",
+    "The fourteen checker pairs and finite family tests are bounded safe effect controls; arbitrary external effects and live-provider recipes were not exercised.",
+    "Windows/macOS installed acceptance and additional Bash/parser profiles are not established.",
+    "This candidate is not merged, released, or adopted by Amplifier Unified."
+  ],
+  "canonicalHelperSha256": {
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/__init__.py": "adcbe21448714e7e40a1ffdcf197fcd91bd9a4a6c1be4f1ca3b72c4a89dcb921",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/atoms.py": "ecb28322845275839204b3b3b181781bd24480b1f6ccef42d73751df00fc494d",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/binding.py": "ed1a6e2bcfeeab1db368496edae838770ce958163306288ac256ba3024433527",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/compiler.py": "b127d81b8a381459678232e4161e6f3c588b74a1cf6995f41c790c369a87d640",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/documents.py": "e93f4d579a9bc67133e9f5d42164caf816be5db3f53c36321b88b08108ab9a67",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/encoding.py": "1fbeb65331118bd0b5a535d91def77ed3e3b244307b3ce30df6ea764d80a688a",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/envelopes.py": "7720039e7f4e2e6511f425fdaa8a5cbb43127ed27b6544d4a3a3b26e7095e7b7",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/heredoc.py": "c6880562c9d38ab196d5a1efe76f63947eae3b616d9713d1c80565a6b13454e3",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/model.py": "51291d93fb8b163d1e0bcda648d61e41ca2b4626b759185553ad0d7bffe22b1c",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/ownership.py": "ea454704600176e27796587d808bb00447c529ac598298f8c32c9f61f12841b0",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/prefix.py": "c0d10022d5e3a4a526c1dc08139c43aa62742cae8461f4702b02b30d81cd187c",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/profile.py": "020899edc98c6ca33c2240688145f1e1f10a448a3e5dc4c329ec4725e0f425bd",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/recovery.py": "79724d8b457e4d8084036d857ce64998e41350dd7977d3a1b15842a77a2b886c",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/runtime.py": "a81ea60e75205f33c1908502d23d118d4f670bd18f35f0acb53d62d20d719610",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/tilde.py": "6d2533d6f449537a32df73e72ba89ab71e488f298300d7446c1025be0b474174",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/witness.py": "592315d92e9c0b4cf0d4adb065814d37c1a5207083cb5528b939d5566b9ef79f",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/word_witness.py": "afbcb4e47a2dfcf8006840767d59c3ae87fbeb0510c1e950b3d2d33e2f256842",
+    "modules/tool-recipes/amplifier_module_tool_recipes/shell_source/words.py": "f6340c159c80a7559fc2529b3016132d8bdf967cda55d792150e844f91172c75"
+  },
+  "testOnlyFollowupCommit": "fc18ee45f717b9d36e861a3e6f87734644d741df"
+}
