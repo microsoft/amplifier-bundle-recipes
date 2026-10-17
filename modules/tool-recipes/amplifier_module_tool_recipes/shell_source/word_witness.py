@@ -221,7 +221,7 @@ def verify_field(field: FieldProjection, source: str) -> None:
             return tuple(
                 (i, p.text, p.protected)
                 for i, p in enumerate(parts)
-                if p.kind == "literal" and p.text in ".^$*+?[](){}|\\"
+                if p.kind == "literal" and p.text in ".^$*+?[](){}|\\-:="
             )
 
         if protection(actual) != protection(expected):

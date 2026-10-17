@@ -339,8 +339,10 @@ def _main_source(source: _Source) -> _Source:
 
 def _shape(source: _Source, role: str, *, original: bool) -> str | None:
     """Read the raw assignment predicate before choosing caller flags."""
-    if role == "ASSIGN":
-        return None  # The owning assignment has already separated its RHS.
+    if role in ("ASSIGN", "TEST_REGEX"):
+        # Assignment RHS is already separated; a conditional regex is not an
+        # assignment argument, even when its ERE happens to contain NAME=.
+        return None
     match = _NAME.match(source.text)
     if not match:
         return None
@@ -433,10 +435,14 @@ def _finder(text: str, start: int, tflag: int) -> tuple[int, bool]:
 
 
 class _Reader:
-    def __init__(self, source: _Source, profile: _Profile, *, check_data: bool):
+    def __init__(
+        self, source: _Source, profile: _Profile, *, check_data: bool,
+        regex: bool = False,
+    ):
         self.source = source
         self.profile = profile
         self.check_data = check_data
+        self.regex = regex
         self.envelopes: list[tuple[int, int]] = []
         self.requests: list[TildeRequest] = []
         self.paths = 0
@@ -536,7 +542,7 @@ class _Reader:
                 mode = "single"
                 index += 1
                 continue
-            if syntax and char == "\\" and index + 1 < len(text):
+            if (syntax or self.regex) and char == "\\" and index + 1 < len(text):
                 following = text[index + 1]
                 if mode == "ordinary" or following in '$`"\\\n':
                     if following != "\n":
@@ -729,7 +735,9 @@ def _read(
                         profile.rhs,
                         profile.posix,
                     )
-                reader = _Reader(word, caller, check_data=original)
+                reader = _Reader(
+                    word, caller, check_data=original, regex=field.role == "TEST_REGEX"
+                )
                 history = (f"after-brace-words:{ordinal}",) if len(words) > 1 else ()
                 graph = reader.scan(history=history)
                 # No MAIN event means this component has no stateful transition

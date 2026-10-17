@@ -7,6 +7,7 @@ from amplifier_module_tool_recipes.shell_source import prepare
 from amplifier_module_tool_recipes.shell_source.binding import bind
 from amplifier_module_tool_recipes.shell_source.compiler import compile_bound
 from amplifier_module_tool_recipes.shell_source.model import ShellSourceError, Span
+from amplifier_module_tool_recipes.shell_source.model import FenceEvent
 from amplifier_module_tool_recipes.shell_source.ownership import establish_ownership
 from amplifier_module_tool_recipes.shell_source.witness import verify_program
 from amplifier_module_tool_recipes.shell_source.word_witness import verify_field
@@ -26,6 +27,7 @@ def test_only_rhs_owns_regex(source):
     ("[[ abc =~ {{p}} ]]", "^a.c$", "a.c$"),
     ("[[ abc =~ {{p}} ]]", "^(a)(bc)$", "^(a)(b)c$"),
     ("[[ abc =~ {{p}} ]]", "[[:alpha:]]", "'[[:alpha:]]'"),
+    ('[[ abc =~ [a"-"{{p}}] ]]', "z", "[a-z]"),
     ("[[ abc =~ {{p}} ]]", "abc", "a${HOME}bc"),
     ("[[ abc =~ {{p}} ]]", "abc", "a$(touch marker)bc"),
     ("[[ abc =~ {{p}} ]]", "abc", "a`touch marker`bc"),
@@ -68,6 +70,22 @@ def test_changed_operator_and_lost_or_crossed_owners_fail():
     bad = replace(edit, source=Span(edit.source.start - 1, edit.source.end))
     with pytest.raises(ShellSourceError):
         verify_program(bound, compiled.ownership, (bad,), compiled.source)
+
+
+def test_adjacent_and_empty_fences_survive_regex_escape_composition():
+    bound = bind(
+        r"[[ a.c =~ a{{slash}}{{empty}}{{dot}}c ]]",
+        {"slash": "\\", "empty": "", "dot": "."}.__getitem__,
+    )
+    compiled = compile_bound(bound)
+    edit = compiled.replacements[0]
+    assert edit.source == compiled.ownership.words[0].span
+    field = edit.fields[0]
+    assert [(f.occurrence, f.edge) for f in field.fences] == [
+        (e.occurrence, e.edge) for e in field.source_events if isinstance(e, FenceEvent)
+    ]
+    dot = next(p for p in field.parts if p.text == ".")
+    assert dot.data and dot.quoted and len(dot.events) == 2
 
 
 @pytest.mark.parametrize("source", [

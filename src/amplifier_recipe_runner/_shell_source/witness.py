@@ -597,14 +597,21 @@ class _Program:
                 raw = self.raw(node)
                 if self.authored is not None:
                     raw = self.authored[node.start_byte:node.end_byte]
+                atoms = {}
+                operand = raw.decode()
+                read_regex(
+                    self.raw(node).decode(), expansions=atoms,
+                    authored=operand if self.authored is not None else None,
+                )
                 nested = []
-                for part in read_regex(raw.decode()):
-                    if part.kind != "expansion":
-                        continue
-                    mini = b"__recipe_word__ " + part.text.encode()
+                for begin, (end, spelling) in atoms.items():
+                    start_byte = len(operand[:begin].encode())
+                    end_byte = len(operand[:end].encode())
+                    mini = b"__recipe_word__ " + self.raw(node)[start_byte:end_byte]
                     docs = collect_documents(BoundTemplate(mini.decode(), (), ()))
                     tree = parse(docs.skeleton)
-                    program = _Program(docs.skeleton, docs, frozenset(), mini if self.authored is not None else None)
+                    authored = b"__recipe_word__ " + spelling.encode()
+                    program = _Program(docs.skeleton, docs, frozenset(), authored if self.authored is not None else None)
                     argument = tree.named_children[0].children_by_field_name("argument")[0]
                     nested.extend(program.inside_word(argument))
                 return (role, tuple(nested))

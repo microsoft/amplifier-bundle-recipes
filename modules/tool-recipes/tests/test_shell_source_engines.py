@@ -98,11 +98,21 @@ REGEX_CASES = [
     ("bracket", "abbc", "{{p}}", "^a[b-d]+c$"),
     ("class-repeat", "a12", "{{p}}", "^[[:alpha:]][[:digit:]]{2}$"),
     ("negated-bracket", "xyz", "{{p}}", "^[^0-9]{3}$"),
+    ("literal-hyphen", "-", '[a"-"{{p}}]', "z"),
+    ("equals", "a=b", "{{p}}", "a=b"),
+    ("assignment-lookalike", "a=~", "{{p}}", "a=~"),
+    ("append-lookalike", "aaa=~", "{{p}}", "a+=~"),
     ("optional", "ac", "{{p}}", "^ab?c$"),
     ("escaped-dot", "a.c", "{{p}}", r"^a\.c$"),
     ("escaped-parens", "(abc)", "{{p}}", r"^\(abc\)$"),
     ("backslash", r"a\b", "{{p}}", r"a\\b"),
     ("quoted-backslash", r"a\.c", '"{{p}}"', r"a\.c"),
+    ("double-escaped-backslash", r"a\b", '"{{p}}"', r"a\\b"),
+    ("single-quoted-backslash", r"a\b", "'{{p}}'", r"a\b"),
+    ("escaped-dollar", "a$c", "{{p}}", r"a\$c"),
+    ("escaped-backtick", "a`c", "{{p}}", r"a\`c"),
+    ("split-escape", "a.c", r"a{{slash}}{{empty}}{{p}}c", "."),
+    ("authored-escape", "a.c", r"a\{{empty}}{{p}}c", "."),
     ("partial-dot", "a.c", 'a"."{{p}}', "c"),
     ("partial-hole", "a.c", '^"{{p}}"c$', "a."),
     ("empty-quoted", "abc", '"{{p}}"', ""),
@@ -112,15 +122,22 @@ REGEX_CASES = [
     ("authored-param", "abc", "$PREFIX{{p}}", ".c$"),
     ("authored-braced", "abc", "${PREFIX}{{p}}", ".c$"),
     ("authored-quoted-param", "a.c", '"$PREFIX"{{p}}', r"\.c$"),
+    ("authored-default-param", "abc", "${UNSET_FOR_REGEX:-a}{{p}}", ".c$"),
+    ("authored-command", "abc", "$(printf a){{p}}", ".c$"),
+    ("authored-quoted-command", "abc", '"$(printf a)"{{p}}', ".c$"),
+    ("nested-data-command", "abc", "a$(printf '%s' '{{p}}')", "bc"),
+    ("tilde", "~missing-user/abc", "~{{p}}/a.c", "missing-user"),
+    ("tilde-authored-param", "~a/abc", "~$PREFIX/{{p}}", "a.c"),
+    ("tilde-escaped-dot", "~missing-user/a.c", "~missing-user/{{p}}", r"a\.c"),
 ]
 
 
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("case,lhs,rhs,pattern", REGEX_CASES, ids=[r[0] for r in REGEX_CASES])
 def test_closed_regex_reference_matrix(case, lhs, rhs, pattern, native):
-    context = {"p": pattern, "empty": "", "left": "^ab"}
+    context = {"p": pattern, "empty": "", "left": "^ab", "slash": "\\"}
     source = (
-        "PREFIX=a; if [[ '" + lhs + "' =~ " + rhs + " ]]; then "
+        "PREFIX=a; unset UNSET_FOR_REGEX; if [[ '" + lhs + "' =~ " + rhs + " ]]; then "
         "printf yes; printf '<%s>' \"${BASH_REMATCH[@]}\"; else printf no; fi"
     )
     converter = native_string if native else object.__new__(RecipeExecutor).substitute_variables
@@ -129,13 +146,16 @@ def test_closed_regex_reference_matrix(case, lhs, rhs, pattern, native):
     assert run_bash(candidate) == run_bash(reference)
 
 
-@pytest.mark.parametrize("native", [False, True])
-@pytest.mark.parametrize("quoted", [False, True])
-@pytest.mark.parametrize("pattern", [
+REGEX_CONFINEMENT_PATTERNS = [
     "$(touch marker)", "$((x=7))", "<(touch marker)", "`touch marker`",
     "'\";touch marker", "x ]] || touch marker #", "x && touch marker",
     "x > marker", "x\ntouch marker", "${HOME}", "a|$(touch marker)",
-])
+]
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("quoted", [False, True])
+@pytest.mark.parametrize("pattern", REGEX_CONFINEMENT_PATTERNS)
 def test_regex_confinement_never_runs_malicious_reference(pattern, quoted, native, tmp_path):
     rhs = '"{{p}}"' if quoted else "{{p}}"
     source = "x=0; if [[ abc =~ " + rhs + " ]]; then printf yes; else printf no; fi; printf ':x=%s' \"$x\""

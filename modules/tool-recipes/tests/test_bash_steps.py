@@ -210,6 +210,22 @@ class TestBashStepExecution:
         assert result.exit_code == 0
 
     @pytest.mark.asyncio
+    async def test_regex_refusal_reaches_error_policy_without_launch(
+        self, executor, project_path, monkeypatch
+    ):
+        async def unexpected(*args, **kwargs):
+            pytest.fail("unproved regex was launched")
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected)
+        result = await executor._execute_bash_step(
+            Step(id="regex", type="bash", command="[[ abc =~ {{pattern}} ]]",
+                 on_error="continue"),
+            {"pattern": "${HOME}"}, project_path,
+        )
+        assert result.exit_code == 126
+        assert "WORD_WITNESS" in result.stderr
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("command", "payload", "expected"),
         [

@@ -276,6 +276,25 @@ class TestBashSteps:
         assert outcome.status == "succeeded"
         assert context["shown"] == expected
 
+    def test_regex_refusal_reaches_error_policy_without_launch(self, tmp_path, monkeypatch):
+        async def unexpected(*args, **kwargs):
+            pytest.fail("unproved regex was launched")
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected)
+        emitter = CollectingEmitter()
+        outcome, context = run_program(
+            "steps:\n  - id: regex\n    type: bash\n"
+            "    command: '[[ abc =~ {{pattern}} ]]'\n"
+            "    on_error: continue\n    output_exit_code: code\n",
+            workspace=tmp_path, context={"pattern": "${HOME}"}, emit=emitter,
+        )
+        assert outcome.status == "succeeded"
+        assert context["code"] == "126"
+        assert any(
+            kind == "step:failed" and "WORD_WITNESS" in data.get("error", "")
+            for kind, data in emitter.events
+        )
+
     def test_stdout_becomes_the_step_output(self, tmp_path: Path) -> None:
         outcome, ctx = run_program(
             """

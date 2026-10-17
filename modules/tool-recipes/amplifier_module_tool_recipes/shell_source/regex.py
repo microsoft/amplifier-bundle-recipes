@@ -11,9 +11,11 @@ import re
 from dataclasses import replace
 
 from .encoding import quote
+from .binding import neutral_bytes
 from .envelopes import parameter_end
 from .model import (
     BoundTemplate, FieldFence, FieldProjection, Replacement, ShellSourceError, Span,
+    TextEvent,
 )
 from .ownership import parse
 from .word_witness import ReadPart, _expansions
@@ -25,9 +27,15 @@ def _fail(message: str) -> None:
 
 
 def read_regex(
-    source: str, *, expansions: dict[int, tuple[int, str]] | None = None
+    source: str, *, expansions: dict[int, tuple[int, str]] | None = None,
+    authored: str | None = None,
 ) -> tuple[ReadPart, ...]:
-    """Require one whole actual conditional RHS, then read every source byte."""
+    """Read one whole conditional RHS, independently of lowering.
+
+    Only the original-template caller supplies ``authored``: its already
+    owned neutral CST has identical byte coordinates but holes are not Bash.
+    Emitted-source witnesses always parse and read the actual same bytes.
+    """
     prefix = b"[[ __recipe_lhs__ =~ "
     raw = source.encode()
     program = prefix + raw + b" ]]"
@@ -50,7 +58,12 @@ def read_regex(
         or test.start_byte != 0 or test.end_byte != len(program)
     ):
         _fail("regex field is not exactly its conditional RHS")
-    atoms = _expansions(right, program, len(prefix))
+    if authored is not None:
+        if len(authored.encode()) != len(raw):
+            _fail("original regex projection changed byte coordinates")
+        source = authored
+        raw = source.encode()
+    atoms = _expansions(right, prefix + raw + b" ]]", len(prefix))
     parts = []
     mode = "ordinary"
     opened = 0
@@ -84,16 +97,6 @@ def read_regex(
                         parts.append(ReadPart("literal", following, True))
                     index += 2
                     continue
-            byte = len(source[:index].encode())
-            atom = atoms.get(byte)
-            if atom is not None:
-                end, spelling = atom
-                parts.append(ReadPart("expansion", spelling, mode == "double"))
-                stop = index + len(raw[byte:end].decode())
-                if expansions is not None:
-                    expansions[index] = (stop, spelling)
-                index = stop
-                continue
             if char == "$":
                 if source.startswith("${", index):
                     end = parameter_end(source, index)
@@ -106,6 +109,17 @@ def read_regex(
                         expansions[index] = (end, source[index:end])
                     index = end
                     continue
+            byte = len(source[:index].encode())
+            atom = atoms.get(byte)
+            if atom is not None:
+                end, spelling = atom
+                parts.append(ReadPart("expansion", spelling, mode == "double"))
+                stop = index + len(raw[byte:end].decode())
+                if expansions is not None:
+                    expansions[index] = (stop, spelling)
+                index = stop
+                continue
+            if char == "$":
                 if source[index + 1:index + 2] in ("(", "'", '"'):
                     _fail("opaque regex concealed an executable dollar envelope")
             if char == "`":
@@ -129,7 +143,8 @@ def parameter_atoms(bound: BoundTemplate, span: Span) -> dict[int, Expansion]:
     text = source[span.start:span.end].decode()
     # This read also refuses hidden executable syntax in the original owner.
     atoms = {}
-    read_regex(text, expansions=atoms)
+    projected = neutral_bytes(bound)[span.start:span.end].decode()
+    read_regex(projected, expansions=atoms, authored=text)
     result = {}
     for begin, (stop, spelling) in atoms.items():
         if not spelling.startswith("${"):
@@ -145,23 +160,59 @@ def parameter_atoms(bound: BoundTemplate, span: Span) -> dict[int, Expansion]:
 
 
 def _data_escapes(field: FieldProjection) -> FieldProjection:
-    """Unquoted DATA backslash has regex source-escape semantics, not globbing.
+    """DATA backslash retains regex source-escape semantics, not globbing.
 
     Retain the events of both characters and remap every fence, including a
     zero-width fence between the backslash and the character it protects.
     Authored escapes were already reconciled by the shared cooker.
     """
+    modes = {}
+    mode = "ordinary"
+    skipped = set()
+    opaque = {i for p in field.parts if p.kind == "expansion" for i in p.events}
+    events = field.source_events
+    for local, event in enumerate(events):
+        event_id = local + field.source_event_start
+        modes[event_id] = mode
+        if local in skipped or event_id in opaque or not isinstance(event, TextEvent):
+            continue
+        if event.kind == "data":
+            continue
+        if mode == "single":
+            if event.text == "'":
+                mode = "ordinary"
+        elif event.text == "'":
+            if mode == "ordinary":
+                mode = "single"
+        elif event.text == '"':
+            mode = "ordinary" if mode == "double" else "double"
+        elif event.text == "\\":
+            following = next(
+                (i for i in range(local + 1, len(events)) if isinstance(events[i], TextEvent)),
+                None,
+            )
+            if following is not None and (mode == "ordinary" or events[following].text in '$`"\\\n'):
+                skipped.add(following)
     parts = []
     mapping = {0: 0}
     old = new = index = 0
     while index < len(field.parts):
         part = field.parts[index]
         width = len(part.text.encode())
-        if part.kind == "literal" and part.data and not part.quoted and part.text == "\\":
+        data_backslash = (
+            part.kind == "literal" and part.data and part.text == "\\"
+            and len(part.events) == 1
+        )
+        double = data_backslash and modes[part.events[0]] == "double"
+        target = field.parts[index + 1] if index + 1 < len(field.parts) else None
+        consumes = not part.quoted or double and target is not None and target.text in '$`"\\\n'
+        if data_backslash and consumes:
             if index + 1 == len(field.parts):
                 raise ShellSourceError("REGEX_DOMAIN", "DATA escape leaves its regex owner")
-            target = field.parts[index + 1]
-            if target.kind != "literal" or target.quoted or not target.text or target.text == "\n":
+            if (
+                target.kind != "literal" or not target.text or target.text == "\n"
+                or target.quoted and not double
+            ):
                 raise ShellSourceError("REGEX_DOMAIN", "DATA escape crosses a protected regex boundary")
             mapping[old + width] = new
             part = replace(target, quoted=True, data=part.data or target.data,
