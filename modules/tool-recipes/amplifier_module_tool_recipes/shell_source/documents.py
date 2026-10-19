@@ -93,6 +93,12 @@ class _Reader:
             if character == quote:
                 self.mark(index, index + 1, mode, frame)
                 return index + 1
+            if quote == 34 and self.source.startswith(b"${", index):
+                index = self.parameter(index, frame, mode=mode)
+                continue
+            if quote == 34 and self.source.startswith(b"$[", index):
+                index = self.arithmetic(index, frame, dollar=True)
+                continue
             if quote == 34 and self.source.startswith(b"$(", index):
                 if self.source.startswith(b"$((", index):
                     index = self.arithmetic(index, frame, dollar=True)
@@ -121,18 +127,97 @@ class _Reader:
             Span(start, index),
         )
 
-    def arithmetic(self, start: int, frame: int, *, dollar: bool) -> int:
-        index = start + (3 if dollar else 2)
-        depth = 1
+    def parameter(self, start: int, frame: int, *, mode: str) -> int:
+        # Only a subscript immediately after the parameter name owns brackets.
+        # Pattern/default words may contain literal unmatched '[' or '('.
+        index = start + 2
+        name = re.match(rb"[!#]?[A-Za-z_][A-Za-z_0-9]*", self.source[index:])
+        subscript = index + name.end() if name is not None else None
+        closers = [125]
+        self.mark(start, index, mode, frame)
         while index < len(self.source):
-            if self.source.startswith(b"))", index) and depth == 1:
-                index += 2
-                self.mark(start, index, "arithmetic", frame)
-                return index
-            if self.source[index] == 40:
-                depth += 1
-            elif self.source[index] == 41:
-                depth -= 1
+            character = self.source[index]
+            if character == closers[-1]:
+                self.mark(index, index + 1, mode, frame)
+                index += 1
+                closers.pop()
+                if not closers:
+                    return index
+                continue
+            if character == 92:
+                end = min(index + 2, len(self.source))
+                self.mark(index, end, mode, frame)
+                index = end
+                continue
+            if character in (39, 34):
+                index = self.quoted(index, character, frame)
+                continue
+            if self.source.startswith(b"${", index):
+                index = self.parameter(index, frame, mode=mode)
+                continue
+            if self.source.startswith((b"$((", b"$["), index):
+                index = self.arithmetic(index, frame, dollar=True)
+                continue
+            if self.source.startswith(b"$(", index):
+                self.mark(index, index + 2, mode, frame)
+                index = self.script(index + 2, self.new_frame(), 41)
+                continue
+            if character == 96:
+                self.mark(index, index + 1, mode, frame)
+                index = self.script(index + 1, self.new_frame(), 96)
+                continue
+            if (index == subscript and character == 91) or (
+                len(closers) > 1 and character in (40, 91)
+            ):
+                closers.append(41 if character == 40 else 93)
+            self.mark(index, index + 1, mode, frame)
+            index += 1
+        raise ShellSourceError(
+            "UNCLOSED_PARAMETER", "original parameter frame is not closed", Span(start, index)
+        )
+
+    def arithmetic(self, start: int, frame: int, *, dollar: bool) -> int:
+        # Arithmetic punctuation is not shell redirection or a subshell. Keep
+        # its own bracket/parenthesis stack, but give actual command expansions
+        # back to script(): their documents need separate frame-local FIFOs.
+        legacy = self.source.startswith(b"$[", start)
+        index = start + (2 if legacy or not dollar else 3)
+        closers = [b"]" if legacy else b"))"]
+        self.mark(start, index, "arithmetic", frame)
+        while index < len(self.source):
+            if self.source.startswith(closers[-1], index):
+                end = index + len(closers.pop())
+                self.mark(index, end, "arithmetic", frame)
+                index = end
+                if not closers:
+                    return index
+                continue
+            character = self.source[index]
+            if character == 92:
+                end = min(index + 2, len(self.source))
+                self.mark(index, end, "arithmetic", frame)
+                index = end
+                continue
+            if character in (39, 34):
+                index = self.quoted(index, character, frame)
+                continue
+            if self.source.startswith((b"$((", b"$["), index):
+                index = self.arithmetic(index, frame, dollar=True)
+                continue
+            if self.source.startswith(b"$(", index):
+                self.mark(index, index + 2, "arithmetic", frame)
+                index = self.script(index + 2, self.new_frame(), 41)
+                continue
+            if character == 96:
+                self.mark(index, index + 1, "arithmetic", frame)
+                index = self.script(index + 1, self.new_frame(), 96)
+                continue
+            if self.source.startswith(b"${", index):
+                index = self.parameter(index, frame, mode="arithmetic")
+                continue
+            if character in (40, 91):
+                closers.append(b")" if character == 40 else b"]")
+            self.mark(index, index + 1, "arithmetic", frame)
             index += 1
         raise ShellSourceError(
             "UNCLOSED_ARITHMETIC",
@@ -301,7 +386,11 @@ class _Reader:
                 index = self.quoted(index, character, frame)
                 word_start = False
                 continue
-            if self.source.startswith(b"$((", index):
+            if self.source.startswith(b"${", index):
+                index = self.parameter(index, frame, mode="ordinary")
+                word_start = False
+                continue
+            if self.source.startswith((b"$((", b"$["), index):
                 index = self.arithmetic(index, frame, dollar=True)
                 word_start = False
                 continue
