@@ -13,9 +13,9 @@ from dataclasses import dataclass
 
 from tree_sitter import Node
 
-from .binding import events_in
+from .binding import events_in, neutral_bytes
 from .documents import DocumentOwnership, collect_documents
-from .model import BoundTemplate, Replacement, ShellSourceError, Span, TextEvent
+from .model import BoundTemplate, FenceEvent, FieldProjection, Replacement, ShellSourceError, Span, TextEvent
 from .ownership import Ownership, parse
 from .recovery import recovery_projection
 
@@ -325,6 +325,68 @@ def _logical_body(source: bytes, strip_tabs: bool) -> bytes:
     )
 
 
+def _handoff_field(bound: BoundTemplate, span: Span, role: str, root: Node) -> bool:
+    """Read final-field authority from original events, never emitted claims."""
+    from .atoms import expansion_atoms
+    from .words import cook_island
+
+    source = bound.source.encode()
+    atoms = expansion_atoms(
+        bound, root.descendant_for_byte_range(span.start, span.end),
+        nested=lambda nested: source[nested.start:nested.end].decode(),
+    )
+    pieces = cook_island(events_in(bound, span), role, expansion_at=atoms.get).pieces
+    if not pieces or not isinstance(pieces[-1], FieldProjection):
+        return False
+    parts = pieces[-1].parts
+    tail = len(parts)
+    while tail and (
+        parts[tail - 1].kind == "literal" and parts[tail - 1].data
+        and not parts[tail - 1].quoted and parts[tail - 1].text == "\n"
+    ):
+        tail -= 1
+    return tail < len(parts) and all(
+        part.kind == "literal" and not part.quoted for part in parts[:tail]
+    ) and re.fullmatch(r"[A-Za-z0-9_./:-]+", "".join(p.text for p in parts[:tail])) is not None
+
+
+def _mutable_documents(
+    bound: BoundTemplate, ownership: Ownership, root: Node | None = None,
+) -> frozenset[Span]:
+    """Derive body authority solely from original events and header ownership."""
+    mutable = {
+        d.opener_delimiter
+        for d in ownership.documents.documents
+        if any(isinstance(e, FenceEvent) for e in d.events)
+    }
+    if root is None:
+        root, _, _ = _parse_projection(
+            bound, ownership.documents, allowed_recovery=bool(ownership.recovery_markers),
+        )
+    for owner in ownership.words:
+        if owner.role not in ("ARG", "FILE"):
+            continue
+        text = [e for e in events_in(bound, owner.span) if isinstance(e, TextEvent)]
+        tail = len(text)
+        while tail and text[tail - 1].kind == "data" and text[tail - 1].text == "\n":
+            tail -= 1
+        if tail == len(text) or not _handoff_field(bound, owner.span, owner.role, root):
+            continue
+        if any(
+            ownership.documents.contexts[e.source.start].mode != "ordinary"
+            for e in text[tail:]
+        ):
+            continue
+        pending = [
+            d for d in ownership.documents.documents
+            if d.frame == owner.frame and d.opener_delimiter.end <= owner.span.start
+            and d.body.start == owner.span.end + 1
+        ]
+        if pending:
+            mutable.add(min(pending, key=lambda d: d.ordinal).opener_delimiter)
+    return frozenset(mutable)
+
+
 def _documents(
     original: DocumentOwnership,
     emitted: DocumentOwnership,
@@ -539,11 +601,21 @@ class _Program:
         documents: DocumentOwnership,
         numbers: frozenset[Span],
         authored: bytes | None = None,
+        occurrences: tuple[Span, ...] = (),
+        *,
+        syntax: bytes | None = None,
+        mutable_documents: frozenset[Span] = frozenset(),
     ):
         self.source = source
         self.documents = documents
         self.numbers = numbers
         self.authored = authored
+        # Unlike the masked parse projection, these neutral/actual syntax bytes
+        # retain genuine nested document headers, delimiters and bodies.
+        self.syntax = source if syntax is None else syntax
+        # Private original authority, never taken from replacement fields.
+        self.occurrences = occurrences
+        self.mutable_documents = mutable_documents
 
     def raw(self, node: Node) -> bytes:
         return self.source[node.start_byte : node.end_byte]
@@ -584,6 +656,13 @@ class _Program:
         return tuple(result)
 
     def key(self, node: Node, *, ignore_role: bool = False):
+        # Check at every depth, including arithmetic within a braced parameter.
+        # Ordinary $((...)) numeric-rvalue owners retain their existing policy.
+        if node.type == "arithmetic_expansion" and self.raw(node).startswith(b"$[") and any(
+            occurrence.start < node.end_byte and node.start_byte < occurrence.end
+            for occurrence in self.occurrences
+        ):
+            _fail("original legacy arithmetic crosses a DATA occurrence", _span(node))
         if _span(node) in self.numbers:
             return ("number-data",)
         role = None if ignore_role else _role(node)
@@ -600,27 +679,73 @@ class _Program:
                 atoms = {}
                 operand = raw.decode()
                 read_regex(
-                    self.raw(node).decode(), expansions=atoms,
+                    self.syntax[node.start_byte:node.end_byte].decode(), expansions=atoms,
                     authored=operand if self.authored is not None else None,
                 )
                 nested = []
                 for begin, (end, spelling) in atoms.items():
                     start_byte = len(operand[:begin].encode())
                     end_byte = len(operand[:end].encode())
-                    mini = b"__recipe_word__ " + self.raw(node)[start_byte:end_byte]
+                    prefix = b"__recipe_word__ "
+                    mini = prefix + self.syntax[
+                        node.start_byte + start_byte:node.start_byte + end_byte
+                    ]
                     docs = collect_documents(BoundTemplate(mini.decode(), (), ()))
                     tree = parse(docs.skeleton)
-                    authored = b"__recipe_word__ " + spelling.encode()
-                    program = _Program(docs.skeleton, docs, frozenset(), authored if self.authored is not None else None)
-                    argument = tree.named_children[0].children_by_field_name("argument")[0]
-                    nested.extend(program.inside_word(argument))
+                    if len(tree.named_children) != 1:
+                        _fail("regex atom added a mini-program statement")
+                    command = tree.named_children[0]
+                    name = command.child_by_field_name("name")
+                    arguments = command.children_by_field_name("argument")
+                    if (
+                        command.type != "command"
+                        or command.start_byte != 0 or command.end_byte != len(mini)
+                        or name is None or mini[name.start_byte:name.end_byte] != prefix[:-1]
+                        or len(command.named_children) != 2 or len(arguments) != 1
+                        or arguments[0].start_byte != len(prefix)
+                        or arguments[0].end_byte != len(mini)
+                    ):
+                        _fail("regex atom is not one complete mini-program argument")
+                    origin = node.start_byte + start_byte
+                    limit = node.start_byte + end_byte
+                    occurrences = tuple(
+                        Span(o.start - origin + len(prefix), o.end - origin + len(prefix))
+                        for o in self.occurrences
+                        if o.start < limit and origin < o.end
+                    )
+                    authored = prefix + spelling.encode()
+                    program = _Program(
+                        docs.skeleton, docs, frozenset(),
+                        authored if self.authored is not None else None, occurrences,
+                        syntax=mini,
+                        mutable_documents=frozenset(
+                            Span(d.start - origin + len(prefix), d.end - origin + len(prefix))
+                            for d in self.mutable_documents
+                            if origin <= d.start and d.end <= limit
+                        ),
+                    )
+                    argument = arguments[0]
+                    descriptor = program.inside_word(argument)
+                    if spelling.startswith(("$[", "$((")) and (
+                        argument.type != "arithmetic_expansion" or not descriptor
+                    ):
+                        _fail("regex arithmetic lost its executable descriptor")
+                    nested.extend(descriptor)
                 return (role, tuple(nested))
             document = next(
                 (
                     d
                     for d in self.documents.documents
-                    if node.start_byte <= d.opener_delimiter.start
-                    and d.opener_delimiter.end <= node.end_byte
+                    if role == "FILE"
+                    and node.parent is not None and node.parent.type == "file_redirect"
+                    and (
+                        _span(node) == d.opener_delimiter
+                        or d.quoted
+                        and node.start_byte == d.opener_delimiter.start - 1
+                        and node.end_byte == d.opener_delimiter.end + 1
+                        and self.raw(node)[:1] in (b"'", b'"')
+                        and self.raw(node)[-1:] == self.raw(node)[:1]
+                    )
                 ),
                 None,
             )
@@ -659,6 +784,25 @@ class _Program:
                     )
                 else:
                     children.append((node.field_name_for_child(i), key))
+        if node.type in ("arithmetic_expansion", "arithmetic_command") or (
+            node.type == "compound_statement"
+            and node.children[0].type == "((" and node.children[-1].type == "))"
+        ):
+            # Masking is only a parse aid. Keep authored bodies immutable even
+            # inside an enclosing word; only original DATA/handoff owners may
+            # defer body meaning and delimiter renaming to the local witness.
+            documents = tuple(
+                (
+                    d.frame, d.ordinal, d.quoted, d.strip_tabs,
+                    None if d.opener_delimiter in self.mutable_documents else (
+                        d.delimiter, self.syntax[d.body.start:d.body.end],
+                    ),
+                )
+                for d in self.documents.documents
+                if node.start_byte <= d.opener_delimiter.start
+                and d.closer_delimiter.end <= node.end_byte
+            )
+            return (node.type, tuple(children), documents)
         return (node.type, tuple(children))
 
 
@@ -680,9 +824,15 @@ def verify_program(
     raw = candidate.encode("utf-8")
     emitted_bound = BoundTemplate(candidate, (), ())
     emitted_docs = collect_documents(emitted_bound)
-    _documents(ownership.documents, emitted_docs, raw, edits)
     original_root, old_markers, original_source = _parse_projection(
         bound, ownership.documents, allowed_recovery=bool(ownership.recovery_markers)
+    )
+    mutable = _mutable_documents(bound, ownership, original_root)
+    _documents(ownership.documents, emitted_docs, raw, edits)
+    emitted_mutable = frozenset(
+        right.opener_delimiter
+        for left, right in zip(ownership.documents.documents, emitted_docs.documents)
+        if left.opener_delimiter in mutable
     )
     if old_markers != ownership.recovery_markers:
         _fail("emitted source changed the admitted whole-root recovery language")
@@ -714,8 +864,14 @@ def verify_program(
         edit.output for edit in edits if edit.replacement.kind == "number"
     )
     left = _Program(
-        original_source, ownership.documents, old_numbers, original_bytes
+        original_source, ownership.documents, old_numbers, original_bytes,
+        tuple(o.span for o in bound.occurrences),
+        syntax=neutral_bytes(bound),
+        mutable_documents=mutable,
     ).key(original_root)
-    right = _Program(emitted_source, emitted_docs, new_numbers).key(emitted_root)
+    right = _Program(
+        emitted_source, emitted_docs, new_numbers, syntax=raw,
+        mutable_documents=emitted_mutable,
+    ).key(emitted_root)
     if left != right:
         _fail("emitted executable structure differs from the original program")

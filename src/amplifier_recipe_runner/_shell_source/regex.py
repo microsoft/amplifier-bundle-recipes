@@ -12,6 +12,7 @@ from dataclasses import replace
 
 from .encoding import quote
 from .binding import neutral_bytes
+from .documents import collect_documents
 from .envelopes import parameter_end
 from .model import (
     BoundTemplate, FieldFence, FieldProjection, Replacement, ShellSourceError, Span,
@@ -26,6 +27,42 @@ def _fail(message: str) -> None:
     raise ShellSourceError("REGEX_WITNESS", message)
 
 
+def _legacy_arithmetic_span(source: bytes, start: int) -> Span:
+    """Recover one $[...] atom in BYTE coordinates using ordinary-word CST.
+
+    A subscript or nested command may contain ']'. No endpoint is authority
+    until the complete sentinel command has exactly one arithmetic argument.
+    """
+    prefix = b"__recipe_word__ "
+    endpoint = source.find(b"]", start + 2)
+    while endpoint != -1:
+        stop = endpoint + 1
+        mini = prefix + source[start:stop]
+        try:
+            documents = collect_documents(BoundTemplate(mini.decode(), (), ()))
+            root = parse(documents.skeleton)
+        except ShellSourceError:
+            root = None
+        if root is not None and len(root.named_children) == 1:
+            command = root.named_children[0]
+            name = command.child_by_field_name("name")
+            arguments = command.children_by_field_name("argument")
+            if (
+                command.type == "command"
+                and command.start_byte == 0 and command.end_byte == len(mini)
+                and name is not None and mini[name.start_byte:name.end_byte] == prefix[:-1]
+                and len(command.named_children) == 2 and len(arguments) == 1
+                and arguments[0].type == "arithmetic_expansion"
+                and arguments[0].start_byte == len(prefix)
+                and arguments[0].end_byte == len(mini)
+            ):
+                return Span(start, stop)
+        endpoint = source.find(b"]", stop)
+    raise ShellSourceError(
+        "DATA_ARITHMETIC_SYNTAX", "regex legacy arithmetic is not one complete ordinary-word atom"
+    )
+
+
 def read_regex(
     source: str, *, expansions: dict[int, tuple[int, str]] | None = None,
     authored: str | None = None,
@@ -38,8 +75,15 @@ def read_regex(
     """
     prefix = b"[[ __recipe_lhs__ =~ "
     raw = source.encode()
+    syntax = raw
     program = prefix + raw + b" ]]"
-    root = parse(program)
+    try:
+        root = parse(program)
+    except ShellSourceError:
+        # The pinned CST cannot represent a genuine multi-document FIFO.
+        # Mask only reader-owned document bytes, preserving all coordinates.
+        documents = collect_documents(BoundTemplate(program.decode(), (), ()))
+        root = parse(documents.skeleton)
     if len(root.named_children) != 1 or root.named_children[0].type != "test_command":
         _fail("regex field changed its test boundary")
     test = root.named_children[0]
@@ -98,6 +142,20 @@ def read_regex(
                     index += 2
                     continue
             if char == "$":
+                if source.startswith("$[", index):
+                    byte = len(source[:index].encode())
+                    # The neutral syntax, never original placeholder spelling,
+                    # owns endpoint discovery. Slice authored bytes only after
+                    # recovering that complete byte-width-preserving span.
+                    arithmetic = _legacy_arithmetic_span(syntax, byte)
+                    spelling = raw[arithmetic.start:arithmetic.end].decode()
+                    # The public expansion map remains CHARACTER-indexed.
+                    stop = index + len(spelling)
+                    parts.append(ReadPart("expansion", spelling, mode == "double"))
+                    if expansions is not None:
+                        expansions[index] = (stop, spelling)
+                    index = stop
+                    continue
                 if source.startswith("${", index):
                     end = parameter_end(source, index)
                 else:
@@ -134,7 +192,7 @@ def read_regex(
 
 
 def parameter_atoms(bound: BoundTemplate, span: Span) -> dict[int, Expansion]:
-    """Recover closed authored parameters hidden by the opaque CST terminal.
+    """Recover closed authored parameters/arithmetic hidden by opaque regex CST.
 
     DATA cannot enter this map: endpoints must be entirely outside occurrences.
     Simple parameters are already fence-aware in the shared word cooker.
@@ -147,15 +205,18 @@ def parameter_atoms(bound: BoundTemplate, span: Span) -> dict[int, Expansion]:
     read_regex(projected, expansions=atoms, authored=text)
     result = {}
     for begin, (stop, spelling) in atoms.items():
-        if not spelling.startswith("${"):
+        arithmetic = spelling.startswith("$[")
+        if not arithmetic and not spelling.startswith("${"):
             continue
         start = span.start + len(text[:begin].encode())
         end = span.start + len(text[:stop].encode())
         if any(o.span.start < end and start < o.span.end for o in bound.occurrences):
-            raise ShellSourceError("DATA_PARAMETER_SYNTAX", "regex parameter crosses a DATA fence")
+            code = "DATA_ARITHMETIC_SYNTAX" if arithmetic else "DATA_PARAMETER_SYNTAX"
+            raise ShellSourceError(code, "regex expansion crosses a DATA fence")
         # Quoted/escaped lookalikes are harmless: cook_island consults this map
         # only after its own quote/escape handling.
-        result[start] = Expansion(Span(start, end), source[start:end].decode(), "expansion")
+        kind = "arithmetic_expansion" if arithmetic else "expansion"
+        result[start] = Expansion(Span(start, end), source[start:end].decode(), kind)
     return result
 
 
