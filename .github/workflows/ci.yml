@@ -30,7 +30,7 @@ jobs:
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
         # No cache input on purpose. setup-uv's `enable-cache: true` keys the
@@ -38,7 +38,7 @@ jobs:
         # it fails setup before any check runs. The variant spelling
         # `enable-caching:` is not a real input at all and only logs an
         # "Unexpected input(s)" warning. Omit it rather than respell it.
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 
       - name: ruff (pinned 0.16.6, --isolated)
         # Tool version AND rule set are pinned so this check means the same
@@ -57,10 +57,10 @@ jobs:
         # claims is tested. 3.11 was broken until this branch fixed it.
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 
       - name: pytest src/amplifier_recipe_runner (AGENTS.md gate 2)
         env:
@@ -80,10 +80,10 @@ jobs:
       matrix:
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 
       - name: pytest modules/tool-recipes (AGENTS.md gate 1)
         env:
@@ -126,10 +126,10 @@ jobs:
       matrix:
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 
       - name: legacy-compat --assert (AGENTS.md gate 4)
         # Golden baselines pinning the serialized ToolResult of execute /
@@ -157,10 +157,10 @@ jobs:
     name: Bundle structure (YAML)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 
       - name: Parse bundle.md frontmatter and behaviors/*.yaml
         run: |
