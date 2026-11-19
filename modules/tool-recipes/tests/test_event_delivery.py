@@ -7,7 +7,7 @@ Verifies two bugs are fixed:
 
 import inspect
 import re
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -34,7 +34,7 @@ class TestMountRegistersObservabilityEvents:
 
         coordinator = MagicMock()
         coordinator.get_capability.return_value = []
-        coordinator.mount_points = {"tools": {}}
+        coordinator.mount = AsyncMock()
 
         await mount(coordinator, config=None)
 
@@ -51,7 +51,7 @@ class TestMountRegistersObservabilityEvents:
         existing_events = ["other:event"]
         coordinator = MagicMock()
         coordinator.get_capability.return_value = existing_events
-        coordinator.mount_points = {"tools": {}}
+        coordinator.mount = AsyncMock()
 
         await mount(coordinator, config=None)
 
