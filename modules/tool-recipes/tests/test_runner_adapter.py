@@ -1757,21 +1757,23 @@ class TestAdapterConfig:
     @pytest.mark.asyncio
     async def test_mount_refuses_rather_than_mounting_a_misconfigured_tool(self):
         coordinator = FakeCoordinator()
-        coordinator.mount_points = {"tools": {}}
+        coordinator.mount = AsyncMock()
 
         with pytest.raises(ra.AdapterConfigError):
             await mount(coordinator, {"legacy_mode": True})
 
-        assert coordinator.mount_points["tools"] == {}
+        coordinator.mount.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_mount_still_works_with_a_valid_config(self, temp_dir: Path):
         coordinator = FakeCoordinator()
-        coordinator.mount_points = {"tools": {}}
+        coordinator.mount = AsyncMock()
 
         await mount(coordinator, {"session_dir": str(temp_dir), "auto_cleanup_days": 1})
 
-        assert "recipes" in coordinator.mount_points["tools"]
+        tool = coordinator.mount.await_args.args[1]
+        assert tool.name == "recipes"
+        coordinator.mount.assert_awaited_once_with("tools", tool, name="recipes")
 
     @requires_runner
     def test_the_v2_run_request_is_never_caller_bound(self, temp_dir: Path):

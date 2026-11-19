@@ -343,8 +343,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     # Create tool instance
     tool = RecipesTool(executor, session_manager, coordinator, config)
 
-    # Register tool in mount_points
-    coordinator.mount_points["tools"][tool.name] = tool
+    await coordinator.mount("tools", tool, name=tool.name)
 
     logger.info("Mounted tool-recipes")
 
